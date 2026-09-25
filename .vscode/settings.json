@@ -1,0 +1,17 @@
+{
+    "clangd.path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\Llvm\\x64\\bin\\clangd.exe",
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": true,
+    "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "files.associations": {
+        "*.hlsl": "hlsl",
+        "*.hpp": "cpp"
+    },
+    "files.watcherExclude": {
+        "**/build/**": true
+    },
+    "search.exclude": {
+        "build": true
+    }
+}

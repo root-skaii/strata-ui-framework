@@ -1,0 +1,24 @@
+# build output
+build/
+out/
+
+# ide state
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+CMakeUserPresets.json
+*.user
+
+# clangd
+.cache/
+compile_commands.json
+
+# cmake generated
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+
+golden/

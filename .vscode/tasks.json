@@ -1,0 +1,14 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "cmake",
+            "command": "build",
+            "preset": "${command:cmake.activeBuildPresetName}",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$msCompile"],
+            "detail": "Build the active CMake preset"
+        }
+    ]
+}

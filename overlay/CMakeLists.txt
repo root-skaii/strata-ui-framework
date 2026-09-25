@@ -1,0 +1,37 @@
+# strata overlay - an in-game overlay for direct3d 11 and 12 applications
+#   strata_overlay          static library: the hook, input, drawing (link it into your own dll)
+#   strata_overlay_demo     the sample dll (strata_overlay_demo.dll): F1 shows a docked ui in the game
+#   strata_overlay_host     a stand-in "game" that loads the dll and checks that it works
+#   strata_overlay_inject   a small LoadLibrary injector
+
+add_library(strata_overlay STATIC src/overlay.cpp)
+add_library(strata::overlay ALIAS strata_overlay)
+target_include_directories(strata_overlay PUBLIC include)
+target_link_libraries(strata_overlay PUBLIC strata::strata PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib dxgi.lib user32.lib)
+
+add_library(strata_overlay_demo SHARED demo/demo_dll.cpp)
+target_link_libraries(strata_overlay_demo PRIVATE strata_overlay $<BUILD_INTERFACE:strata_options> user32.lib)
+
+add_executable(strata_overlay_host WIN32 tools/test_host.cpp)
+target_link_libraries(strata_overlay_host PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib d3d12.lib dxgi.lib user32.lib shell32.lib)
+
+add_executable(strata_overlay_inject tools/injector.cpp)
+target_link_libraries(strata_overlay_inject PRIVATE $<BUILD_INTERFACE:strata_options> user32.lib)
+target_compile_definitions(strata_overlay_inject PRIVATE UNICODE _UNICODE)
+
+if(STRATA_BUILD_TESTS)
+    # the host loads the dll the way an injector would, presses F1 through its message queue and checks that frames are
+    # drawn while the overlay is open (and only then); the frame is captured as a png next to the other test artifacts
+    add_test(NAME strata_overlay_smoke
+             COMMAND strata_overlay_host --dll $<TARGET_FILE:strata_overlay_demo>)
+    add_test(NAME strata_overlay_smoke_dx12
+             COMMAND strata_overlay_host --d3d12 --dll $<TARGET_FILE:strata_overlay_demo>)
+    set_tests_properties(strata_overlay_smoke PROPERTIES
+        TIMEOUT 60
+        LABELS gpu
+        ENVIRONMENT "STRATA_OVERLAY_CAPTURE=${PROJECT_BINARY_DIR}/test_artifacts/overlay_smoke.png")
+    set_tests_properties(strata_overlay_smoke_dx12 PROPERTIES
+        TIMEOUT 60
+        LABELS gpu
+        ENVIRONMENT "STRATA_OVERLAY_CAPTURE=${PROJECT_BINARY_DIR}/test_artifacts/overlay_smoke_dx12.png")
+endif()

@@ -1,0 +1,5 @@
+CompileFlags:
+  CompilationDatabase: build/x64-release
+  # clangd drops -std:c++latest when it borrows a .cpp's command for a
+  # header, falling back to clang-cl's C++14 default
+  Add: [/std:c++latest]
