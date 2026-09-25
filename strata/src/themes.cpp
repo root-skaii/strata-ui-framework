@@ -259,6 +259,32 @@ theme_result from_string(std::string_view text, style& s)
     return result;
 }
 
+void to_config(config& cfg, const style& s, std::string_view section)
+{
+    const std::string owned = to_string(s);
+    std::string_view  text  = owned;
+    while (!text.empty()) {
+        const std::size_t nl = text.find('\n');
+        const std::string_view line = trim(text.substr(0, nl));
+        text = nl == std::string_view::npos ? std::string_view{} : text.substr(nl + 1);
+        const std::size_t eq = line.find('=');
+        if (line.empty() || line.front() == '#' || eq == std::string_view::npos) { continue; }
+        cfg.set(section, trim(line.substr(0, eq)), trim(line.substr(eq + 1)));
+    }
+}
+
+theme_result from_config(const config& cfg, style& s, std::string_view section)
+{
+    std::string text;
+    for (const config::entry& e : cfg.entries(section)) {
+        text += e.key;
+        text += " = ";
+        text += e.value;
+        text += '\n';
+    }
+    return from_string(text, s);
+}
+
 bool save_file(std::string_view path, const style& s, std::string_view name)
 {
     const std::wstring wide = widen(path);

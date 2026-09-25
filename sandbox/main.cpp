@@ -77,7 +77,7 @@ constexpr const wchar_t* usage_text =
     L"  --theme N|NAME           a built-in theme by index or name (midnight, light, ocean, rose, dracula, nord, ...)\n"
     L"  --theme-file FILE        a theme file applied on top\n"
     L"  --scale F                ui scale (default: the monitor's dpi scale)\n"
-    L"  --scene NAME             start with one scene only: default, features, visuals, widgets, menus, log, ...\n"
+    L"  --scene NAME             start with one scene only: default, features, visuals, menus, config, tabs, dnd, lists, editor, ...\n"
     L"  --shot FILE              render --shot-frames fixed steps, save the last frame as a png and exit\n"
     L"  --golden FILE            same, but compare with the png FILE (exit code 0 = match); --update-golden rewrites it\n"
     L"  --menu                   show only the sidebar settings-menu example\n"
@@ -923,6 +923,8 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
     if (s.x.show_scripts) { demo2_scripts(ui, s.x); }
     if (s.x.show_textlog) { demo2_textlog(ui, s.x); }
     if (s.x.show_menus) { demo2_menus(ui, s.x); }
+    if (s.x.show_config) { demo2_config(ui, s.x); }
+    demo2_more(ui, s.x);
     if (s.scene_only) { return; }
 
     if (auto w = ui.window("strata sandbox", {24, 24}, {340, 0}, window_flags::resizable)) {
@@ -959,6 +961,11 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
         ui.checkbox("scripts: hebrew, arabic, emoji", s.x.show_scripts);
         ui.checkbox("text, log and toasts", s.x.show_textlog);
         ui.checkbox("menu bar, menus and modals", s.x.show_menus);
+        ui.checkbox("key bindings and config file", s.x.show_config);
+        ui.checkbox("tabs, popups, badges, chips", s.x.d3.show_tabs);
+        ui.checkbox("drag and drop, dates and times", s.x.d3.show_dnd);
+        ui.checkbox("long lists and tables", s.x.d3.show_lists);
+        ui.checkbox("code editor, passwords, masks", s.x.d3.show_editor);
         if (ui.checkbox("dock animation", s.x.dock_anim)) { ui.set_dock_animation(s.x.dock_anim); }
         if (s.show_features) { // the arrangement of the docks as text: keep it, change things around, bring it back
             if (ui.button("save layout")) { s.saved_layout = ui.dock_save_layout(); }
@@ -1120,6 +1127,16 @@ void apply_scene(demo_state& s, const std::string& name)
         s.x.show_charts = s.scene_only = true;
     } else if (name == "textlog") {
         s.x.show_textlog = s.scene_only = true;
+    } else if (name == "tabs") {
+        s.x.d3.show_tabs = s.scene_only = true;
+    } else if (name == "dnd") {
+        s.x.d3.show_dnd = s.scene_only = true;
+    } else if (name == "lists") {
+        s.x.d3.show_lists = s.scene_only = true;
+    } else if (name == "editor") {
+        s.x.d3.show_editor = s.scene_only = true;
+    } else if (name == "config" || name == "palette") {
+        s.x.show_config = s.scene_only = true;
     } else if (name == "menus" || name == "context" || name == "modal" || name == "dialog" || name == "toasts") {
         s.x.show_menus = s.scene_only = true;
     } else {

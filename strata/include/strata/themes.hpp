@@ -1,5 +1,6 @@
 #pragma once
 
+#include "strata/config.hpp"
 #include "strata/context.hpp"
 
 #include <span>
@@ -257,5 +258,9 @@ theme_result from_string(std::string_view text, style& s);
 // utf-8 path. save returns false if the file cannot be written, load if it cannot be read
 [[nodiscard]] bool save_file(std::string_view path, const style& s, std::string_view name = {});
 [[nodiscard]] bool load_file(std::string_view path, style& s, theme_result* result = nullptr);
+
+// a theme as a section of a config (see config.hpp): the same keys as a theme file
+void          to_config(config& cfg, const style& s, std::string_view section = "theme");
+theme_result  from_config(const config& cfg, style& s, std::string_view section = "theme");
 
 } // namespace strata::themes

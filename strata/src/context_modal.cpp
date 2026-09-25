@@ -80,7 +80,9 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
 
     // centered on the display, using the size it had last frame (the first frame it is invisible anyway)
     const vec2 win{prev.width() > 0.0f ? prev.width() : size.x, prev.height() > 0.0f ? prev.height() : (size.y > 0.0f ? size.y : 160.0f)};
-    const vec2 pos{std::round((display_.x - win.x) * 0.5f), std::round((display_.y - win.y) * 0.42f + (1.0f - t) * 12.0f)};
+    // the resting place is on whole pixels (crisp text); the slide-in on top of it is not rounded, or it would move in
+    // one-pixel jumps and the last one would look like a snap
+    const vec2 pos{std::round((display_.x - win.x) * 0.5f), std::round((display_.y - win.y) * 0.42f) + (1.0f - t) * 12.0f};
     if (window_state* st = window_for(wid, pos, size.x)) {
         st->pos = pos;
     }

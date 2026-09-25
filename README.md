@@ -46,7 +46,7 @@ strata_sandbox.exe [options]        (strata_sandbox.exe --help lists everything)
   --theme N|NAME           a built-in theme by index or name (midnight, light, ocean, rose, dracula, nord, solarized_dark,
                            solarized_light, high_contrast, forest, amber, glass);  --theme-file FILE applies a theme file on top
   --scale F                ui scale (default: the monitor's dpi scale; --width / --height are logical pixels)
-  --scene NAME             only one scene: default, features, visuals, inputs, multiselect, charts, textures, scripts, textlog, menus, context, modal, toasts, ...
+  --scene NAME             only one scene: default, features, visuals, inputs, multiselect, charts, textures, scripts, textlog, menus, context, modal, toasts, config, palette, tabs, dnd, lists, editor, ...
   --menu                   only the sidebar settings-menu example
   --features               only the docked feature windows: multi-line input, rich text, images, nested tables
   --selftest               headless checks of the ui logic (text editing, docking, menus, modals, ...), exit code 0 = passed
@@ -320,6 +320,154 @@ A theme file is plain text, `key = value` per line, `#`, `;` or `//` start a com
 `from_string` do the same in memory. Keys: every `style` member (`padding`, `rounding`, `accent`, `window_bg`, `blur_radius`, ...).
 The sandbox has a "theme file" field with save / load buttons and takes `--theme` / `--theme-file`.
 
+## Key bindings and config files
+
+```cpp
+strata::keybinds binds;
+binds.add("save", "Ctrl+S", "write the document");      // name, default chord, tooltip
+binds.add("quick_open", "Ctrl+P");
+
+if (binds.pressed(ui, "save")) { save(); }               // true on the frame the chord is pressed
+(void)ui.menu_item("Save", binds.text("save"));          // "Ctrl+S" as the shortcut hint
+strata::keybind_editor(ui, binds);                       // a table: click a field, press the new chord
+
+strata::config cfg;                                      // ini-like: [sections] and key = value lines
+binds.store(cfg);                                        // [keybinds]  save = Ctrl+S
+strata::themes::to_config(cfg, ui.theme());             // [theme]     accent = #5b8dff ...
+cfg.set_float("app", "volume", 0.6f);
+cfg.save_file("settings.ini");
+// later: register the actions, then
+cfg.load_file("settings.ini");
+binds.load(cfg);  strata::themes::from_config(cfg, ui.theme());  volume = cfg.get_float("app", "volume", 1.0f);
+```
+- **Chords:** `key_chord{key, ctrl, shift, alt}` is a virtual-key code (or `input_state::pressed_key` side mouse button) with the exact
+  modifiers. `chord_to_string` / `chord_from_string` use the `accelerator()` syntax (`"Ctrl+Shift+S"`, `"Alt+F4"`, `"Page Up"`,
+  `"Mouse 4"`); `ui.chord_pressed(chord)` is what `accelerator()` uses. Plain keys are ignored while a text field has the keyboard,
+  and nothing fires while a hotkey field waits for a key.
+- **keybinds:** `bind` / `reset` / `reset_all`, `conflict(name)` (another action on the same chord), `find`, `actions()`. `keybind_editor`
+  shows a reset button where a binding differs from its default and a mark where two actions collide; unbinding is Backspace / Delete.
+- **config:** case-insensitive sections and keys, order kept, values are one line of text; typed getters take a fallback for a missing or
+  malformed value. Keys before the first header are the section `""`. `from_string` merges into what is there and returns the number of
+  lines it could not read; `load_file` / `save_file` take utf-8 paths. Unbound actions are stored as an empty value, so a saved
+  "unbound" survives a load (an action missing from the file keeps its default).
+- **Contexts:** `binds.add("format", "Ctrl+Shift+F", "format the selection", "editor")` makes an action that only works (and only shows in
+  the palette) while `binds.set_context("editor", editor_has_focus)` is on; call it every frame with what is true right now. Actions of
+  different contexts can share a chord without conflicting, and while a context action is on it takes its key from a global action
+  with the same chord.
+- **Command palette:** `strata::command_palette palette; if (auto cmd = palette.show(ui, binds); !cmd.empty()) run(cmd);` is a modal search
+  box over every available action with its shortcut: Ctrl+Shift+P opens it (`palette.shortcut`, or `palette.open()`), typing filters
+  by `fuzzy_score`, Up / Down / Enter or a click chooses, Esc closes. Call `show()` once per frame outside any window.
+- **config_file (auto-save and hot reload, both optional):** `strata::config_file settings{"settings.ini"}; settings.load();` ties a config to a
+  file. Nothing else happens until you switch it on: `set_auto_save(true)` writes the file a moment after the last change (and when
+  the object goes away), `set_hot_reload(true)` reads it again when it changes on disk. Call `if (settings.update(dt)) apply(settings.data());`
+  once per frame (true = the data was replaced from the file). Use its `set_*` setters (or `touch()` after changing `data()`) so
+  auto-save notices. A file that changed on disk while there are unsaved changes is not read until they are written, so hot reload
+  never throws your changes away.
+- The sandbox's "key bindings and config file" window (`--scene config`, `--scene palette`) is the whole thing: rebind, contexts, palette,
+  save / load, the auto-save and hot-reload switches, and a live preview of the file; F2 / F3 / F6 / F7 are its default actions.
+
+## Tabs, popups and status widgets
+
+```cpp
+std::vector<std::string> docs{"main.cpp", "notes.txt"};   int current = 0;
+std::vector<tab_desc> tabs;  for (auto& d : docs) tabs.emplace_back(std::string_view{d});
+auto ev = ui.tab_bar("docs", tabs.data(), tabs.size(), current,
+                     tab_bar_flags::closable | tab_bar_flags::reorderable | tab_bar_flags::add_button);
+if (ev.add) { docs.push_back("untitled"); current = int(docs.size()) - 1; }
+apply_tab_events(ev, docs, current);        // removes a closed tab, applies a drag, keeps `current` on its tab
+
+if (ui.button("options")) { ui.toggle_popup("opts"); }          // a popup: any widgets, closes on Esc / a click outside
+if (auto p = ui.popup("opts", 260)) { ui.checkbox("wrap", wrap); if (ui.button("done")) { ui.close_popup(); } }
+ui.open_popup("menu", ui.mouse_pos());                           // or at a position
+
+ui.spinner();  ui.same_line();  ui.text("syncing...");
+ui.badge("3", toast_kind::warning);   ui.badge("beta", color{178, 120, 255, 255});
+auto r = ui.chip("filter", {.closable = true, .selected = &on});    // r.clicked / r.closed
+```
+- **Tabs:** `tab_bar` reports `changed`, `closed`, `moved_from` / `moved_to` and `add`; changing your own list is up to you (`apply_tab_events` does
+  it). Tabs are told apart by their label. Any number of tabs: when they do not fit they scroll (mouse wheel over the bar) and an arrow at
+  the right end opens a list of all of them. The plain `tab_bar(id, tabs, count, selected)` looks and behaves as before.
+- **Popups:** `open_popup` / `toggle_popup` / `popup` (or `begin_popup` / `end_popup`) / `close_popup` / `popup_is_open`. The panel opens under the last widget
+  (`last_item_rect()`) or at a position, its height follows the content, and it is drawn above all windows. One popup is open at a time
+  (menus, dropdowns and this share the slot), so no popup inside a popup.
+- **Status widgets:** `spinner` (an arc for work of unknown length), `badge` (a non-interactive pill; `kind_color(kind, theme)` gives the color),
+  `chip` (a removable / toggleable tag; `chip_options` has `closable`, `selected`, `tint`, `icon`).
+- `--scene tabs` shows all of it, with the options popup open.
+
+## Drag and drop, date and time pickers
+
+```cpp
+ui.selectable(task.name);
+if (auto d = ui.drag_source("task", index)) { ui.text(task.name); }      // the preview that follows the pointer
+...
+ui.selectable(other.name);
+const drop_result drop = ui.drop_target("task", drop_flags::no_highlight);
+if (drop.hovering) { /* draw an insert marker: drop.local.y < 0.5 is the upper half */ }
+if (drop)          { move_task(drop.as<int>(), position); }                 // the payload
+
+strata::date d{2026, 9, 25};  strata::time_of_day t{13, 45, 0};
+ui.date_picker("date", d);  ui.time_picker("time", t, /*seconds*/ true);  ui.datetime_picker("both", d, t);
+```
+- **Drag and drop:** the payload is a small copy of your data (an index, an id, a color) tagged with a type name; a target only takes the type it asks
+  for. Dragging starts after a few pixels of movement, Esc cancels, and the release that ends a drag is not a click of the source. A
+  target outlines itself while a matching payload is over it (`drop_flags::no_highlight` turns that off). `begin_drag_source` /
+  `set_drag_payload` / `end_drag_source` are the unscoped form; `dragging()` and `drag_payload_type()` tell what is going on.
+- **Pickers:** a field that opens a month calendar (arrows for months and years, today marked, a Today button) or grids of hours / minutes
+  (and seconds) with - / + for the minutes in between. `datetime.hpp` has `date`, `time_of_day` (comparable), `days_in_month`,
+  `weekday`, `add_days`, `add_months`, `parse_date` / `parse_time`, `to_string`, and `override_clock(...)` to fix `today()` / `now()` for
+  tests and screenshots.
+- `--scene dnd` shows both, with the calendar open.
+
+## Long lists and tables
+
+```cpp
+strata::list_clipper clip(ui, rows.size(), ui.frame_height());          // rows of one height, in a scrolling area
+while (clip.step()) for (int i = clip.begin(); i < clip.end(); ++i) { draw_row(rows[i]); }
+
+ui.begin_table("files", 5, table_default | table_flags::hideable | table_flags::reorderable);
+ui.table_setup_column("Name", 0, 1, table_column_flags::no_hide | table_column_flags::no_reorder);
+ui.table_setup_column("Path", 0, 1, table_column_flags::default_hidden);      // ... the other columns
+// right-click the header: a menu of columns; drag a header: move the column
+std::string saved = ui.table_save_layout("files");                            // order, widths, hidden: text for a config file
+ui.table_load_layout("files", saved);                                         // may be called before the table is first shown
+
+// a tree table: expandable nodes in a cell, the children are the rows that follow
+ui.table_next_row(); ui.table_next_column();
+if (ui.table_tree_node("src", tree_flags::default_open)) {
+    ui.table_next_row(); ui.table_next_column(); (void)ui.table_tree_leaf("main.cpp");
+    ui.table_tree_pop();
+}
+```
+- **list_clipper** submits only the rows that can be seen and reserves the space of the others, so the scrollbar and layout are those of the whole
+  list (100 000 rows cost a handful). It works in a fixed-height window, a `child`, and a table with a `height` (there it uses the table's row
+  height; `table_skip_rows(n)` skips rows by hand). Rows must have one height.
+- **Table columns:** `table_next_column()` is false for a hidden column (the code keeps filling cells in the order it declared them),
+  `table_headers_row` returns the clicked column by its declared index. `table_column_flags`: `default_hidden`, `no_hide`, `no_reorder`.
+- **Tree tables:** `table_tree_node` / `table_tree_leaf` / `table_tree_pop` draw an arrow, indent by depth and keep their open state by label.
+- **Auto-height windows:** a window that follows its content never grows past the bottom of the display: it scrolls instead.
+- `--scene lists` shows all of it, with the column menu open.
+
+## Code editor, passwords and input masks
+
+```cpp
+ui.input_spans(spans);                                          // colors from your highlighter, as for any text field
+ui.input_code("##code", source, {0, 260});                      // line numbers, current line, brackets, auto indent, find / replace
+ui.code_goto_line("##code", 120);   ui.code_find("##code", "TODO", /*replace bar*/ false);
+
+ui.input_text("password", pw, {}, input_flags::password | input_flags::reveal);   // an eye button shows the text
+ui.input_masked("phone", phone, "(###) ###-####");                 // "(555) 123-4567" is built as you type
+ui.input_masked("plate", plate, "UU-###");                         // "AB-123": letters are made upper case
+```
+- **input_code** is a multi-line field without wrapping. `code_flags` (all on in `code_default`): `line_numbers`, `highlight_line`, `bracket_match`
+  (the bracket next to the caret and its partner are boxed), `auto_indent` (Enter keeps the indentation and adds a level after `{ ( [`, a typed `}` steps
+  back), `find_replace` (Ctrl+F / Ctrl+H open a bar above the text that marks every match: Enter / Shift+Enter or the arrows step through them,
+  Replace and All change the text). Tab goes to the next tab stop, and indents every line of a selection (Shift+Tab unindents).
+  `code_goto_line` and `code_find` are called in the id scope of the field.
+- **Masks:** `#` a digit, `A` a letter, `U` / `L` a letter turned to upper / lower case, `X` a letter or digit, `?` any character, `\` makes the next
+  character literal, everything else is literal. `value` always holds the formatted text; typing, deleting, pasting and moving the caret keep its
+  shape (the undo history is off for masked fields).
+- `--scene editor` shows the editor (with the find and replace bar open), passwords and masks.
+
 ## Number inputs, multi-select, plots
 
 ```cpp
@@ -453,7 +601,7 @@ if (auto w = ui.window("settings", {260, 90}, {740, 480}, flags)) {
 - **Tooltips:** `ui.tooltip("text")` after any widget; shows after the pointer rests on it. `ui.item_hovered()`.
 - **Hotkeys:** `ui.hotkey("Label", key_code)`: click, press a key or a side mouse button; Esc cancels, Backspace / Delete
   unbinds. `key_code` is a virtual-key code (`strata::key_name(code)` gives its name). `input_state::pressed_key` carries the
-  key; `win32_platform` fills it.
+  key; `win32_platform` fills it. `ui.hotkey_chord("Label", chord)` does the same for a key with modifiers (see below).
 - **Docking animation:** `ui.set_dock_animation(true)` makes panes slide to their new place when a window docks, undocks or a pane closes
   (a new pane grows out of the edge it was dropped at); dragging a splitter always follows the pointer. Off by default.
 - **Alpha and transitions:** `ui.push_alpha(a)` / `pop_alpha()` scale everything drawn (nearly invisible content is inert);
@@ -541,8 +689,10 @@ frame, without re-recording anything: the draw commands of each window are conti
 **Resizing:** `ui.window("title", pos, {width, height}, strata::window_flags::resizable)`. The right edge, the bottom edge
 and the bottom-right corner are drag handles (marked by a grip in the corner); the size is remembered, minimum 150 px wide.
 `height == 0` means "follow the content" until the user drags a vertical edge, after which the height is fixed and the
-content scrolls (wheel or scrollbar; tables and combo lists inside get the wheel first). Windows can also be created
-with a fixed height and no resizing. The plain `ui.window("title", pos, width)` form is unchanged.
+content scrolls (wheel or scrollbar; tables and combo lists inside get the wheel first). A "follow the content" window
+never grows past the bottom of the display: when the content is taller it stops there and scrolls, so nothing is
+unreachable. Windows can also be created with a fixed height and no resizing. The plain `ui.window("title", pos, width)`
+form is unchanged.
 
 **Pointer shape:** `ui.cursor()` reports what the pointer should look like (arrow, text I-beam, resize arrows). With
 `win32_platform`: `platform.set_cursor(ui.cursor())` after `end_frame()` and, in your window procedure,
@@ -646,50 +796,45 @@ strata::overlay::install(opt);       // from a thread of your own, not from DllM
 
 ## TODO
 
-The known limitations, as a work list. `[x]` = done, `[ ]` = still open.
+The known limitations, as a work list.
 
-**1. Text**
-- [x] Supplementary planes (emoji, math alphanumerics ...) through the font's cmap, and fallback faces for missing glyphs
-- [x] Right-to-left text: bidi reordering, Arabic joining, caret and mouse in the text fields (Hebrew, Arabic, Persian, Urdu ...)
+**Text**
 - [ ] OpenType shaping for Indic / Southeast Asian scripts (Devanagari, Thai, Tamil, Khmer ...), color emoji, explicit bidi embeddings,
       right-aligned right-to-left paragraphs
 
-**2. Widgets**
-- [x] Multi-line text input (`input_multiline`: wrapping, scrolling, selection, line-wise navigation)
-- [x] Images (`image`, `image_button`, `draw_list::image`, `create_texture` on both renderers)
-- [x] Docking (dock area, tabs, splits, splitters, drag-out, drop preview, `dock_window`)
-- [x] Edge docks (left / right / top / bottom of the app), floating docks and several dock spaces at once
-- [x] Undo / redo in text fields (single- and multi-line)
-- [x] Nested tables (up to five levels)
-- [x] Images: mip maps, texture updates, formats other than rgba8 (`texture_desc`, `update_texture`, `texture_image`)
-- [x] Docking: saving / restoring a layout (`dock_save_layout` / `dock_load_layout`), dragging a whole tab group by its grip
-- [x] Text fields: mixed-font *contents* (`input_spans`), IME composition (win32), triple-click to select a line
-
-**3. Rich text**
-- [x] Inline font mixing beyond one line: `rich_text` takes newlines, `rich_text_wrapped` / `text_wrapped` wrap, and
-      `rich_labels()` lets every other widget draw markup captions.
-- [x] Bold / italic / underline / strike-through tags (`<b>`, `<i>`, `<u>`, `<s>`; synthesized, `text_flags` in the draw list)
-
-**4. Second round** (all done)
-- [x] DPI and UI scale (`set_scale`, per-monitor DPI in the win32 platform, atlas rebuild, `update_atlas` in both renderers)
-- [x] Anti-aliased lines, polylines, curves, circles and arcs in the draw list
-- [x] Gradients (angled / radial) and blur / acrylic backgrounds (real backdrop blur in both renderers)
-- [x] Additional themes (12) and a theme file (save / load / by name)
-- [x] Drag sliders and number inputs (`drag_float`, `drag_int`, vectors, `input_float`, `input_int`)
-- [x] Multi-select dropdown (`combo_multi`)
-- [x] Plots and graphs (lines, histograms, sparklines, multi-series)
-- [x] Text selection in plain `text()` (`text_selectable`, selectable-text scope)
-- [x] Modal windows and dialogs
-- [x] Context menus and a main menu bar
-- [x] Toasts / notifications
-- [x] Console / log view
-- [x] Animated transitions for docking (optional, off by default)
-- [x] More self-test coverage (540 checks; the overlay has its own smoke test) and a GPU screenshot regression test (`--shot`, golden images, ctest)
-
-**5. Ideas** (the open ones first)
+**Input and windows**
 - [ ] Keyboard navigation of widgets and menus (Tab / arrows; today only text fields, combos and hotkeys take the keyboard)
-- [x] Menus: mnemonics (`&Open`, Alt + letter), accelerators (`accelerator("Ctrl+O")`), icons in rows, keep-open items
-- [x] Toasts: action buttons, progress toasts; log view: per-line wrapping, timestamps from the clock
-- [x] Plots: axes with ticks and units, zoom / pan, area fills (`plot_options`)
-- [x] Acrylic: saturation / brightness boost, blur of popups and tooltips
 - [ ] Multi-viewport (windows outside the application window)
+
+## Ideas
+
+Things that would fit, not promised. Not on the TODO list.
+
+**Widgets**
+- Radio buttons and a list box
+- Range slider (two handles), an angle knob, a slider with a log / nonlinear scale
+- A splitter widget: a draggable divider between two regions inside one window (docking has its own)
+- Typing into the date field, week numbers, date ranges, a setting for the first day of the week
+- Tabs that tear off into windows or move between two tab bars
+- Multi-select with Shift / Ctrl in lists, trees and tables; rows that can be dragged to reorder in a table
+
+**Editor**
+- Multiple carets, code folding, a minimap, an autocomplete popup (the popup API is there for it), comment toggling per language
+
+**Input**
+- Files dropped on the window from the OS (`WM_DROPFILES`) as `input_state::dropped_files`
+- Gamepad input, together with keyboard navigation
+- Multi-key chords (`Ctrl+K, Ctrl+S`) in keybinds
+
+**Platform and rendering**
+- A Vulkan or OpenGL backend (the in-game overlay's README lists the missing one as a limit)
+- Screen reader support (UI Automation)
+- Images from the clipboard (paste a picture into `image()`)
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+## Acknowledgments
+
+Portions of this project's documentation and code were developed with assistance from Claude (Anthropic). Design decisions, architecture and direction are my own.

@@ -7,9 +7,7 @@
 
 namespace strata {
 
-namespace {
-
-[[nodiscard]] color kind_color(toast_kind k, const style& st) noexcept
+color kind_color(toast_kind k, const style& st) noexcept
 {
     switch (k) {
     case toast_kind::success: return color::from_hex(0x4ade80ffu);
@@ -18,6 +16,8 @@ namespace {
     default:                  return st.accent_hover;
     }
 }
+
+namespace {
 
 [[nodiscard]] std::string_view kind_name(toast_kind k) noexcept
 {

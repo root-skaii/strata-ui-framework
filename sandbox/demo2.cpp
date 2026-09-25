@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <vector>
 #include <format>
 #include <numbers>
@@ -695,11 +696,172 @@ void demo2_menus(context& ui, demo2_state& s)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// key bindings and a config file
+
+demo2_state::demo2_state()
+    : file{(std::filesystem::temp_directory_path() / "strata_sandbox_config.ini").string()}
+{
+    binds.add("save_config", "F6", "write the settings, key bindings and theme to the config file");
+    binds.add("load_config", "F7", "read them back");
+    binds.add("mute", "F3", "toggle the volume");
+    binds.add("greet", "F2", "show a toast with the name");
+    binds.add("toggle_sidebar", "Ctrl+B", "show or hide the sidebar");
+    binds.add("format_document", "Alt+Shift+F", "format the whole document", "editor");
+    binds.add("run_script", "F5", "run the script", "editor");
+    binds.add("reset_camera", "F5", "back to the default view", "viewport"); // the same key, another context
+}
+
+namespace {
+
+// everything the demo remembers, in one config: a section per kind of data
+void fill_config(const context& ui, const demo2_state& s, config& cfg)
+{
+    cfg.set("app", "name", s.user_name);
+    cfg.set_float("app", "volume", s.volume);
+    cfg.set_bool("app", "muted", s.muted);
+    s.binds.store(cfg);
+    themes::to_config(cfg, ui.theme());
+}
+
+void apply_config(context& ui, demo2_state& s, const config& cfg)
+{
+    s.user_name = std::string{cfg.get("app", "name", s.user_name)};
+    s.volume    = cfg.get_float("app", "volume", s.volume);
+    s.muted     = cfg.get_bool("app", "muted", s.muted);
+    (void)s.binds.load(cfg);
+    (void)themes::from_config(cfg, ui.theme());
+}
+
+// the settings changed: what the file would hold now (auto-save, when it is on, writes it a moment later)
+void settings_changed(const context& ui, demo2_state& s)
+{
+    fill_config(ui, s, s.file.data());
+    s.file.touch();
+}
+
+void do_action(context& ui, demo2_state& s, std::string_view name)
+{
+    s.last_bind_action = std::string{name};
+    if (name == "save_config")          { s.config_request = 1; }
+    else if (name == "load_config")     { s.config_request = 2; }
+    else if (name == "mute")            { s.muted = !s.muted; settings_changed(ui, s); }
+    else if (name == "greet")           { ui.toast("Hello", s.user_name, toast_kind::info, 2.5f); }
+    else if (name == "toggle_sidebar")  { s.sidebar = !s.sidebar; }
+    else if (name == "run_script")      { ui.toast("Run", "the script started", toast_kind::success, 2.0f); }
+    else if (name == "format_document") { ui.toast("Format", "the document was formatted", toast_kind::info, 2.0f); }
+    else if (name == "reset_camera")    { ui.toast("Camera", "the view was reset", toast_kind::info, 2.0f); }
+}
+
+void config_actions(context& ui, demo2_state& s)
+{
+    const f32 dt = static_cast<f32>(ui.time() - s.last_time);
+    s.last_time  = ui.time();
+
+    s.binds.set_context("editor", s.ctx_editor);
+    s.binds.set_context("viewport", s.ctx_viewport);
+    for (const keybinds::action& a : s.binds.actions()) {
+        if (s.binds.pressed(ui, a.name)) { do_action(ui, s, a.name); }
+    }
+    const std::string picked = s.palette.show(ui, s.binds); // Ctrl+Shift+P
+    if (!picked.empty()) { do_action(ui, s, picked); }
+
+    if (s.config_request == 1) {
+        fill_config(ui, s, s.file.data());
+        s.config_status = s.file.save() ? "saved to strata_sandbox_config.ini" : "could not write the file";
+    } else if (s.config_request == 2) {
+        if (!s.file.load()) {
+            s.config_status = "nothing to load yet: save first";
+        } else {
+            apply_config(ui, s, s.file.data());
+            s.config_status = "loaded";
+        }
+    }
+    s.config_request = 0;
+
+    // the two optional conveniences, when they are switched on
+    if (s.file.update(dt)) {
+        apply_config(ui, s, s.file.data());
+        s.config_status = "reloaded: the file changed on disk";
+    }
+}
+
+} // namespace
+
+void demo2_config(context& ui, demo2_state& s)
+{
+    if (auto w = ui.window("keybinds and config", {40, 30}, {560.0f, 0.0f}, window_flags::none)) {
+        if (auto card = ui.card("Key bindings")) {
+            ui.text_wrapped_colored(ui.theme().text_dim, "Click a key field and press the new key (with Ctrl / Shift / Alt if you like). Backspace unbinds, Esc cancels.");
+            ui.spacing(4.0f);
+            if (keybind_editor(ui, s.binds)) { settings_changed(ui, s); }
+            ui.spacing(4.0f);
+            ui.text_dim(std::format("last action: {}", s.last_bind_action));
+            ui.same_line();
+            if (ui.button("reset all")) { s.binds.reset_all(); settings_changed(ui, s); }
+        }
+
+        if (auto card = ui.card("Contexts and the command palette")) {
+            ui.checkbox("editor context is on", s.ctx_editor);
+            ui.same_line();
+            ui.checkbox("viewport context is on", s.ctx_viewport);
+            ui.text_dim("F5 runs the script in the editor and resets the camera in the viewport");
+            if (ui.button("open the command palette")) { s.palette.open(); }
+            ui.same_line();
+            ui.text_dim("or press Ctrl+Shift+P");
+        }
+
+        if (auto card = ui.card("Settings")) {
+            bool changed = ui.input_text("name", s.user_name);
+            changed = ui.slider("volume", s.volume, 0.0f, 1.0f) || changed;
+            changed = ui.checkbox("muted", s.muted) || changed;
+            if (changed) { settings_changed(ui, s); }
+        }
+
+        if (auto card = ui.card("Config file")) {
+            if (ui.button("save")) { s.config_request = 1; }
+            ui.same_line();
+            if (ui.button("load")) { s.config_request = 2; }
+            ui.same_line();
+            ui.text_dim(s.config_status);
+
+            bool auto_save = s.file.auto_save();
+            if (ui.checkbox("auto-save (a second after a change)", auto_save)) { s.file.set_auto_save(auto_save, 1.0f); }
+            bool hot_reload = s.file.hot_reload();
+            if (ui.checkbox("hot reload (edit the file in a text editor)", hot_reload)) { s.file.set_hot_reload(hot_reload, 0.5f); }
+            ui.text_dim(std::format("{}, saved {}x, reloaded {}x", s.file.dirty() ? "unsaved changes" : "nothing unsaved", s.file.save_count(), s.file.reload_count()));
+
+            config now; // what saving would write right now
+            fill_config(ui, s, now);
+            const std::string preview = now.to_string();
+            if (preview != s.config_text) { s.config_text = preview; }
+            const auto mono = ui.with_font(static_cast<font_id>(s.font_mono >= 0 ? s.font_mono : 0));
+            (void)ui.input_multiline("##preview", s.config_text, {0.0f, 130.0f}, input_flags::read_only | input_flags::no_wrap);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+void demo2_more(context& ui, demo2_state& s)
+{
+    s.d3.mono_font = s.font_mono;
+    s.d3.scene     = s.scene;
+    demo3_show(ui, s.d3);
+}
 
 void demo2_update(context& ui, demo2_state& s, float dt)
 {
     ++s.frame;
     (void)dt;
+    s.d3.scene         = s.scene;
+    s.d3.deterministic = s.deterministic;
+    demo3_update(ui, s.d3);
+    config_actions(ui, s);
+    if (s.scene == "config" && s.frame == 1) { // a customised binding: the reset button and the conflict mark show up
+        (void)s.binds.bind("greet", {0x75, false, false, false});
+        s.ctx_editor = true;
+    }
+    if (s.scene == "palette" && s.frame == 4) { s.palette.open(); }
 
     // the rolling data: a signal that is a function of the demo time, and a small histogram
     if (s.history.empty()) { s.history.assign(160, 0.5f); }
@@ -740,6 +902,7 @@ void demo2_update(context& ui, demo2_state& s, float dt)
 
 void demo2_script(const demo2_state& s, int frame, demo2_sim& sim)
 {
+    demo3_script(s.d3, frame, sim.pos, sim.down);
     if (s.scene == "menus") { // open File, then hover 'Open recent' and 'More'
         if (frame == 5)  { sim.pos = {29.0f, 14.0f}; }
         if (frame == 7)  { sim.down[0] = true; }

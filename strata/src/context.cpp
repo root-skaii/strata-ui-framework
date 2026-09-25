@@ -295,7 +295,10 @@ void context::end_frame()
     apply_layer_order();
 
     if (!mouse_down_) {
-        active_ = 0; // a widget that vanished mid-drag must not stay active forever
+        active_       = 0; // a widget that vanished mid-drag must not stay active forever
+        dd_active_    = false;
+        dd_candidate_ = 0;
+        dd_cancelled_ = false;
     }
     // a press that no text field claimed takes keyboard focus away; so does a field that was not drawn
     if ((mouse_pressed_ && !press_claimed_) || (focus_id_ != 0 && !focus_seen_)) {
@@ -465,7 +468,9 @@ rect context::window_rect(std::string_view title) const noexcept
         return {};
     }
     const f32 height = w->collapsed ? w->title_h
-                                    : (w->height > 0.0f ? w->height : w->title_h + 2.0f * style_.padding + w->content_h);
+                     : w->height > 0.0f ? w->height
+                     : w->capped_h > 0.0f ? w->capped_h
+                                          : w->title_h + 2.0f * style_.padding + w->content_h;
     return rect::from_size(w->pos, {w->width, height});
 }
 
@@ -724,6 +729,7 @@ shape_style context::widget_shape(color base, f32 radius) const noexcept
 rect context::layout_place(vec2 size) noexcept
 {
     layout_state& l = layout_;
+    const bool first_item = l.first;
     vec2 pos;
     if (l.same_line && !l.first) {
         pos      = {l.cursor_x + style_.item_spacing, l.line_top};
@@ -736,7 +742,10 @@ rect context::layout_place(vec2 size) noexcept
     l.first     = false;
     l.same_line = false;
     l.cursor_x  = pos.x + size.x;
-    l.bottom    = std::max(l.bottom, pos.y + size.y);
+    // the first item starts the extent: a layout that is scrolled above the top of the screen has only negative
+    // positions, and a `bottom` that started at 0 would stay there and make the content look taller than it is
+    l.bottom    = first_item ? pos.y + size.y : std::max(l.bottom, pos.y + size.y);
+    l.right     = first_item ? pos.x + size.x : std::max(l.right, pos.x + size.x);
     return rect::from_size(pos, size);
 }
 
@@ -785,12 +794,13 @@ context::interaction context::interact_impl(id key, const rect& r, bool in_windo
     if (active_ == key) {
         out.held = mouse_down_;
         if (mouse_released_) {
-            out.pressed = over;
+            out.pressed = over && !(dd_active_ && dd_source_ == key); // the release that ends a drag is not a click
             out.held    = false;
             active_     = 0;
         }
     }
     last_item_key_     = key;
+    last_item_rect_    = r;
     last_item_hovered_ = out.hovered;
     if (out.hovered) {
         hover_key_cur_ = key;
@@ -817,6 +827,19 @@ item_result context::custom_item(std::string_view label, vec2 size)
 bool context::begin_window(std::string_view title, vec2 initial_pos, f32 width)
 {
     return begin_window(title, initial_pos, vec2{width, 0.0f}, window_flags::none);
+}
+
+f32 context::thumb_drag(const interaction& in, f32& grab, f32 thumb_y, f32 thumb_h, f32 track_top, f32 travel,
+                        f32 max_scroll, f32 scroll) const noexcept
+{
+    if (!in.held || travel <= 0.0f) {
+        return scroll;
+    }
+    if (mouse_pressed_) {
+        const bool on_thumb = mouse_.y >= thumb_y && mouse_.y <= thumb_y + thumb_h;
+        grab = on_thumb ? mouse_.y - thumb_y : thumb_h * 0.5f;
+    }
+    return std::clamp((mouse_.y - grab - track_top) / travel, 0.0f, 1.0f) * max_scroll;
 }
 
 bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, window_flags flags)
@@ -940,7 +963,9 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
 
     // resizing: the right edge, the bottom edge and the corner (last frame's geometry)
     if (st->resizable && !st->collapsed) {
-        const f32 prev_h = st->height > 0.0f ? st->height : title_h + pad + st->content_h + pad;
+        const f32 prev_h = st->height > 0.0f ? st->height
+                         : st->capped_h > 0.0f ? st->capped_h
+                                               : title_h + pad + st->content_h + pad;
         const f32 grip   = 6.0f;
         const f32 corner = 16.0f;
         const f32 x1 = st->pos.x + st->width;
@@ -970,7 +995,18 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     }
 
     const bool fixed_h = st->height > 0.0f;
-    const f32  height  = st->collapsed ? title_h : (fixed_h ? st->height : title_h + pad + st->content_h + pad);
+    // an auto-height window does not grow past the bottom of the display: it scrolls instead
+    st->capped_h = 0.0f;
+    if (!fixed_h && !docked && !st->menubar && !st->collapsed && display_.y > 0.0f) {
+        const f32 wanted = title_h + pad + st->content_h + pad;
+        const f32 room   = std::max(display_.y - st->pos.y - 8.0f, title_h + 48.0f);
+        if (wanted > room) { st->capped_h = room; }
+    }
+    const bool scrolls = fixed_h || st->capped_h > 0.0f;
+    const f32  height  = st->collapsed ? title_h
+                       : fixed_h ? st->height
+                       : scrolls ? st->capped_h
+                                 : title_h + pad + st->content_h + pad;
     const rect frame   = rect::from_size(st->pos, {st->width, height});
     const rect bar     = rect::from_size(st->pos, {st->width, title_h});
     cur_frame_ = frame;
@@ -1071,7 +1107,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         dl_.push_clip({{frame.min.x, frame.min.y + title_h}, frame.max});
     }
 
-    if (fixed_h) {
+    if (scrolls) {
         const f32 max_scroll = std::max(0.0f, st->content_h + 2.0f * pad - (height - title_h));
         st->scroll = std::clamp(st->scroll, 0.0f, max_scroll);
     } else {
@@ -1080,7 +1116,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
 
     layout_        = {};
     layout_.origin = {st->pos.x + pad, st->pos.y + title_h + pad - st->scroll};
-    layout_.width  = st->width - 2.0f * pad - (fixed_h && st->overflow ? 10.0f : 0.0f);
+    layout_.width  = st->width - 2.0f * pad - (scrolls && st->overflow ? 10.0f : 0.0f);
     layout_.bound_bottom = fixed_h ? st->pos.y + height - pad : 0.0f;
     return !st->collapsed && !hidden_tab;
 }
@@ -1095,30 +1131,31 @@ void context::end_window()
     if (!w.collapsed) {
         w.content_h = layout_.first ? 0.0f : layout_.bottom - layout_.origin.y;
 
-        if (w.height > 0.0f) {
+        const f32 shown_h = w.height > 0.0f ? w.height : w.capped_h;
+        if (shown_h > 0.0f) {
             const f32 title_h = has_title ? font_.line_height(0) + 10.0f : 0.0f;
             const f32 pad     = w.menubar ? 0.0f : style_.padding;
-            const f32 body_h  = w.height - title_h;
+            const f32 body_h  = shown_h - title_h;
             const f32 full_h  = w.content_h + 2.0f * pad;
             w.overflow = full_h > body_h + 0.5f;
 
             if (w.overflow) {
                 const f32  max_scroll = full_h - body_h;
-                const rect body = {{w.pos.x, w.pos.y + title_h}, {w.pos.x + w.width, w.pos.y + w.height}};
+                const rect body = {{w.pos.x, w.pos.y + title_h}, {w.pos.x + w.width, w.pos.y + shown_h}};
 
                 if (wheel_ != 0.0f && !wheel_consumed_ && pointer_over(body)) {
                     w.scroll = std::clamp(w.scroll - wheel_ * 48.0f, 0.0f, max_scroll);
                     wheel_consumed_ = true;
                 }
 
+                const f32  track_top = body.min.y + 6.0f;
                 const f32  track_h = body_h - 12.0f;
                 const f32  thumb_h = std::max(20.0f, track_h * body_h / full_h);
-                const f32  thumb_y = body.min.y + 6.0f + (track_h - thumb_h) * (w.scroll / max_scroll);
-                const rect thumb   = {{body.max.x - 10.0f, thumb_y}, {body.max.x - 5.0f, thumb_y + thumb_h}};
-                const interaction in = interact(hash_id("##wscroll", cur_window_), thumb.expanded(3.0f));
-                if (in.held) {
-                    w.scroll = std::clamp(w.scroll + mouse_delta_.y * full_h / body_h, 0.0f, max_scroll);
-                }
+                f32 thumb_y = track_top + (track_h - thumb_h) * (w.scroll / max_scroll);
+                const interaction in = interact(hash_id("##wscroll", cur_window_), {{body.max.x - 13.0f, track_top}, {body.max.x - 2.0f, track_top + track_h}});
+                w.scroll = thumb_drag(in, w.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, w.scroll);
+                thumb_y  = track_top + (track_h - thumb_h) * (w.scroll / max_scroll);
+                const rect thumb = {{body.max.x - 10.0f, thumb_y}, {body.max.x - 5.0f, thumb_y + thumb_h}};
                 shape_style bar;
                 bar.radius      = radii(2.5f);
                 bar.fill_top    = style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.45f);
@@ -1527,6 +1564,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     f32           lh       = font_.line_height(fnt);
     f32           asc      = font_.ascent(fnt);
     const bool    password = has_flag(flags, input_flags::password);
+    const bool    reveal_btn = password && has_flag(flags, input_flags::reveal);
     const bool    readonly = has_flag(flags, input_flags::read_only);
     const id      key      = hash_id(label, current_seed());
     ed_prepare_spans(focus_id_ == key ? edit_buf_.size() : current.size(), fnt, lh, asc, password);
@@ -1539,11 +1577,28 @@ bool context::input_core(std::string_view label, std::string_view current, std::
         fl = layout_field(visible_label(label), frame_height());
     }
     const rect         box = fl.control;
+
+    // a password field with an eye button: pressing it shows or hides the text (its state lives in an animation slot,
+    // which is dropped once the field has not been drawn for a moment). it is tested first so it wins the press
+    const f32  reveal_w = reveal_btn ? 26.0f : 0.0f;
+    const rect reveal_r = {{box.max.x - reveal_w - 2.0f, box.min.y + 2.0f}, {box.max.x - 3.0f, box.max.y - 2.0f}};
+    bool       revealed = false;
+    bool       reveal_hot = false;
+    if (reveal_btn) {
+        anim_slot& ra = anim_for(hash_id("##reveal", key));
+        const interaction bi = interact(hash_id("##reveal", key), reveal_r);
+        if (bi.pressed) { ra.active = ra.active > 0.5f ? 0.0f : 1.0f; }
+        if (mouse_pressed_ && bi.held) { press_claimed_ = true; } // the field keeps the keyboard if it had it
+        revealed   = ra.active > 0.5f;
+        reveal_hot = bi.hovered;
+    }
+    const bool hide = password && !revealed; // what is drawn as bullets
+
     const interaction  in  = interact(key, box);
-    if (in.hovered || (in.held && focus_id_ == key)) { cursor_ = cursor_kind::text; }
+    if (in.hovered || (in.held && focus_id_ == key)) { cursor_ = reveal_hot ? cursor_kind::arrow : cursor_kind::text; }
 
     const f32  pad_x  = style_.frame_padding.x;
-    const rect inner  = {{box.min.x + pad_x, box.min.y}, {box.max.x - pad_x, box.max.y}};
+    const rect inner  = {{box.min.x + pad_x, box.min.y}, {box.max.x - pad_x - reveal_w, box.max.y}};
     const f32  text_y = box.min.y + (box.height() - lh) * 0.5f;
 
     // what is shown: the live edit buffer while focused, the caller's text otherwise
@@ -1552,7 +1607,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
 
     std::string masked;
     const auto rebuild_mask = [&] {
-        if (password) { masked.assign(count_codepoints(text_now()), '*'); }
+        if (hide) { masked.assign(count_codepoints(text_now()), '*'); }
     };
     rebuild_mask();
 
@@ -1560,7 +1615,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     bidi_layout bidi;
     std::string bidi_src;
     const auto rtl_layout = [&]() -> const bidi_layout* {
-        if (password) { return nullptr; }
+        if (hide) { return nullptr; }
         const std::string_view t = text_now();
         if (!has_rtl_text(t)) { return nullptr; }
         if (bidi_src != t) {
@@ -1575,7 +1630,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
         if (const bidi_layout* b = rtl_layout()) {
             return b->caret_x(byte_index);
         }
-        if (!password) {
+        if (!hide) {
             return ed_measure(fnt, t, 0, byte_index);
         }
         return font_.measure(fnt, std::string_view{masked}.substr(0, count_codepoints(t.substr(0, byte_index)))).x;
@@ -1597,6 +1652,21 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     };
 
     // --- focus and mouse -----------------------------------------------------
+    if (focus_request_ == key) { // asked for by the code (a find bar that opens): like a click on the field, all selected
+        focus_request_ = 0;
+        press_claimed_ = true;
+        if (focus_id_ != key) {
+            focus_id_    = key;
+            focused      = true;
+            wipe_edit_buffer();
+            edit_buf_.assign(current);
+            edit_scroll_ = 0.0f;
+            edit_cursor_ = edit_buf_.size();
+            edit_anchor_ = 0;
+            caret_time_  = time_;
+            rebuild_mask();
+        }
+    }
     const bool press_here = mouse_pressed_ && in.held;
     if (press_here) {
         press_claimed_ = true;
@@ -1638,7 +1708,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     if (focused) {
         edit_readonly_   = readonly;
         edit_max_bytes_  = max_bytes;
-        edit_history_on_ = !password && !readonly;
+        edit_history_on_ = !password && !readonly && edit_mask_.empty();
 
         if (typed_len_ != 0) {
             changed = edit_insert({typed_.data(), typed_len_}, true) || changed;
@@ -1721,6 +1791,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
             }
         }
         key_count_ = 0;
+        if (changed && !edit_mask_.empty()) { apply_input_mask(); }
         rebuild_mask();
     }
 
@@ -1751,6 +1822,22 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     field.shadow_blur  = 9.0f * a.toggle;
     dl_.shape(box, field);
 
+    if (reveal_btn) { // the eye: open when the text is shown, crossed out when it is hidden
+        if (reveal_hot) {
+            shape_style hot;
+            hot.radius      = radii(style_.rounding * 0.6f);
+            hot.fill_top    = style_.widget_hover.scaled_alpha(0.8f);
+            hot.fill_bottom = hot.fill_top;
+            dl_.shape(reveal_r, hot);
+        }
+        const vec2  c   = reveal_r.center();
+        const color col = lerp(style_.text_dim, style_.text, reveal_hot || revealed ? 1.0f : 0.0f);
+        dl_.bezier_quadratic({c.x - 7.0f, c.y}, {c.x, c.y - 8.0f}, {c.x + 7.0f, c.y}, col, 1.3f);
+        dl_.bezier_quadratic({c.x - 7.0f, c.y}, {c.x, c.y + 8.0f}, {c.x + 7.0f, c.y}, col, 1.3f);
+        dl_.circle_filled(c, 2.2f, col);
+        if (!revealed) { dl_.line({c.x - 6.0f, c.y + 6.0f}, {c.x + 6.0f, c.y - 6.0f}, col, 1.5f); }
+    }
+
     dl_.push_clip({{inner.min.x, box.min.y + 1.0f}, {inner.max.x, box.max.y - 1.0f}});
     const f32 text_x = inner.min.x - (focused ? edit_scroll_ : 0.0f);
 
@@ -1779,7 +1866,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
 
     if (shown_text.empty() && !focused && !hint.empty()) {
         dl_.text({text_x, text_y}, style_.text_dim.scaled_alpha(0.7f), hint, fnt);
-    } else if (password) {
+    } else if (hide) {
         dl_.text({text_x, text_y}, style_.text, masked, fnt);
     } else if (composing) { // the composition sits in the text, underlined and lightly marked
         const std::size_t at = std::min(edit_cursor_, shown_text.size());
@@ -1988,90 +2075,6 @@ void context::draw_combo_popup(id key, const rect& anchor, const std::string_vie
     dl_.pop_clip();
     in_overlay_ = false;
     switch_run(previous_owner);
-}
-
-// tabs -----------------------------------------------------------------------
-
-bool context::tab_bar(std::string_view id_label, const tab_desc* tabs, std::size_t count, int& selected,
-                      font_id icon_font)
-{
-    if (cur_ == nullptr || count == 0) {
-        return false;
-    }
-    push_id(id_label);
-
-    const font_id f = current_font();
-    const rect row  = layout_place({layout_.width, frame_height() + 2.0f});
-
-    const std::size_t n = std::min<std::size_t>(count, 16);
-    selected = std::clamp(selected, 0, static_cast<int>(n) - 1);
-
-    std::array<rect, 16> cells{};
-    f32 x = row.min.x;
-    for (std::size_t i = 0; i < n; ++i) {
-        const f32 iw = tabs[i].icon.empty() ? 0.0f : font_.measure(icon_font, tabs[i].icon).x + 7.0f;
-        const f32 w  = label_size(f, visible_label(tabs[i].label)).x + iw + 26.0f;
-        cells[i] = {{x, row.min.y}, {x + w, row.max.y - 2.0f}};
-        x += w + 2.0f;
-    }
-
-    bool changed = false;
-    std::array<f32, 16> emphasis{};
-    for (std::size_t i = 0; i < n; ++i) {
-        const id key = hash_id(tabs[i].label, current_seed());
-        const interaction in = interact(key, cells[i]);
-        if (in.pressed && static_cast<int>(i) != selected) {
-            selected = static_cast<int>(i);
-            changed  = true;
-        }
-        anim_slot& a = anim_for(key);
-        a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-        a.toggle = approach(a.toggle, static_cast<int>(i) == selected ? 1.0f : 0.0f);
-        emphasis[i] = std::max(a.toggle, a.hover * 0.75f);
-
-        if (a.hover > 0.01f && static_cast<int>(i) != selected) {
-            shape_style hover;
-            hover.radius      = radii(style_.rounding * 0.7f);
-            hover.fill_top    = style_.widget_hover.scaled_alpha(0.7f * a.hover);
-            hover.fill_bottom = hover.fill_top;
-            dl_.shape(cells[i], hover);
-        }
-    }
-
-    const rect sel  = cells[static_cast<std::size_t>(selected)];
-    const f32  ix   = row.min.x + animate("tab_x", sel.min.x - row.min.x, 20.0f); // (relative to the row: moving or scrolling the window must not make it lag)
-    const f32  iw   = animate("tab_w", sel.width(), 20.0f);
-    shape_style pill;
-    pill.radius      = radii(style_.rounding * 0.7f);
-    pill.fill_top    = style_.accent.scaled_alpha(0.20f);
-    pill.fill_bottom = style_.accent.scaled_alpha(0.10f);
-    dl_.shape({{ix, sel.min.y}, {ix + iw, sel.max.y}}, pill);
-
-    dl_.rect_filled({{row.min.x, row.max.y - 1.0f}, {row.max.x, row.max.y}}, style_.border);
-    shape_style line;
-    line.radius      = radii(1.0f);
-    line.fill_top    = style_.accent_hover;
-    line.fill_bottom = style_.accent;
-    dl_.shape({{ix + 8.0f, row.max.y - 3.0f}, {ix + iw - 8.0f, row.max.y - 1.0f}}, line);
-
-    for (std::size_t i = 0; i < n; ++i) {
-        const color c = lerp(style_.text_dim, style_.text, emphasis[i]);
-        const std::string_view shown = visible_label(tabs[i].label);
-        const vec2 tsize = label_size(f, shown);
-        const f32  iwid  = tabs[i].icon.empty() ? 0.0f : font_.measure(icon_font, tabs[i].icon).x;
-        const f32  gap   = tabs[i].icon.empty() ? 0.0f : 7.0f;
-        f32 tx = cells[i].min.x + (cells[i].width() - (iwid + gap + tsize.x)) * 0.5f;
-        if (!tabs[i].icon.empty()) {
-            const f32 ih = font_.line_height(icon_font);
-            dl_.text({tx, cells[i].min.y + (cells[i].height() - ih) * 0.5f},
-                     lerp(c, style_.accent_hover, emphasis[i] * 0.5f), tabs[i].icon, icon_font);
-            tx += iwid + gap;
-        }
-        label_draw({tx, cells[i].min.y + (cells[i].height() - tsize.y) * 0.5f}, c, shown, f);
-    }
-
-    pop_id();
-    return changed;
 }
 
 } // namespace strata

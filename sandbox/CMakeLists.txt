@@ -7,6 +7,8 @@ add_executable(strata_sandbox WIN32
     ../tests/selftest.cpp
     ../tests/selftest.hpp
     demo2.cpp
+    demo3.cpp
+    demo3.hpp
     demo2.hpp
     imgio.cpp
     imgio.hpp
@@ -80,8 +82,14 @@ if(STRATA_BUILD_TESTS)
     strata_shot(textlog    --scene textlog)
     strata_shot(menus      --scene menus)
     strata_shot(context    --scene context)
-    strata_shot(modal      --scene modal)
+    strata_shot(modal      --scene modal --shot-frames 60)
     strata_shot(toasts     --scene toasts)
+    strata_shot(config     --scene config --height 1000)
+    strata_shot(palette    --scene palette --height 1000 --shot-frames 60)
+    strata_shot(tabs       --scene tabs --height 900)
+    strata_shot(dnd        --scene dnd --height 900)
+    strata_shot(lists      --scene lists --height 900)
+    strata_shot(editor     --scene editor --height 900)
     strata_shot(dracula    --theme dracula)
     strata_shot(glass      --theme glass --scene visuals)
 endif()

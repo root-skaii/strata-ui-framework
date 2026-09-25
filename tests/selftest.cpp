@@ -3,6 +3,7 @@
 
 #include "selftest.hpp"
 
+
 #include <strata/strata.hpp>
 
 #include <windows.h>
@@ -29,7 +30,7 @@ void check(bool ok, const char* what, int line)
         std::fprintf(stderr, "  FAIL  line %d: %s\n", line, what);
     }
 }
-#define CHECK(cond) check((cond), #cond, __LINE__)
+#define CHECK(...) check((__VA_ARGS__), #__VA_ARGS__, __LINE__)
 
 bool near_eq(f32 a, f32 b, f32 eps = 2.0f) { return std::abs(a - b) <= eps; }
 
@@ -2884,6 +2885,1657 @@ void test_dock_animation_and_combo_multi()
     }
 }
 
+void test_chords()
+{
+    std::fprintf(stderr, "[key chords, hotkey_chord]\n");
+
+    // text round trip
+    key_chord c;
+    CHECK((chord_from_string("ctrl + shift + s", c) && c == key_chord{'S', true, true, false}));
+    CHECK(chord_to_string(c) == "Ctrl+Shift+S");
+    CHECK(chord_from_string("Alt+F4", c) && c.key == 0x73 && c.alt && !c.ctrl && !c.shift);
+    CHECK(chord_from_string("Ctrl+Num +", c) && c.key == 0x6b && c.ctrl); // a key whose name contains '+'
+    CHECK(chord_from_string("Page Up", c) && c.key == 0x21 && !c.ctrl);
+    CHECK(chord_from_string("Mouse 4", c) && c.key == 0x05);
+    CHECK(chord_from_string(";", c) && c.key == 0xba);
+    CHECK(chord_from_string("", c) && !c.bound() && chord_to_string(c).empty());
+    key_chord keep{'A', true, false, false};
+    CHECK(!chord_from_string("Ctrl+Nonsense", keep) && keep.key == 'A' && keep.ctrl); // untouched on failure
+    CHECK(!chord_from_string("Ctrl+", keep) && !chord_from_string("+", keep));
+    bool every_key = true;
+    for (u32 vk = 1; vk < 0xff; ++vk) {
+        if (key_name(vk) == "Key ?") { continue; }
+        const key_chord in{vk, true, true, true};
+        key_chord back;
+        every_key = every_key && chord_from_string(chord_to_string(in), back) && back == in;
+    }
+    CHECK(every_key);
+
+    // chord_pressed needs the exact modifiers
+    {
+        harness h;
+        const key_chord save{'S', true, false, false};
+        int hits = 0;
+        const auto build = [&] { if (h.ui.chord_pressed(save)) { ++hits; } };
+        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build); h.in.ctrl = false;
+        CHECK(hits == 1);
+        h.in.pressed_key = 'S'; h.frame(build);
+        CHECK(hits == 1);
+        h.in.ctrl = true; h.in.alt = true; h.in.pressed_key = 'S'; h.frame(build); h.in.ctrl = h.in.alt = false;
+        CHECK(hits == 1);
+        CHECK(!h.ui.chord_pressed({}));
+    }
+
+    // hotkey_chord: click the field, then press the chord
+    {
+        harness h;
+        key_chord chord{'A', false, false, false};
+        bool changed = false;
+        const auto build = [&] {
+            if (auto w = h.ui.window("k", {100, 100}, {300, 0}, plain_window)) { changed = h.ui.hotkey_chord("##k", chord) || changed; }
+        };
+        const vec2 field{130.0f, 124.0f};
+        h.frames(build, 2);
+        CHECK(!h.ui.want_text_input());
+        h.click(field, build);
+        CHECK(h.ui.want_text_input()); // waiting for a key
+        h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'K'; h.frame(build); h.in.ctrl = h.in.shift = false;
+        CHECK((changed && chord == key_chord{'K', true, true, false}));
+        CHECK(!h.ui.want_text_input());
+
+        // a bare Esc leaves it as it was
+        changed = false;
+        h.click(field, build);
+        h.in.pressed_key = 0x1b; h.frame(build);
+        CHECK((!changed && chord == key_chord{'K', true, true, false}));
+
+        // Ctrl + Delete is a chord of its own, a bare Delete unbinds
+        h.click(field, build);
+        h.in.ctrl = true; h.in.pressed_key = 0x2e; h.frame(build); h.in.ctrl = false;
+        CHECK((changed && chord == key_chord{0x2e, true, false, false}));
+        changed = false;
+        h.click(field, build);
+        h.in.pressed_key = 0x2e; h.frame(build);
+        CHECK(changed && !chord.bound());
+
+        // nothing fires while the field waits for a key
+        h.click(field, build);
+        int fired = 0;
+        const auto build_fire = [&] { build(); if (h.ui.accelerator("Ctrl+P")) { ++fired; } };
+        h.in.ctrl = true; h.in.pressed_key = 'P'; h.frame(build_fire); h.in.ctrl = false;
+        CHECK((fired == 0 && chord == key_chord{'P', true, false, false}));
+    }
+}
+
+void test_keybinds()
+{
+    std::fprintf(stderr, "[keybinds]\n");
+    keybinds binds;
+    CHECK(binds.add("save", "Ctrl+S", "write the document") == 0);
+    CHECK(binds.add("open", "Ctrl+O") == 1);
+    CHECK(binds.add("save", "F1") == 0); // registered already: left as it is
+    CHECK((binds.actions().size() == 2 && binds.find("save")->chord == key_chord{'S', true, false, false}));
+    CHECK(binds.add("broken", "Ctrl+Nonsense") == 2 && !binds.find("broken")->chord.bound());
+    CHECK(binds.text("open") == "Ctrl+O" && binds.text("nope").empty() && binds.text("broken").empty());
+    CHECK(binds.conflict("save") == nullptr && binds.conflict("broken") == nullptr);
+
+    CHECK(binds.bind("open", {'S', true, false, false}));
+    CHECK(!binds.bind("nope", {}));
+    CHECK(binds.conflict("save") != nullptr && binds.conflict("save")->name == "open");
+    CHECK(binds.reset("open") && binds.conflict("save") == nullptr && !binds.reset("nope"));
+
+    // pressed()
+    {
+        harness h;
+        int saves = 0, opens = 0;
+        const auto build = [&] {
+            if (binds.pressed(h.ui, "save")) { ++saves; }
+            if (binds.pressed(h.ui, "open")) { ++opens; }
+            if (binds.pressed(h.ui, "nope") || binds.pressed(h.ui, "broken")) { saves += 100; }
+        };
+        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build);
+        h.in.pressed_key = 'O'; h.frame(build);
+        CHECK(saves == 1 && opens == 1);
+        CHECK(binds.bind("save", {0x74, false, false, false})); // F5 now
+        h.in.pressed_key = 'S'; h.frame(build);
+        h.in.ctrl = false; h.in.pressed_key = 0x74; h.frame(build);
+        CHECK(saves == 2 && opens == 1);
+    }
+
+    // config round trip: an unbound action is written as an empty value and stays unbound
+    binds.reset_all();
+    CHECK(binds.bind("open", {0x74, false, false, true}) && binds.bind("save", {})); // Alt+F5, unbound
+    config cfg;
+    binds.store(cfg);
+    CHECK(cfg.get("keybinds", "open") == "Alt+F5" && cfg.has("keybinds", "save") && cfg.get("keybinds", "save").empty());
+
+    keybinds other;
+    other.add("save", "Ctrl+S");
+    other.add("open", "Ctrl+O");
+    other.add("extra", "F9"); // not in the file: keeps its default
+    CHECK(other.load(cfg) == 2);
+    CHECK((!other.find("save")->chord.bound() && other.find("open")->chord == key_chord{0x74, false, false, true}));
+    CHECK(other.find("extra")->chord.key == 0x78);
+
+    cfg.set("keybinds", "open", "Ctrl+Nonsense"); // an unreadable value is skipped
+    CHECK(other.load(cfg) == 0 && other.find("open")->chord.alt);
+    other.reset_all();
+    CHECK((other.find("open")->chord == key_chord{'O', true, false, false}));
+
+    // the editor draws a row per action
+    {
+        harness h;
+        binds.reset_all();
+        CHECK(binds.bind("open", {'S', true, false, false})); // a conflict, so the warning mark shows too
+        bool changed = false;
+        const auto build = [&] {
+            if (auto w = h.ui.window("keys", {20, 20}, {420, 0}, plain_window)) { changed = keybind_editor(h.ui, binds); }
+        };
+        h.frames(build, 3);
+        CHECK(!changed && h.ui.render_data().vertices.size() > 200);
+        const std::size_t with_three = h.ui.render_data().vertices.size();
+        binds.add("more", "F2");
+        h.frames(build, 3);
+        CHECK(h.ui.render_data().vertices.size() > with_three);
+    }
+}
+
+void test_config()
+{
+    std::fprintf(stderr, "[config files]\n");
+    config c;
+    const std::size_t bad = c.from_string(
+        "# a comment\nname = strata\n volume=0.6 \n\n[Window]\nwidth = 1280\nmaximized = yes\nnote = a = b\nnonsense line\n[broken\n"
+        "; another\n// and one more\n[keys]\nsave = Ctrl+S\nempty =\n");
+    CHECK(bad == 2);
+    CHECK(c.get("", "name") == "strata" && near_eq(c.get_float("", "volume"), 0.6f, 0.0001f));
+    CHECK(c.get_int("window", "WIDTH") == 1280); // names are case-insensitive
+    CHECK(c.get_bool("Window", "maximized") && !c.get_bool("Window", "missing") && c.get_bool("Window", "missing", true));
+    CHECK(c.get("window", "note") == "a = b");   // the first '=' splits
+    CHECK(c.get_int("window", "note", 7) == 7 && c.get_int("window", "missing", -1) == -1); // not a number: the fallback
+    CHECK(c.get_float("", "name", 2.5f) == 2.5f && c.get_bool("", "name", true));
+    CHECK(c.has("keys", "empty") && c.get("keys", "empty", "x").empty() && !c.has("keys", "absent"));
+    CHECK(c.entries("window").size() == 3 && c.entries("nothing").empty());
+
+    // set replaces in place, erase removes, keys that would be read back wrongly are made safe
+    c.set_int("Window", "width", 800);
+    c.set_float("window", "scale", 1.25f);
+    c.set_bool("window", "maximized", false);
+    CHECK(c.get_int("window", "width") == 800 && c.entries("window").size() == 4 && c.entries("window")[0].key == "width");
+    CHECK(near_eq(c.get_float("window", "scale"), 1.25f, 0.0001f) && !c.get_bool("window", "maximized", true));
+    CHECK(c.erase("window", "note") && !c.erase("window", "note") && !c.has("window", "note"));
+    c.set("s", "a=b", "x\ny");
+    c.set("s", "#hidden", "1");
+    CHECK(c.get("s", "a=b") == "x y" && c.get("s", "a_b") == "x y" && c.get("s", "#hidden") == "1");
+    config back;
+    CHECK(back.from_string(c.to_string()) == 0 && back.to_string() == c.to_string()); // what is written can be read back
+
+    // the unnamed section is written first, without a header, so it does not swallow the others
+    config d;
+    d.set("late", "a", "1");
+    d.set("", "top", "2");
+    CHECK(d.to_string() == "top = 2\n\n[late]\na = 1\n");
+
+    // merging keeps what the text does not mention
+    d.from_string("[late]\nb = 3\n[new]\nc = 4\n");
+    CHECK(d.get_int("late", "a") == 1 && d.get_int("late", "b") == 3 && d.get_int("new", "c") == 4);
+    CHECK(config{}.empty() && !d.empty());
+    d.clear();
+    CHECK(d.empty() && d.to_string().empty());
+
+    // files
+    char temp[MAX_PATH]{};
+    ::GetTempPathA(MAX_PATH, temp);
+    const std::string path = std::string{temp} + "strata_selftest_config.ini";
+    CHECK(c.save_file(path));
+    config loaded;
+    std::size_t unreadable = 99;
+    CHECK(loaded.load_file(path, &unreadable) && unreadable == 0 && loaded.to_string() == c.to_string());
+    ::DeleteFileA(path.c_str());
+    CHECK(!loaded.load_file(path)); // gone
+
+    // a theme can live in a section of the same file
+    style s = themes::nord();
+    s.rounding = 3.5f;
+    config with_theme;
+    with_theme.set("", "note", "keep me");
+    themes::to_config(with_theme, s);
+    style read = themes::midnight();
+    const themes::theme_result r = themes::from_config(with_theme, read);
+    CHECK(r.ok() && r.applied >= 22);
+    CHECK(read.rounding == 3.5f && read.accent == s.accent && read.window_bg == s.window_bg && read.frame_padding == s.frame_padding);
+    CHECK(with_theme.get("", "note") == "keep me" && with_theme.has("theme", "accent"));
+    style untouched = themes::light();
+    CHECK(themes::from_config(config{}, untouched).applied == 0 && untouched.window_bg == themes::light().window_bg);
+}
+
+void test_window_height_cap()
+{
+    std::fprintf(stderr, "[auto-height windows stop at the bottom of the display]\n");
+    harness h; // an 800 x 600 display
+    int  rows = 60;
+    f32  first_row_y = 0.0f;
+    const auto build = [&] {
+        if (auto w = h.ui.window("tall", {100, 50}, {300, 0}, window_flags::none)) {
+            for (int i = 0; i < rows; ++i) {
+                const item_result r = h.ui.custom_item("row" + std::to_string(i), {100.0f, 18.0f});
+                if (i == 0) { first_row_y = r.bounds.min.y; }
+            }
+        }
+    };
+    h.frames(build, 4);
+    rect r = h.ui.window_rect("tall");
+    CHECK(near_eq(r.max.y, 600.0f - 8.0f, 1.0f)); // it would be 60 rows tall: it ends at the bottom of the display instead
+    CHECK(near_eq(r.min.y, 50.0f, 0.5f) && near_eq(r.width(), 300.0f, 0.5f));
+
+    // the content scrolls with the wheel (and the window keeps its size)
+    const f32 y0 = first_row_y;
+    h.move({200.0f, 200.0f});
+    h.frames(build, 2);
+    h.in.wheel = -1.0f;
+    h.frames(build, 2); // the scroll offset is applied to the next frame's layout
+    CHECK(near_eq(first_row_y, y0 - 48.0f, 1.0f));
+    CHECK(near_eq(h.ui.window_rect("tall").max.y, r.max.y, 0.5f));
+
+    // once the content fits it follows the content again, unscrolled
+    rows = 3;
+    h.frames(build, 4);
+    r = h.ui.window_rect("tall");
+    CHECK(r.height() < 150.0f && near_eq(first_row_y, y0, 0.5f));
+
+    // a window that starts lower has less room
+    harness l;
+    const auto build_low = [&] {
+        if (auto w = l.ui.window("low", {100, 400}, {300, 0}, window_flags::none)) {
+            for (int i = 0; i < 40; ++i) { l.ui.text("row"); }
+        }
+    };
+    l.frames(build_low, 4);
+    CHECK(near_eq(l.ui.window_rect("low").max.y, 600.0f - 8.0f, 1.0f));
+
+    // a fixed height is left alone, even if it reaches past the display
+    harness g;
+    const auto build_fixed = [&] {
+        if (auto w = g.ui.window("fixed", {100, 300}, {300, 500}, window_flags::none)) { g.ui.text("x"); }
+    };
+    g.frames(build_fixed, 3);
+    CHECK(near_eq(g.ui.window_rect("fixed").height(), 500.0f, 0.5f));
+}
+
+void test_popups_and_drag_drop()
+{
+    std::fprintf(stderr, "[generic popups, drag and drop, spinner / badge / chip]\n");
+
+    // popups: open under a button, work like a small window, close on Esc, a click outside, or close_popup()
+    {
+        harness h;
+        bool wrap = false;
+        bool open_now = false;
+        int  done = 0;
+        rect btn;
+        const auto build = [&] {
+            if (auto w = h.ui.window("p", {100, 100}, {300, 0}, plain_window)) {
+                if (h.ui.button("options")) { h.ui.toggle_popup("opts"); }
+                btn = h.ui.last_item_rect();
+                if (auto p = h.ui.popup("opts", 220.0f)) {
+                    (void)h.ui.checkbox("wrap", wrap);
+                    if (h.ui.button("done")) { ++done; h.ui.close_popup(); }
+                }
+                open_now = h.ui.popup_is_open("opts");
+            }
+        };
+        h.frames(build, 3);
+        CHECK(!open_now && !h.ui.popup_open());
+        h.click({btn.min.x + 10.0f, btn.center().y}, build);
+        CHECK(open_now);
+        h.frames(build, 2);
+        CHECK(h.ui.popup_open() && h.ui.want_capture_mouse());
+
+        // the popup content takes clicks: the check box is the first row, 4 px below the button plus the padding
+        const vec2 first_row{btn.min.x + 12.0f + 8.0f, btn.max.y + 4.0f + 12.0f + 8.0f};
+        h.click(first_row, build);
+        CHECK(wrap && open_now);
+
+        // a click outside closes it and does not reach what is below
+        h.click({600.0f, 500.0f}, build);
+        CHECK(!open_now && !h.ui.popup_open());
+
+        // clicking the button again toggles; Esc closes
+        h.click({btn.min.x + 10.0f, btn.center().y}, build);
+        CHECK(open_now);
+        h.key(key::escape);
+        h.frames(build, 2);
+        CHECK(!open_now);
+
+        // close_popup() from inside: the "done" button is the second row
+        h.click({btn.min.x + 10.0f, btn.center().y}, build);
+        h.frames(build, 2);
+        const f32 row_h = h.ui.frame_height() + 7.0f; // a row plus the item spacing
+        h.click({btn.min.x + 12.0f + 20.0f, btn.max.y + 4.0f + 12.0f + row_h + 8.0f}, build);
+        CHECK(done == 1 && !open_now);
+
+        // open_popup at a position
+        bool at_open = false;
+        const auto build_at = [&] {
+            if (auto w = h.ui.window("q", {100, 300}, {300, 0}, plain_window)) {
+                if (auto p = h.ui.popup("at", 150.0f)) { h.ui.text("free"); at_open = true; }
+            }
+        };
+        h.ui.begin_frame(h.in);
+        h.ui.end_frame();
+        h.frames(build_at, 2);
+        CHECK(!at_open);
+    }
+
+    // drag and drop
+    {
+        harness h;
+        int dropped_on = -1, dropped_value = -1;
+        bool hover_b = false;
+        std::array<rect, 3> rows{};
+        const auto build = [&] {
+            if (auto w = h.ui.window("d", {100, 100}, {300, 0}, plain_window)) {
+                for (int i = 0; i < 3; ++i) {
+                    const item_result r = h.ui.custom_item("row" + std::to_string(i), {200.0f, 30.0f});
+                    rows[static_cast<std::size_t>(i)] = r.bounds;
+                    if (auto d = h.ui.drag_source("row", i)) { h.ui.text("moving"); }
+                    const drop_result drop = h.ui.drop_target("row");
+                    if (i == 1) { hover_b = drop.hovering; }
+                    if (drop) { dropped_on = i; dropped_value = drop.as<int>(); }
+                }
+            }
+        };
+        h.frames(build, 3);
+        const vec2 a = rows[0].center(), b = rows[1].center();
+        h.move(a);
+        h.frames(build, 2);
+        h.down();
+        h.frame(build);
+        CHECK(!h.ui.dragging()); // a press alone is not a drag
+        h.move({a.x + 2.0f, a.y + 2.0f});
+        h.frame(build);
+        CHECK(!h.ui.dragging()); // and neither is a small move
+        h.move(b);
+        h.frames(build, 2);
+        CHECK(h.ui.dragging() && h.ui.drag_payload_type() == "row" && hover_b);
+        CHECK(h.ui.want_capture_mouse());
+        h.up();
+        h.frame(build);
+        CHECK(dropped_on == 1 && dropped_value == 0);
+        h.frames(build, 2);
+        CHECK(!h.ui.dragging());
+
+        // dropped on itself: it is a drop, not a click of the source; Esc cancels; the wrong type is not taken
+        dropped_on = -1;
+        h.move(a); h.frames(build, 2); h.down(); h.frame(build);
+        h.move(b); h.frames(build, 2);
+        h.key(key::escape);
+        h.frames(build, 2);
+        h.up();
+        h.frame(build);
+        CHECK(dropped_on == -1 && !h.ui.dragging());
+
+        bool other = false;
+        const auto build_other = [&] {
+            if (auto w = h.ui.window("d", {100, 100}, {300, 0}, plain_window)) {
+                for (int i = 0; i < 3; ++i) {
+                    (void)h.ui.custom_item("row" + std::to_string(i), {200.0f, 30.0f});
+                    if (auto d = h.ui.drag_source("row", i)) { h.ui.text("moving"); }
+                    if (h.ui.drop_target("file")) { other = true; }
+                }
+            }
+        };
+        h.move(a); h.frames(build_other, 2); h.down(); h.frame(build_other);
+        h.move(b); h.frames(build_other, 2);
+        h.up(); h.frame(build_other);
+        CHECK(!other);
+    }
+
+    // spinner, badge, chip
+    {
+        harness h;
+        bool on = false;
+        chip_result last;
+        rect body;
+        int closes = 0;
+        const auto build = [&] {
+            if (auto w = h.ui.window("c", {100, 100}, {400, 0}, plain_window)) {
+                h.ui.spinner();
+                h.ui.same_line();
+                h.ui.badge("3", toast_kind::warning);
+                h.ui.same_line();
+                h.ui.badge("new", color{80, 200, 120, 255});
+                last = h.ui.chip("filter", {.closable = true, .selected = &on});
+                body = h.ui.last_item_rect();
+                if (last.closed) { ++closes; }
+            }
+        };
+        h.frames(build, 3);
+        const std::size_t v0 = h.ui.render_data().vertices.size();
+        h.frames(build, 5);
+        CHECK(v0 > 100 && body.width() > 20.0f);
+        h.click({body.min.x + 10.0f, body.center().y}, build);
+        CHECK(on && closes == 0);
+        h.click({body.min.x + 10.0f, body.center().y}, build);
+        CHECK(!on);
+        h.click({body.max.x + 8.0f, body.center().y}, build); // the x
+        CHECK(closes == 1 && !on);
+    }
+}
+
+void test_tabs()
+{
+    std::fprintf(stderr, "[tabs: closable, reorderable, add button, overflow]\n");
+
+    // apply_tab_events keeps `selected` on the tab it was on
+    {
+        std::vector<std::string> v{"a", "b", "c", "d"};
+        int sel = 1;
+        tab_events ev;
+        ev.moved_from = 1; ev.moved_to = 3;
+        apply_tab_events(ev, v, sel);
+        CHECK(v == (std::vector<std::string>{"a", "c", "d", "b"}) && sel == 3);
+        sel = 2; ev.moved_from = 0; ev.moved_to = 3;
+        apply_tab_events(ev, v, sel);
+        CHECK(v == (std::vector<std::string>{"c", "d", "b", "a"}) && sel == 1);
+        sel = 1; ev = {}; ev.closed = 0;
+        apply_tab_events(ev, v, sel);
+        CHECK(v.size() == 3 && sel == 0);
+        sel = 2; ev.closed = 2;
+        apply_tab_events(ev, v, sel);
+        CHECK(v.size() == 2 && sel == 1); // the last tab closed: the one before it
+    }
+
+    harness h;
+    std::vector<std::string> names{"Alpha", "Beta", "Gamma", "Delta"};
+    int sel = 0;
+    tab_events ev;
+    tab_bar_flags flags = tab_bar_flags::closable | tab_bar_flags::reorderable | tab_bar_flags::add_button;
+    int adds = 0;
+    const auto build = [&] {
+        if (auto w = h.ui.window("t", {100, 100}, {500, 0}, plain_window)) {
+            std::vector<tab_desc> d;
+            for (const std::string& n : names) { d.emplace_back(std::string_view{n}); }
+            ev = h.ui.tab_bar("tabs", d.data(), d.size(), sel, flags);
+            if (ev.add) { ++adds; }
+        }
+        apply_tab_events(ev, names, sel);
+    };
+    const auto tab_w = [&](std::size_t i, bool closable) { return h.ui.font().measure(0, names[i]).x + 26.0f + (closable ? 20.0f : 0.0f); };
+    const auto body_center = [&](std::size_t i) {
+        f32 x = 112.0f;
+        for (std::size_t j = 0; j < i; ++j) { x += tab_w(j, true) + 2.0f; }
+        return vec2{x + (tab_w(i, true) - 20.0f) * 0.5f, 112.0f + h.ui.frame_height() * 0.5f};
+    };
+    const auto close_center = [&](std::size_t i) {
+        f32 x = 112.0f;
+        for (std::size_t j = 0; j <= i; ++j) { x += tab_w(j, true) + 2.0f; }
+        return vec2{x - 2.0f - 11.0f, 112.0f + h.ui.frame_height() * 0.5f};
+    };
+
+    h.frames(build, 3);
+    h.click(body_center(2), build);
+    CHECK(sel == 2 && names.size() == 4);
+
+    // the "+" comes after the last tab
+    {
+        f32 x = 112.0f;
+        for (std::size_t j = 0; j < names.size(); ++j) { x += tab_w(j, true) + 2.0f; }
+        h.click({x + 2.0f + 12.0f, 112.0f + h.ui.frame_height() * 0.5f}, build);
+        CHECK(adds == 1);
+    }
+
+    // the x closes: the tab is gone from the list once the events are applied, and the selection stays on Gamma
+    h.click(close_center(1), build); // Beta
+    CHECK((names == std::vector<std::string>{"Alpha", "Gamma", "Delta"}) && names[static_cast<std::size_t>(sel)] == "Gamma");
+
+    // dragging a tab past its neighbours moves it and it stays selected
+    {
+        const vec2 from = body_center(0);
+        h.move(from);
+        h.frames(build, 2);
+        h.down();
+        h.frame(build);
+        for (int i = 1; i <= 12; ++i) {
+            h.move({from.x + 18.0f * static_cast<f32>(i), from.y});
+            h.frame(build);
+        }
+        h.up();
+        h.frames(build, 2);
+        CHECK(names.size() == 3 && names[0] != "Alpha" && names[static_cast<std::size_t>(sel)] == "Alpha");
+        CHECK(names.back() == "Alpha"); // 216 px to the right passes both other tabs
+    }
+
+    // many tabs scroll; the list button at the right end opens a menu of all of them
+    {
+        names.clear();
+        for (int i = 0; i < 14; ++i) { names.push_back("Document " + std::to_string(i)); }
+        flags = tab_bar_flags::closable;
+        sel = 0;
+        h.frames(build, 4);
+        const f32 list_x = 112.0f + 476.0f - 13.0f;
+        h.click({list_x, 112.0f + h.ui.frame_height() * 0.5f}, build);
+        h.frames(build, 2);
+        CHECK(h.ui.popup_open());
+        CHECK(h.ui.want_capture_mouse());
+        h.click({30.0f, 500.0f}, build); // outside the list
+        CHECK(!h.ui.popup_open());
+
+        // the list is at most nine rows tall and scrolls; a row picks its tab
+        h.click({list_x, 112.0f + h.ui.frame_height() * 0.5f}, build);
+        h.frames(build, 2);
+        {
+            const f32 lh    = h.ui.font().line_height(0);
+            const f32 pitch = lh + 8.0f + 7.0f;
+            const f32 top   = 111.0f + h.ui.frame_height() + 4.0f + 12.0f; // under the list button, plus the popup padding
+            h.click({650.0f, top + 3.0f * pitch + (lh + 8.0f) * 0.5f}, build); // about the fourth row (the popup sits at 556 .. 796)
+            h.frames(build, 2);
+            CHECK(sel == 3 && !h.ui.popup_open());
+        }
+
+        // selecting a far tab from outside scrolls it into view and nothing breaks with the wheel
+        sel = 13;
+        h.frames(build, 30);
+        h.move({300.0f, 125.0f});
+        h.in.wheel = 1.0f;
+        h.frames(build, 20);
+        h.in.wheel = 0.0f;
+        CHECK(sel == 13 && names.size() == 14);
+
+        // and the tabs that fit are not scrolled at all
+        names.resize(3);
+        sel = 0;
+        h.frames(build, 30);
+        h.click(body_center(1), build);
+        CHECK(sel == 1);
+    }
+}
+
+void test_datetime_pickers()
+{
+    std::fprintf(stderr, "[dates, times, pickers]\n");
+
+    // calendar arithmetic
+    CHECK(is_leap_year(2024) && !is_leap_year(1900) && is_leap_year(2000) && !is_leap_year(2023));
+    CHECK(days_in_month(2024, 2) == 29 && days_in_month(2023, 2) == 28 && days_in_month(2026, 9) == 30 && days_in_month(2026, 12) == 31);
+    CHECK(days_from_civil({1970, 1, 1}) == 0 && days_from_civil({2000, 3, 1}) == 11017 && days_from_civil({1969, 12, 31}) == -1);
+    CHECK((civil_from_days(days_from_civil({2026, 9, 25})) == date{2026, 9, 25}));
+    CHECK(weekday({1970, 1, 1}) == 3);  // a Thursday
+    CHECK(weekday({2026, 9, 25}) == 4); // a Friday
+    CHECK(weekday({2000, 1, 1}) == 5 && weekday({2024, 2, 29}) == 3);
+    CHECK((add_days({2026, 12, 31}, 1) == date{2027, 1, 1}) && (add_days({2024, 3, 1}, -1) == date{2024, 2, 29}));
+    CHECK((add_months({2026, 1, 31}, 1) == date{2026, 2, 28}) && (add_months({2026, 11, 15}, 3) == date{2027, 2, 15}));
+    CHECK((add_months({2026, 1, 15}, -1) == date{2025, 12, 15}) && (add_months({2026, 3, 31}, -12) == date{2025, 3, 31}));
+    CHECK(is_valid(date{2024, 2, 29}) && !is_valid(date{2023, 2, 29}) && !is_valid(date{2026, 13, 1}) && !is_valid(date{2026, 4, 31}));
+    CHECK((clamp_date({2026, 2, 40}) == date{2026, 2, 28}) && (clamp_date({2026, 0, 0}) == date{2026, 1, 1}));
+    CHECK(date{2026, 9, 25} < date{2026, 10, 1} && date{2027, 1, 1} > date{2026, 12, 31} && time_of_day{9, 5, 0} < time_of_day{9, 6, 0});
+
+    // text
+    CHECK(to_string(date{2026, 9, 5}) == "2026-09-05" && to_string(time_of_day{7, 3, 9}) == "07:03" && to_string(time_of_day{7, 3, 9}, true) == "07:03:09");
+    date d;
+    time_of_day t;
+    CHECK(parse_date("2026-09-25", d) && d == date{2026, 9, 25});
+    CHECK(parse_date(" 2024/2/29 ", d) && d == date{2024, 2, 29});
+    CHECK(parse_date("2026.12.01", d) && d == date{2026, 12, 1});
+    CHECK(!parse_date("2023-02-29", d) && !parse_date("2026-13-01", d) && !parse_date("2026-09", d) && !parse_date("2026-09-25-", d));
+    CHECK(!parse_date("", d) && !parse_date("abc", d) && !parse_date("2026-9-x", d) && d == date{2026, 12, 1}); // untouched on failure
+    CHECK(parse_time("13:45", t) && t == time_of_day{13, 45, 0} && parse_time("07:03:09", t) && t == time_of_day{7, 3, 9});
+    CHECK(!parse_time("24:00", t) && !parse_time("12:60", t) && !parse_time("12", t) && !parse_time("12:", t) && t == time_of_day{7, 3, 9});
+    CHECK(month_name(1) == "January" && month_name(12) == "December" && weekday_short(0) == "Mo" && weekday_short(6) == "Su");
+    CHECK(is_valid(today()) && is_valid(now()));
+
+    // the pickers: open the popup, choose, close
+    harness h;
+    date        day{2026, 9, 25};
+    time_of_day clock{13, 45, 0};
+    bool        day_changed = false, time_changed = false;
+    rect        day_box, clock_box;
+    bool        boxes_known = false; // (while a popup is open the last item is one of its buttons)
+    const auto build = [&] {
+        if (auto w = h.ui.window("p", {100, 100}, {320, 0}, plain_window)) {
+            day_changed  = h.ui.date_picker("day", day) || day_changed;
+            if (!boxes_known) { day_box = h.ui.last_item_rect(); }
+            time_changed = h.ui.time_picker("time", clock) || time_changed;
+            if (!boxes_known) { clock_box = h.ui.last_item_rect(); }
+        }
+    };
+    h.frames(build, 3);
+    boxes_known = true;
+    CHECK(day_box.width() > 100.0f && clock_box.min.y > day_box.max.y);
+
+    // the calendar: September 2026 starts on a Tuesday, so the grid begins on Monday 31 August
+    h.click(day_box.center(), build);
+    h.frames(build, 3);
+    CHECK(h.ui.popup_open());
+    {
+        const f32 fh    = h.ui.frame_height();
+        const f32 pad   = 12.0f;
+        const f32 head  = fh - 4.0f;
+        const f32 lh    = h.ui.font().line_height(0);
+        const f32 ch    = fh - 6.0f;
+        const f32 gx    = day_box.min.x + pad;                       // the grid's left edge
+        const f32 w     = std::max(day_box.width(), 260.0f) - 2.0f * pad;
+        const f32 cw    = w / 7.0f;
+        const f32 top   = day_box.max.y + 4.0f + pad;                // the header row
+        const f32 grid0 = top + head + 2.0f + (lh + 4.0f) + 2.0f;    // the first week
+        // 1 September is a Tuesday (column 1) of the first row: the 9th is the second Wednesday (row 1, column 2)
+        h.click({gx + cw * 2.5f, grid0 + (ch + 2.0f) * 1.5f}, build);
+        h.frames(build, 2);
+        CHECK(day_changed && day == date{2026, 9, 9});
+        CHECK(!h.ui.popup_open());
+    }
+
+    // next month with the arrow, then a day: the popup shows the month of the value when it opens
+    day_changed = false;
+    h.click(day_box.center(), build);
+    h.frames(build, 3);
+    {
+        const f32 fh   = h.ui.frame_height();
+        const f32 pad  = 12.0f;
+        const f32 head = fh - 4.0f;
+        const f32 w    = std::max(day_box.width(), 260.0f) - 2.0f * pad;
+        const f32 top  = day_box.max.y + 4.0f + pad;
+        const vec2 next{day_box.min.x + pad + w - head * 1.5f, top + head * 0.5f}; // the single right arrow
+        h.click(next, build);
+        h.click(next, build);
+        CHECK(!day_changed && h.ui.popup_open()); // moving through months changes nothing
+        // now October, then November 2026: 1 November is a Sunday, so it is the last column of the first row
+        const f32 lh    = h.ui.font().line_height(0);
+        const f32 ch    = fh - 6.0f;
+        const f32 cw    = w / 7.0f;
+        const f32 grid0 = top + head + 2.0f + (lh + 4.0f) + 2.0f;
+        h.click({day_box.min.x + pad + cw * 6.5f, grid0 + ch * 0.5f}, build);
+        h.frames(build, 2);
+        CHECK(day_changed && day == date{2026, 11, 1});
+    }
+
+    // the time grid: an hour, a minute and the fine step
+    h.click(clock_box.center(), build);
+    h.frames(build, 3);
+    CHECK(h.ui.popup_open());
+    {
+        const f32 fh  = h.ui.frame_height();
+        const f32 pad = 12.0f;
+        const f32 ch  = fh - 6.0f;
+        const f32 lh  = h.ui.font().line_height(0);
+        const f32 w   = std::max(clock_box.width(), 240.0f) - 2.0f * pad;
+        const f32 cw  = w / 6.0f;
+        const f32 x0  = clock_box.min.x + pad;
+        const f32 top = clock_box.max.y + 4.0f + pad;       // the caption "hour"
+        const f32 row0 = top + lh + 2.0f;                    // the first row of hours (the pickers space their rows by 2 px)
+        // hour 8 is the third column of the second row
+        h.click({x0 + cw * 2.5f, row0 + (ch + 2.0f) * 1.5f}, build);
+        CHECK(time_changed && clock.hour == 8 && clock.minute == 45);
+        time_changed = false;
+        // minutes: the grid comes after the four rows of hours, a gap and the caption
+        const f32 min0 = row0 + 4.0f * ch + 3.0f * 2.0f + 2.0f + 4.0f + 2.0f + lh + 2.0f;
+        h.click({x0 + cw * 3.5f, min0 + ch * 0.5f}, build); // 15
+        CHECK(time_changed && clock.minute == 15);
+        // the + button, at the right end of the row under the two rows of minutes
+        h.click({x0 + w - 17.0f, min0 + 2.0f * (ch + 2.0f) + ch * 0.5f}, build);
+        CHECK(clock.minute == 16);
+        h.click({x0 + 17.0f, min0 + 2.0f * (ch + 2.0f) + ch * 0.5f}, build);
+        h.click({x0 + 17.0f, min0 + 2.0f * (ch + 2.0f) + ch * 0.5f}, build);
+        CHECK(clock.minute == 14);
+    }
+    h.key(key::escape);
+    h.frames(build, 3);
+    CHECK(!h.ui.popup_open());
+    CHECK(clock.hour == 8 && day == date{2026, 11, 1});
+
+    // an invalid value is brought back to a valid one
+    date bad{2026, 2, 40};
+    time_of_day bad_t{30, 99, 99};
+    const auto build_bad = [&] {
+        if (auto w = h.ui.window("p", {100, 100}, {320, 0}, plain_window)) {
+            (void)h.ui.date_picker("day", bad);
+            (void)h.ui.time_picker("time", bad_t, true);
+            (void)h.ui.datetime_picker("both", bad, bad_t);
+        }
+    };
+    h.frames(build_bad, 3);
+    CHECK((bad == date{2026, 2, 28}) && (bad_t == time_of_day{23, 59, 59}));
+}
+
+void test_lists_and_tables()
+{
+    std::fprintf(stderr, "[list clipper, table extras, tree tables]\n");
+
+    // a long list in a fixed-height window: only the visible rows are submitted, and the scroll range is the whole list
+    {
+        harness h;
+        int first = 1 << 30, last = -1, submitted = 0;
+        const auto build = [&] {
+            first = 1 << 30; last = -1; submitted = 0;
+            if (auto w = h.ui.window("l", {50, 50}, {300, 300}, plain_window)) {
+                list_clipper clip(h.ui, 1000, h.ui.frame_height());
+                while (clip.step()) {
+                    for (int i = clip.begin(); i < clip.end(); ++i) {
+                        ++submitted;
+                        first = std::min(first, i);
+                        last  = std::max(last, i);
+                        (void)h.ui.custom_item("r" + std::to_string(i), {100.0f, h.ui.frame_height()});
+                    }
+                }
+            }
+        };
+        h.frames(build, 4);
+        CHECK(first == 0 && last > 3 && last < 16 && submitted < 20);
+        h.move({150.0f, 150.0f});
+        h.frames(build, 2);
+        for (int i = 0; i < 200; ++i) { h.in.wheel = -1.0f; h.frame(build); } // 48 px each
+        h.frames(build, 2);
+        CHECK(first > 200 && first < 400 && submitted < 20); // scrolled far into the list, still a handful of rows
+        for (int i = 0; i < 1000; ++i) { h.in.wheel = -1.0f; h.frame(build); }
+        h.frames(build, 2);
+        CHECK(last == 999 && first > 970); // the end of the list is reachable: the spacers add up
+        for (int i = 0; i < 1200; ++i) { h.in.wheel = 1.0f; h.frame(build); }
+        h.frames(build, 2);
+        CHECK(first == 0);
+
+        // an empty list and a short one
+        int rows_drawn = 0;
+        const auto build_short = [&] {
+            rows_drawn = 0;
+            if (auto w = h.ui.window("s", {400, 50}, {300, 300}, plain_window)) {
+                for (const std::size_t n : {std::size_t{0}, std::size_t{3}}) {
+                    list_clipper clip(h.ui, n, 0.0f);
+                    while (clip.step()) { for (int i = clip.begin(); i < clip.end(); ++i) { ++rows_drawn; h.ui.text("x"); } }
+                }
+            }
+        };
+        h.frames(build_short, 3);
+        CHECK(rows_drawn == 3);
+    }
+
+    // a big table with a scrolling body
+    {
+        harness h;
+        int submitted = 0, last = -1;
+        const auto build = [&] {
+            submitted = 0; last = -1;
+            if (auto w = h.ui.window("t", {50, 50}, {400, 320}, plain_window)) {
+                if (h.ui.begin_table("big", 2, table_default, 240.0f)) {
+                    h.ui.table_setup_column("row");
+                    h.ui.table_setup_column("value", 100.0f);
+                    (void)h.ui.table_headers_row();
+                    list_clipper clip(h.ui, 5000);
+                    while (clip.step()) {
+                        for (int i = clip.begin(); i < clip.end(); ++i) {
+                            if (h.ui.table_next_row()) {
+                                ++submitted;
+                                last = i;
+                                h.ui.table_next_column(); h.ui.textf("row {}", i);
+                                h.ui.table_next_column(); h.ui.textf("{}", i * 3);
+                            }
+                        }
+                    }
+                    h.ui.end_table();
+                }
+            }
+        };
+        h.frames(build, 4);
+        CHECK(submitted > 3 && submitted < 30);
+        h.move({150.0f, 200.0f});
+        for (int i = 0; i < 3000; ++i) { h.in.wheel = -1.0f; h.frame(build); if (last == 4999) { break; } }
+        h.frames(build, 2);
+        CHECK(last == 4999 && submitted < 30);
+    }
+
+    // table extras: columns hidden by default, moved by dragging the header, saved and loaded
+    {
+        harness h;
+        bool shown[3]{};
+        std::string layout;
+        const auto build = [&] {
+            if (auto w = h.ui.window("x", {100, 100}, {480, 0}, plain_window)) {
+                if (h.ui.begin_table("cols", 3, table_default | table_flags::hideable | table_flags::reorderable)) {
+                    h.ui.table_setup_column("A", 0.0f, 1.0f, table_column_flags::no_hide);
+                    h.ui.table_setup_column("B");
+                    h.ui.table_setup_column("C", 0.0f, 1.0f, table_column_flags::default_hidden);
+                    (void)h.ui.table_headers_row();
+                    if (h.ui.table_next_row()) {
+                        shown[0] = h.ui.table_next_column(); h.ui.text("a");
+                        shown[1] = h.ui.table_next_column(); h.ui.text("b");
+                        shown[2] = h.ui.table_next_column(); h.ui.text("c");
+                    }
+                    h.ui.end_table();
+                }
+                layout = h.ui.table_save_layout("cols");
+            }
+        };
+        h.frames(build, 3);
+        CHECK(shown[0] && shown[1] && !shown[2]); // C starts hidden: its cell says so
+        CHECK(layout == "order=0,1,2;hidden=2;widths=0.3333,0.3333,0.3333");
+
+        // drag A to the right, past the middle of B
+        const f32 hy = 112.0f + 4.0f;
+        const f32 w  = 480.0f - 24.0f;
+        const vec2 from{112.0f + w * 0.25f, hy};
+        h.move(from);
+        h.frames(build, 2);
+        h.down();
+        h.frame(build);
+        for (int i = 1; i <= 10; ++i) { h.move({from.x + w * 0.07f * static_cast<f32>(i), hy}); h.frame(build); }
+        h.up();
+        h.frames(build, 2);
+        CHECK(layout.rfind("order=1,0,2", 0) == 0);
+        CHECK(shown[0] && shown[1] && !shown[2]); // the cells still follow the declared columns
+
+        // a saved layout can be loaded into another table before it is ever drawn
+        harness g;
+        bool g_shown[3]{};
+        std::string g_layout;
+        bool loaded = false;
+        const auto build_g = [&] {
+            if (auto w = g.ui.window("x", {100, 100}, {480, 0}, plain_window)) {
+                if (!loaded) { g.ui.table_load_layout("cols", "order=2,0,1;hidden=1;widths=0.5,0.25,0.25"); loaded = true; }
+                if (g.ui.begin_table("cols", 3, table_default | table_flags::hideable | table_flags::reorderable)) {
+                    g.ui.table_setup_column("A", 0.0f, 1.0f, table_column_flags::no_hide);
+                    g.ui.table_setup_column("B");
+                    g.ui.table_setup_column("C", 0.0f, 1.0f, table_column_flags::default_hidden);
+                    (void)g.ui.table_headers_row();
+                    if (g.ui.table_next_row()) {
+                        g_shown[0] = g.ui.table_next_column(); g.ui.text("a");
+                        g_shown[1] = g.ui.table_next_column(); g.ui.text("b");
+                        g_shown[2] = g.ui.table_next_column(); g.ui.text("c");
+                    }
+                    g.ui.end_table();
+                }
+                g_layout = g.ui.table_save_layout("cols");
+            }
+        };
+        g.frames(build_g, 3);
+        CHECK(g_layout == "order=2,0,1;hidden=1;widths=0.5000,0.2500,0.2500");
+        CHECK(g_shown[0] && !g_shown[1] && g_shown[2]); // the file overrides the defaults (C shown, B hidden)
+
+        // a layout that does not fit is ignored
+        g.frames(build_g, 1);
+        std::string before = g_layout;
+        g.ui.begin_frame(g.in);
+        g.ui.end_frame();
+        bool again = false;
+        const auto build_bad = [&] {
+            if (auto w = g.ui.window("x", {100, 100}, {480, 0}, plain_window)) {
+                if (!again) { g.ui.table_load_layout("cols", "order=0,0,1;hidden=7;widths=a,b"); again = true; }
+                if (g.ui.begin_table("cols", 3, table_default)) {
+                    g.ui.table_setup_column("A"); g.ui.table_setup_column("B"); g.ui.table_setup_column("C");
+                    g.ui.end_table();
+                }
+                g_layout = g.ui.table_save_layout("cols");
+            }
+        };
+        g.frames(build_bad, 3);
+        CHECK(g_layout == before);
+
+        // right-clicking the header opens the column menu
+        h.move({112.0f + w * 0.5f, hy});
+        h.frames(build, 2);
+        h.in.mouse_down[1] = true;
+        h.frame(build);
+        h.in.mouse_down[1] = false;
+        h.frames(build, 2);
+        CHECK(h.ui.menu_is_open());
+    }
+
+    // a tree table: the children are rows, shown while the node is open
+    {
+        harness h;
+        int rows = 0;
+        bool pressed_leaf = false;
+        const auto build = [&] {
+            rows = 0;
+            if (auto w = h.ui.window("tt", {100, 100}, {480, 0}, plain_window)) {
+                if (h.ui.begin_table("tree", 2, table_default)) {
+                    h.ui.table_setup_column("name");
+                    h.ui.table_setup_column("kind", 100.0f);
+                    h.ui.table_next_row(); ++rows;
+                    h.ui.table_next_column();
+                    const bool open = h.ui.table_tree_node("root");
+                    h.ui.table_next_column(); h.ui.text("folder");
+                    if (open) {
+                        h.ui.table_next_row(); ++rows;
+                        h.ui.table_next_column();
+                        if (h.ui.table_tree_leaf("readme")) { pressed_leaf = true; }
+                        h.ui.table_next_column(); h.ui.text("file");
+                        h.ui.table_next_row(); ++rows;
+                        h.ui.table_next_column();
+                        const bool sub_open = h.ui.table_tree_node("src");
+                        h.ui.table_next_column(); h.ui.text("folder");
+                        if (sub_open) {
+                            h.ui.table_next_row(); ++rows;
+                            h.ui.table_next_column();
+                            (void)h.ui.table_tree_leaf("main");
+                            h.ui.table_next_column(); h.ui.text("file");
+                            h.ui.table_tree_pop();
+                        }
+                        h.ui.table_tree_pop();
+                    }
+                    h.ui.end_table();
+                }
+            }
+        };
+        h.frames(build, 3);
+        CHECK(rows == 1);
+        const f32 row_h = h.ui.font().line_height(0) + 6.0f;
+        const f32 x0 = 112.0f + 8.0f; // the cell padding
+        h.click({x0 + 8.0f, 112.0f + row_h * 0.5f}, build); // the arrow of "root"
+        h.frames(build, 2);
+        CHECK(rows == 3);
+        h.click({x0 + 18.0f + 8.0f, 112.0f + row_h * 2.5f}, build); // the arrow of "src", one level in
+        h.frames(build, 2);
+        CHECK(rows == 4);
+        h.click({x0 + 40.0f, 112.0f + row_h * 1.5f}, build); // the leaf "readme"
+        CHECK(pressed_leaf);
+        h.click({x0 + 8.0f, 112.0f + row_h * 0.5f}, build); // closing root hides everything below it
+        h.frames(build, 2);
+        CHECK(rows == 1);
+    }
+}
+
+void test_password_masks_and_code()
+{
+    std::fprintf(stderr, "[password reveal, input masks, code editor]\n");
+
+    // the eye button shows the text: the caret sits where the letters end instead of where the bullets end
+    {
+        harness h;
+        std::string pw = "iiiiiiii";
+        const auto build = [&] {
+            if (auto w = h.ui.window("p", {100, 100}, {480, 0}, plain_window)) {
+                (void)h.ui.input_text("##pw", pw, {}, input_flags::password | input_flags::reveal);
+            }
+        };
+        h.frames(build, 3);
+        const f32 mid_y = 112.0f + h.ui.frame_height() * 0.5f;
+        h.click({300.0f, mid_y}, build);
+        h.frames(build, 2);
+        CHECK(h.ui.want_text_input());
+        const f32 hidden_x = h.ui.ime_position().x;
+        CHECK(h.ui.ime_position().x > 0.0f);
+        h.click({552.0f, mid_y}, build); // the eye at the right end (the field is 456 wide)
+        h.frames(build, 2);
+        CHECK(h.ui.want_text_input()); // it did not take the keyboard away
+        const f32 shown_x = h.ui.ime_position().x;
+        CHECK(shown_x < hidden_x - 10.0f); // eight thin letters are narrower than eight bullets
+        h.click({552.0f, mid_y}, build);
+        h.frames(build, 2);
+        CHECK(near_eq(h.ui.ime_position().x, hidden_x, 0.5f));
+        // the text field itself does not start at the button: a click on the left still edits
+        h.type("j");
+        h.frame(build);
+        CHECK(pw == "iiiiiiiij");
+    }
+
+    // masks: the field shapes what is typed, pasted and erased
+    {
+        harness h;
+        std::string phone, plate = "ab12", code;
+        int changes = 0;
+        const auto build = [&] {
+            if (auto w = h.ui.window("m", {100, 100}, {480, 0}, plain_window)) {
+                if (h.ui.input_masked("##phone", phone, "(###) ###-####", "phone")) { ++changes; }
+                (void)h.ui.input_masked("##plate", plate, "UU-###");
+                (void)h.ui.input_masked("##code", code, "+1 ###");
+            }
+        };
+        h.frames(build, 3);
+        CHECK(plate == "AB-12"); // a value that is stored is brought into shape
+        const f32 fh = h.ui.frame_height();
+        const f32 y_phone = 112.0f + fh * 0.5f;
+        const f32 y_plate = y_phone + fh + 7.0f;
+        const f32 y_code  = y_plate + fh + 7.0f;
+
+        h.click({300.0f, y_phone}, build);
+        h.type("abc12x3");
+        h.frames(build, 2);
+        CHECK(phone == "(123");
+        h.type("4567890123");
+        h.frames(build, 2);
+        CHECK(phone == "(123) 456-7890"); // what does not fit is dropped
+        h.key(key::backspace);
+        h.frames(build, 2);
+        CHECK(phone == "(123) 456-789");
+        for (int i = 0; i < 7; ++i) { h.key(key::backspace); h.frame(build); }
+        CHECK(phone == "(12"); // erasing through the fixed characters, one digit at a time
+        for (int i = 0; i < 2; ++i) { h.key(key::backspace); h.frame(build); }
+        CHECK(phone.empty());
+        CHECK(changes > 5);
+
+        // pasting: everything that is not a digit is left out
+        h.clip.data = "555-123-4567 ext 9";
+        h.key(key::v, true);
+        h.frames(build, 2);
+        CHECK(phone == "(555) 123-4567");
+
+        // typing in the middle: the caret follows the digits, not the fixed characters
+        h.key(key::home);
+        h.frame(build);
+        h.key(key::right);
+        h.key(key::right);
+        h.frame(build);
+        h.type("9");
+        h.frames(build, 2);
+        CHECK(phone == "(595) 512-3456");
+
+        // letters, with case: UU-###
+        h.click({300.0f, y_plate}, build);
+        h.key(key::end);
+        h.frame(build);
+        for (int i = 0; i < 6; ++i) { h.key(key::backspace); h.frame(build); }
+        h.type("x9yz4562");
+        h.frames(build, 2);
+        CHECK(plate == "XY-456"); // '9' is not a letter and is dropped; z had no place; digits fill the rest
+
+        // a fixed character that looks like a digit is not mistaken for one
+        h.click({300.0f, y_code}, build);
+        h.type("1");
+        h.frames(build, 2);
+        CHECK(code.empty());
+        h.type("55");
+        h.frames(build, 2);
+        CHECK(code == "+1 55");
+    }
+
+    // the code editor
+    {
+        harness h;
+        std::string src = "fn main() {";
+        rect box;
+        int goto_line = 0;
+        const auto build = [&] {
+            if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) {
+                if (goto_line > 0) { h.ui.code_goto_line("##code", goto_line); goto_line = 0; } // (the id scope of the field)
+                (void)h.ui.input_code("##code", src, {0.0f, 150.0f});
+                box = h.ui.last_item_rect();
+            }
+        };
+        h.frames(build, 3);
+        const f32 line1_y = box.min.y + 5.0f + h.ui.font().line_height(0) * 0.5f;
+        h.click({500.0f, line1_y}, build);
+        h.frames(build, 2);
+        CHECK(h.ui.want_text_input());
+
+        // Enter after an opening bracket: one level deeper; a typed } steps back
+        h.key(key::enter);
+        h.frames(build, 2);
+        CHECK(src == "fn main() {\n    ");
+        h.type("x = 1;");
+        h.key(key::enter);
+        h.frames(build, 2);
+        CHECK(src == "fn main() {\n    x = 1;\n    "); // the same indentation as the line above
+        h.type("}");
+        h.frames(build, 2);
+        CHECK(src == "fn main() {\n    x = 1;\n}");
+
+        // Tab goes to the next tab stop; with a selection over several lines it indents them all, Shift+Tab takes it back
+        h.click({700.0f, 500.0f}, build); // (a focused field shows its own copy of the text: let go before changing it)
+        src = "ab\nc";
+        h.frames(build, 40); // (a second click at the same place soon after would be a double click)
+        h.click({500.0f, line1_y}, build);
+        h.key(key::tab);
+        h.frames(build, 2);
+        CHECK(src == "ab  \nc");
+        h.key(key::a, true);
+        h.frame(build);
+        h.key(key::tab);
+        h.frames(build, 2);
+        CHECK(src == "    ab  \n    c");
+        h.key(key::tab, false, true);
+        h.frames(build, 2);
+        CHECK(src == "ab  \nc");
+
+        // a jump to a line puts the caret there (and scrolls to it)
+        h.click({700.0f, 500.0f}, build);
+        std::string many;
+        for (int i = 1; i <= 60; ++i) { many += "line " + std::to_string(i) + "\n"; }
+        src = many;
+        h.frames(build, 40);
+        h.click({500.0f, line1_y}, build);
+        goto_line = 40;
+        h.frames(build, 2);
+        h.type("X");
+        h.frames(build, 2);
+        CHECK(src.find("Xline 40") != std::string::npos || src.find("\nXline 40") != std::string::npos);
+        CHECK(h.ui.ime_position().y / h.ui.scale() > box.min.y && h.ui.ime_position().y / h.ui.scale() < box.max.y + 40.0f);
+    }
+
+    // line numbers make room at the left; brackets next to the caret are marked
+    {
+        std::string text = "call(x)";
+        f32 code_x = 0.0f, plain_x = 0.0f;
+        {
+            harness h;
+            const auto build = [&] {
+                if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) { (void)h.ui.input_code("##code", text, {0.0f, 120.0f}); }
+            };
+            h.frames(build, 3);
+            h.click({500.0f, 112.0f + 5.0f + 9.0f}, build);
+            h.frames(build, 2);
+            code_x = h.ui.ime_position().x;
+            const std::size_t marked = h.ui.render_data().shapes.size();
+            h.key(key::home);
+            h.frames(build, 2);
+            CHECK(marked > h.ui.render_data().shapes.size() + 1); // the pair of brackets is drawn while the caret is next to one
+        }
+        {
+            harness h;
+            const auto build = [&] {
+                if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) { (void)h.ui.input_multiline("##plain", text, {0.0f, 120.0f}, input_flags::no_wrap); }
+            };
+            h.frames(build, 3);
+            h.click({500.0f, 112.0f + 5.0f + 9.0f}, build);
+            h.frames(build, 2);
+            plain_x = h.ui.ime_position().x;
+        }
+        CHECK(code_x > plain_x + 20.0f);
+    }
+
+    // find and replace: Ctrl+H opens the bar with the find field focused
+    {
+        harness h;
+        std::string src = "one two one three one";
+        rect box;
+        const auto build = [&] {
+            if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) {
+                (void)h.ui.input_code("##code", src, {0.0f, 150.0f});
+                box = h.ui.last_item_rect();
+            }
+        };
+        h.frames(build, 3);
+        const f32 top0 = box.min.y;
+        h.click({500.0f, box.min.y + 5.0f + 9.0f}, build);
+        h.frames(build, 2);
+        h.in.ctrl = true; h.in.pressed_key = 'H';
+        h.frame(build);
+        h.in.ctrl = false;
+        h.frames(build, 2);
+        CHECK(box.min.y > top0 + 60.0f); // the find and replace rows took room above the text
+        CHECK(h.ui.want_text_input());   // the find field has the keyboard
+        h.type("one");
+        h.frames(build, 2);
+
+        // the replace field is the last row above the text; then the "All" button
+        const f32 fh = h.ui.frame_height();
+        const f32 row3_y = box.min.y - 7.0f - fh * 0.5f;
+        h.click({200.0f, row3_y}, build);
+        h.type("1");
+        h.frames(build, 2);
+        CHECK(src == "one two one three one"); // nothing replaced yet
+        h.click({522.0f, row3_y}, build); // "All"
+        h.frames(build, 2);
+        CHECK(src == "1 two 1 three 1");
+
+        // a search that finds nothing changes nothing
+        h.click({130.0f, 112.0f + fh * 0.5f}, build);
+        h.type("zzz");
+        h.click({522.0f, row3_y}, build);
+        h.frames(build, 2);
+        CHECK(src == "1 two 1 three 1");
+    }
+}
+
+void test_contexts_palette_and_config_file()
+{
+    std::fprintf(stderr, "[keybind contexts, command palette, config files]\n");
+
+    // fuzzy matching and titles
+    CHECK(fuzzy_score("sv", "Save") >= 0 && fuzzy_score("vs", "Save") == -1 && fuzzy_score("", "anything") == 0);
+    CHECK(fuzzy_score("SAVE", "save as") > fuzzy_score("sae", "save as")); // a whole word beats scattered letters
+    CHECK(fuzzy_score("nc", "new console") > fuzzy_score("nc", "unicode")); // the start of a word counts
+    CHECK(fuzzy_score("of", "toggle off") > fuzzy_score("of", "open file")); // and so does the query as one piece
+    CHECK(fuzzy_score("save", "Save") > fuzzy_score("save", "Save all the open documents and settings"));
+    CHECK(fuzzy_score("x", "save") == -1 && fuzzy_score("s v", "save") >= 0); // spaces in the query are ignored
+    CHECK(action_title("save_all") == "Save all" && action_title("open") == "Open" && action_title("").empty());
+
+    // contexts
+    {
+        keybinds binds;
+        binds.add("global_f", "Ctrl+Shift+F", "a global action");
+        binds.add("format", "Ctrl+Shift+F", "format the selection", "editor");
+        binds.add("run", "F5", {}, "editor");
+        binds.add("play", "F5", {}, "viewport"); // the same key in another context: no conflict between them
+        CHECK(!binds.context_active("editor") && binds.context_active(""));
+        CHECK(binds.conflict("global_f") != nullptr && binds.conflict("format") != nullptr); // a global one meets every context
+        CHECK(binds.conflict("run") == nullptr && binds.conflict("play") == nullptr);
+        harness h;
+        int global = 0, fmt = 0, run = 0, play = 0;
+        const auto build = [&] {
+            if (binds.pressed(h.ui, "global_f")) { ++global; }
+            if (binds.pressed(h.ui, "format")) { ++fmt; }
+            if (binds.pressed(h.ui, "run")) { ++run; }
+            if (binds.pressed(h.ui, "play")) { ++play; }
+        };
+        const auto press = [&](u32 vk, bool ctrl, bool shift) {
+            h.in.ctrl = ctrl; h.in.shift = shift; h.in.pressed_key = vk;
+            h.frame(build);
+            h.in.ctrl = h.in.shift = false;
+        };
+        press('F', true, true);
+        CHECK(global == 1 && fmt == 0); // the editor context is off: only the global action
+        press(0x74, false, false);
+        CHECK(run == 0 && play == 0);
+        binds.set_context("editor");
+        press('F', true, true);
+        CHECK(global == 1 && fmt == 1); // the editor's action takes the key from the global one
+        press(0x74, false, false);
+        CHECK(run == 1 && play == 0);
+        binds.set_context("viewport");
+        press(0x74, false, false);
+        CHECK(run == 2 && play == 1); // both contexts on: both fire (their conflict is the app's to resolve)
+        binds.set_context("editor", false);
+        press('F', true, true);
+        CHECK(global == 2 && fmt == 1); // the global action is back
+        CHECK(binds.available(*binds.find("play")) && !binds.available(*binds.find("format")));
+    }
+
+    // the command palette
+    {
+        keybinds binds;
+        binds.add("save", "Ctrl+S", "write the document");
+        binds.add("save_as", "Ctrl+Shift+S", "write it to another file");
+        binds.add("open", "Ctrl+O");
+        binds.add("format", "Ctrl+Shift+F", "format the selection", "editor");
+        command_palette palette;
+        harness h;
+        std::string chosen;
+        const auto build = [&] {
+            const std::string c = palette.show(h.ui, binds);
+            if (!c.empty()) { chosen = c; }
+        };
+        h.frames(build, 3);
+        CHECK(!palette.is_open());
+        h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'P';
+        h.frame(build);
+        h.in.ctrl = h.in.shift = false;
+        h.frames(build, 3);
+        CHECK(palette.is_open() && h.ui.modal_open() && h.ui.want_text_input()); // the search field has the keyboard
+        h.type("save");
+        h.frames(build, 2);
+        h.key(key::down); // the second result
+        h.frame(build);
+        h.key(key::enter);
+        h.frame(build);
+        CHECK(chosen == "save_as" && !palette.is_open());
+        h.frames(build, 3);
+        CHECK(!h.ui.modal_open());
+
+        // a context action is not offered until its context is on
+        chosen.clear();
+        palette.open();
+        h.frames(build, 3);
+        h.type("format");
+        h.frames(build, 2);
+        h.key(key::enter);
+        h.frame(build);
+        CHECK(chosen.empty() && palette.is_open()); // nothing to choose
+        binds.set_context("editor");
+        h.frames(build, 2);
+        h.key(key::enter);
+        h.frame(build);
+        CHECK(chosen == "format" && !palette.is_open());
+
+        // Esc closes it without choosing; so does a click outside; the shortcut can be turned off
+        chosen.clear();
+        palette.open();
+        h.frames(build, 3);
+        h.key(key::escape);
+        h.frames(build, 3);
+        CHECK(!palette.is_open() && chosen.empty() && !h.ui.modal_open());
+        palette.open();
+        h.frames(build, 3);
+        h.click({5.0f, 5.0f}, build);
+        h.frames(build, 3);
+        CHECK(!palette.is_open() && chosen.empty());
+        palette.shortcut = {};
+        h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'P';
+        h.frame(build);
+        h.in.ctrl = h.in.shift = false;
+        h.frames(build, 2);
+        CHECK(!palette.is_open());
+    }
+
+    // config files: nothing happens unless it is switched on
+    {
+        char temp[MAX_PATH]{};
+        ::GetTempPathA(MAX_PATH, temp);
+        const std::string path = std::string{temp} + "strata_selftest_config_file.ini";
+        ::DeleteFileA(path.c_str());
+
+        const auto disk = [&] { config c; (void)c.load_file(path); return c; };
+        {
+            config_file cf{path};
+            CHECK(!cf.load() && !cf.auto_save() && !cf.hot_reload() && cf.data().empty()); // no file yet
+            cf.set_int("a", "x", 1);
+            cf.set_float("a", "f", 0.5f);
+            cf.set_bool("a", "b", true);
+            cf.set("a", "s", "hi");
+            CHECK(cf.dirty() && cf.data().get_int("a", "x") == 1);
+            CHECK(!cf.update(100.0f) && cf.save_count() == 0); // off: nothing is written however long it takes
+            CHECK(!disk().has("a", "x"));
+            CHECK(cf.save() && !cf.dirty() && cf.save_count() == 1);
+            CHECK(disk().get_int("a", "x") == 1 && disk().get("a", "s") == "hi");
+
+            // a file that changes on disk is not touched while hot reload is off
+            {
+                config ext = disk();
+                ext.set_int("a", "x", 5);
+                ext.set("a", "longer_key", "to change the size as well");
+                CHECK(ext.save_file(path));
+            }
+            CHECK(!cf.update(100.0f) && cf.data().get_int("a", "x") == 1 && cf.reload_count() == 0);
+
+            // auto-save: written a moment after the last change
+            cf.set_auto_save(true, 0.5f);
+            cf.set_int("a", "y", 2);
+            CHECK(!cf.update(0.3f) && !disk().has("a", "y"));
+            cf.set_int("a", "y", 3); // another change restarts the wait
+            CHECK(!cf.update(0.3f) && !disk().has("a", "y"));
+            CHECK(!cf.update(0.3f) && disk().get_int("a", "y") == 3 && !cf.dirty() && cf.save_count() == 2);
+            CHECK(disk().get_int("a", "x") == 5 || disk().get_int("a", "x") == 1); // it wrote its own data
+
+            // hot reload: the file changed on disk: the data is replaced, and the caller is told
+            cf.set_hot_reload(true, 0.1f);
+            CHECK(!cf.update(0.2f)); // its own write is not a change
+            {
+                config ext;
+                ext.set_int("a", "x", 100);
+                ext.set("new", "k", "v");
+                CHECK(ext.save_file(path));
+            }
+            CHECK(!cf.update(0.05f)); // not polled yet
+            CHECK(cf.update(0.1f));
+            CHECK(cf.data().get_int("a", "x") == 100 && cf.data().get("new", "k") == "v" && !cf.data().has("a", "y"));
+            CHECK(cf.reload_count() == 1 && !cf.update(1.0f)); // and once only
+
+            // unsaved changes are not thrown away by a reload: they are written first
+            cf.set_auto_save(false);
+            cf.set_int("a", "mine", 7);
+            {
+                config ext;
+                ext.set_int("other", "z", 9);
+                ext.set("padding", "p", "so the size is different");
+                CHECK(ext.save_file(path));
+            }
+            CHECK(!cf.update(1.0f) && cf.data().get_int("a", "mine") == 7 && cf.data().get_int("a", "x") == 100);
+            CHECK(cf.save() && !cf.update(1.0f)); // saving replaces the file on purpose
+            CHECK(disk().get_int("a", "mine") == 7 && !disk().has("other", "z"));
+
+            // auto-save also runs when the object goes away
+            cf.set_auto_save(true, 60.0f);
+            cf.set_int("a", "last", 11);
+        }
+        CHECK(disk().get_int("a", "last") == 11);
+        ::DeleteFileA(path.c_str());
+        {
+            config_file cf{path}; // switched on but the file is missing: nothing to reload
+            cf.set_hot_reload(true, 0.1f);
+            CHECK(!cf.update(1.0f));
+        }
+    }
+}
+
+void test_clock_and_code_find()
+{
+    std::fprintf(stderr, "[fixed clock, code_find]\n");
+    const date real = today();
+    override_clock({2030, 2, 28}, {23, 59, 58});
+    CHECK((today() == date{2030, 2, 28}) && (now() == time_of_day{23, 59, 58}));
+    reset_clock();
+    CHECK(is_valid(today()) && today().year >= 2024 && (today() >= real || today() < real)); // the real clock again
+
+    // the calendar marks the fixed "today": the outline is a shape more than a month without it
+    {
+        std::size_t with_today = 0, without = 0;
+        for (const bool mark : {true, false}) {
+            harness h;
+            date d{2030, 2, 10};
+            rect box;
+            bool boxed = false;
+            const auto build = [&] {
+                if (auto w = h.ui.window("p", {100, 100}, {320, 0}, plain_window)) {
+                    (void)h.ui.date_picker("day", d);
+                    if (!boxed) { box = h.ui.last_item_rect(); }
+                }
+            };
+            mark ? override_clock({2030, 2, 20}, {0, 0, 0}) : override_clock({2031, 6, 1}, {0, 0, 0});
+            h.frames(build, 3);
+            boxed = true;
+            h.click(box.center(), build);
+            h.frames(build, 3);
+            (mark ? with_today : without) = h.ui.render_data().shapes.size();
+            reset_clock();
+        }
+        CHECK(with_today > without);
+    }
+
+    // code_find opens the find bar (the text above the field) and gives the find field the keyboard
+    harness h;
+    std::string src = "one two one three";
+    rect box;
+    int find_request = 0;
+    const auto build = [&] {
+        if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) {
+            if (find_request == 1) { h.ui.code_find("##code", "one"); find_request = 0; }
+            (void)h.ui.input_code("##code", src, {0.0f, 120.0f});
+            box = h.ui.last_item_rect();
+        }
+    };
+    h.frames(build, 3);
+    const f32 top0 = box.min.y;
+    CHECK(!h.ui.want_text_input());
+    find_request = 1;
+    h.frames(build, 3);
+    CHECK(box.min.y > top0 + 30.0f && h.ui.want_text_input());
+}
+
+void test_scrollbar_drag()
+{
+    std::fprintf(stderr, "[scrollbar thumbs follow the pointer]\n");
+
+    struct thumb_shape { bool found{}; f32 x{}, y{}, h{}; };
+    // the scrollbar thumb is the one 5 px wide shape
+    const auto find_thumb = [](const harness& h) {
+        thumb_shape t;
+        for (const shape_record& s : h.ui.render_data().shapes) {
+            if (std::abs(s.half_size.x * 2.0f - 5.0f) < 0.01f && s.half_size.y > 5.0f) {
+                t = {true, s.center.x, s.center.y - s.half_size.y, s.half_size.y * 2.0f};
+            }
+        }
+        return t;
+    };
+
+    // drag down and back: the thumb moves exactly as far as the pointer, whatever the size of the list, and comes back to
+    // where it started. `build` draws one scrolling area with a thumb
+    const auto drag_test = [&](harness& h, const auto& build, const char* what, bool expect_min_thumb) {
+        h.frames(build, 4);
+        h.move({100.0f, 100.0f}); // (over the content: the wheel is not used here)
+        thumb_shape t = find_thumb(h);
+        CHECK(t.found);
+        const f32 start_y = t.y, height = t.h;
+        if (expect_min_thumb) { CHECK(near_eq(height, 20.0f, 0.01f)); } // a huge list: the thumb is at its minimum size
+        f32 my = t.y + t.h * 0.5f;
+        h.move({t.x, my});
+        h.frames(build, 2);
+        h.down();
+        h.frame(build);
+        bool follows = true, keeps_size = true;
+        for (int i = 1; i <= 8; ++i) {
+            my += 6.0f;
+            h.move({t.x, my});
+            h.frame(build);
+            const thumb_shape now = find_thumb(h);
+            follows    = follows && near_eq(now.y - start_y, 6.0f * static_cast<f32>(i), 0.05f);
+            keeps_size = keeps_size && near_eq(now.h, height, 0.01f);
+        }
+        CHECK(follows && keeps_size);
+        for (int i = 1; i <= 8; ++i) {
+            my -= 6.0f;
+            h.move({t.x, my});
+            h.frame(build);
+        }
+        h.up();
+        h.frames(build, 2);
+        t = find_thumb(h);
+        CHECK(near_eq(t.y, start_y, 0.05f));
+        std::fprintf(stderr, "  %s: ok\n", what);
+    };
+
+    {   // a child region with a hundred thousand rows
+        harness h;
+        const auto build = [&] {
+            if (auto w = h.ui.window("l", {50, 50}, {400, 300}, plain_window)) {
+                if (auto rows = h.ui.child("rows", {0.0f, 170.0f}, child_flags::frame)) {
+                    list_clipper clip(h.ui, 100000, h.ui.font().line_height(0) + 8.0f);
+                    while (clip.step()) { for (int i = clip.begin(); i < clip.end(); ++i) { (void)h.ui.selectable("row " + std::to_string(i), false); } }
+                }
+            }
+        };
+        drag_test(h, build, "child region, 100 000 rows", true);
+
+        // a click on the track beside the thumb puts the thumb there (its middle under the pointer)
+        const thumb_shape t = find_thumb(h);
+        const f32 target = t.y + 90.0f;
+        h.click({t.x, target}, build);
+        const thumb_shape moved = find_thumb(h);
+        CHECK(near_eq(moved.y + moved.h * 0.5f, target, 1.0f));
+
+        // and a click near the bottom of the track goes there
+        const f32 low = t.y + 140.0f;
+        h.click({t.x, low}, build);
+        h.frames(build, 2);
+        const thumb_shape end = find_thumb(h);
+        CHECK(near_eq(end.y + end.h * 0.5f, low, 1.0f) && end.y > moved.y + 20.0f);
+    }
+    {   // a window taller than its frame
+        harness h;
+        const auto build = [&] {
+            if (auto w = h.ui.window("w", {50, 50}, {300, 260}, plain_window)) {
+                for (int i = 0; i < 300; ++i) { (void)h.ui.custom_item("r" + std::to_string(i), {100.0f, 20.0f}); }
+            }
+        };
+        drag_test(h, build, "window", false);
+    }
+    {   // a table with a scrolling body
+        harness h;
+        const auto build = [&] {
+            if (auto w = h.ui.window("t", {50, 50}, {400, 320}, plain_window)) {
+                if (h.ui.begin_table("tab", 2, table_default, 200.0f)) {
+                    h.ui.table_setup_column("a");
+                    h.ui.table_setup_column("b");
+                    (void)h.ui.table_headers_row();
+                    for (int i = 0; i < 400; ++i) {
+                        if (h.ui.table_next_row()) {
+                            h.ui.table_next_column(); h.ui.textf("row {}", i);
+                            h.ui.table_next_column(); h.ui.textf("{}", i * 2);
+                        }
+                    }
+                    h.ui.end_table();
+                }
+            }
+        };
+        drag_test(h, build, "table", false);
+    }
+}
+
+void test_modal_motion()
+{
+    std::fprintf(stderr, "[modal slide-in is smooth]\n");
+    harness h;
+    std::vector<f32> ys;
+    const auto build = [&] {
+        if (auto m = h.ui.modal("m", {300.0f, 0.0f}, modal_flags::esc_closes)) { h.ui.text("hello"); }
+        ys.push_back(h.ui.window_rect("m").min.y);
+    };
+    h.frames(build, 3);
+    h.ui.begin_frame(h.in);
+    h.ui.open_modal("m");
+    h.ui.end_frame();
+    ys.clear();
+    h.frames(build, 60);
+    // it settles from below its place, never moving back, and the steps get small toward the end: no one-pixel jumps
+    bool monotonic = true;
+    f32  worst_tail = 0.0f;
+    for (std::size_t i = 4; i < ys.size(); ++i) { // (the first frames only measure the window, invisibly)
+        if (ys[i] > ys[i - 1] + 0.001f) { monotonic = false; }
+        if (i > 20) { worst_tail = std::max(worst_tail, ys[i - 1] - ys[i]); }
+    }
+    CHECK(monotonic);
+    CHECK(worst_tail < 0.2f); // after a third of a second it only creeps: at most a fifth of a pixel per frame
+    CHECK(ys.back() == std::round(ys.back())); // and it rests on whole pixels
+    CHECK(ys[4] - ys.back() > 3.0f);             // it did start away from its place
+}
+
+void test_layout_scrolled_above_screen()
+{
+    std::fprintf(stderr, "[content scrolled above the top of the screen keeps its height]\n");
+    harness h;
+    // a window at the top of the screen with cards taller than its frame: scrolling moves the first card above y = 0
+    const auto build = [&] {
+        if (auto w = h.ui.window("s", {50, 0}, {400, 320}, plain_window)) {
+            for (int c = 0; c < 3; ++c) {
+                if (auto card = h.ui.card("card " + std::to_string(c))) {
+                    for (int i = 0; i < 12; ++i) { (void)h.ui.custom_item("c" + std::to_string(c) + "_" + std::to_string(i), {100.0f, 24.0f}); }
+                }
+            }
+        }
+    };
+    const auto win_thumb = [&]() {
+        f32 hh = -1.0f, y = -1.0f;
+        for (const shape_record& s : h.ui.render_data().shapes) {
+            if (std::abs(s.half_size.x * 2.0f - 5.0f) < 0.01f && s.half_size.y > 5.0f) { hh = s.half_size.y * 2.0f; y = s.center.y - s.half_size.y; }
+        }
+        return std::pair<f32, f32>{hh, y};
+    };
+    h.frames(build, 5);
+    const auto first = win_thumb();
+    CHECK(first.first > 20.0f);
+    h.move({200.0f, 150.0f});
+    h.frames(build, 2);
+    f32 lowest = first.second;
+    bool stable = true;
+    for (int i = 0; i < 120; ++i) { // far more than the content is tall
+        h.in.wheel = -1.0f;
+        h.frame(build);
+        const auto t = win_thumb();
+        stable = stable && near_eq(t.first, first.first, 0.5f); // the thumb keeps its size: the content did not grow
+        lowest = std::max(lowest, t.second);
+    }
+    CHECK(stable);
+    // and the end of the content is reached: the thumb sits at the bottom of its track and stays there
+    const auto end = win_thumb();
+    for (int i = 0; i < 30; ++i) { h.in.wheel = -1.0f; h.frame(build); }
+    CHECK(near_eq(win_thumb().second, end.second, 0.5f));
+    // scrolling back brings the same first card back (the same height it had)
+    for (int i = 0; i < 200; ++i) { h.in.wheel = 1.0f; h.frame(build); }
+    h.frames(build, 2);
+    CHECK(near_eq(win_thumb().second, first.second, 0.5f) && near_eq(win_thumb().first, first.first, 0.5f));
+
+    // the same for a child region scrolled the same way
+    harness g;
+    const auto build_child = [&] {
+        if (auto w = g.ui.window("c", {50, 0}, {400, 320}, plain_window)) {
+            if (auto rows = g.ui.child("rows", {0.0f, 200.0f}, child_flags::frame)) {
+                for (int i = 0; i < 40; ++i) { (void)g.ui.custom_item("r" + std::to_string(i), {100.0f, 24.0f}); }
+            }
+        }
+    };
+    const auto child_thumb = [&]() {
+        f32 hh = -1.0f;
+        for (const shape_record& s : g.ui.render_data().shapes) {
+            if (std::abs(s.half_size.x * 2.0f - 5.0f) < 0.01f && s.half_size.y > 5.0f) { hh = s.half_size.y * 2.0f; }
+        }
+        return hh;
+    };
+    g.frames(build_child, 4);
+    const f32 child_start = child_thumb();
+    g.move({150.0f, 100.0f});
+    g.frames(build_child, 2);
+    bool child_stable = true;
+    for (int i = 0; i < 80; ++i) { g.in.wheel = -1.0f; g.frame(build_child); child_stable = child_stable && near_eq(child_thumb(), child_start, 0.5f); }
+    CHECK(child_stable);
+}
+
 } // namespace
 
 int run_selftest()
@@ -2920,6 +4572,20 @@ int run_selftest()
     test_themes();
     test_draw_list_extras();
     test_dock_animation_and_combo_multi();
+    test_chords();
+    test_keybinds();
+    test_config();
+    test_window_height_cap();
+    test_popups_and_drag_drop();
+    test_tabs();
+    test_datetime_pickers();
+    test_lists_and_tables();
+    test_password_masks_and_code();
+    test_contexts_palette_and_config_file();
+    test_clock_and_code_find();
+    test_scrollbar_drag();
+    test_modal_motion();
+    test_layout_scrolled_above_screen();
     std::fprintf(stderr, "selftest: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

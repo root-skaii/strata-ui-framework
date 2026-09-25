@@ -1,7 +1,10 @@
 #pragma once
 
 // the newer sandbox demos: visuals (gradients, curves, acrylic), drag / number inputs, plots, text selection,
-// modals, menus, toasts, the log view. kept apart from main.cpp; the state lives in demo2_state.
+// modals, menus, toasts, the log view, key bindings and config files. kept apart from main.cpp; the state lives in
+// demo2_state.
+
+#include "demo3.hpp"
 
 #include <strata/strata.hpp>
 
@@ -9,6 +12,8 @@
 #include <vector>
 
 struct demo2_state {
+    demo2_state(); // registers the key bindings
+
     // set by main: font ids and texture, -1 / 0 when not available
     int                font_mono    = -1;
     int                font_heading = -1;
@@ -75,6 +80,25 @@ struct demo2_state {
     float modal_volume   = 0.5f;
     bool  modal_flag     = true;
 
+    // key bindings and a config file: the bindings, a few settings and the theme are saved to / loaded from one ini file
+    bool               show_config   = false;
+    strata::keybinds   binds;
+    strata::command_palette palette;
+    strata::config_file file;                    // in the temp folder; auto-save and hot reload are switched on from the window
+    std::string        user_name     = "player one";
+    float              volume        = 0.6f;
+    bool               muted         = false;
+    bool               sidebar       = true;
+    bool               ctx_editor    = false;    // keybind contexts
+    bool               ctx_viewport  = false;
+    strata::f64        last_time     = 0.0;
+    std::string        config_text;              // what saving would write (a live preview)
+    std::string        config_status = "-";
+    std::string        last_bind_action = "-";
+    int                config_request = 0;       // 1: save, 2: load (done at the start of the next frame, between widgets)
+
+    demo3_state d3;
+
     // requests to the host (main applies them between frames)
     float pending_scale  = 0.0f;  // > 0: set_scale(pending_scale)
     int   scale_combo    = 0;
@@ -95,6 +119,10 @@ void demo2_textures_update(gfx_host& host, demo2_state& s);
 void demo2_textlog(strata::context& ui, demo2_state& s);
 // the main menu bar (if enabled) and the window with the modal / context-menu / toast buttons
 void demo2_menus(strata::context& ui, demo2_state& s);
+// the key binding editor, a few settings and the config file with a live preview of it
+void demo2_config(strata::context& ui, demo2_state& s);
+// the windows of demo3 (tabs and popups, drag and drop, lists and tables, code editor)
+void demo2_more(strata::context& ui, demo2_state& s);
 // per-frame housekeeping: advances the rolling data, feeds the log, runs the scene scripts
 void demo2_update(strata::context& ui, demo2_state& s, float dt);
 // mouse input a scene scripts for its screenshot (frame counts from 0)

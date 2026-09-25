@@ -16,6 +16,7 @@ using namespace text;
 
 namespace {
 
+constexpr std::size_t npos = std::string::npos;
 constexpr std::size_t max_history_ops   = 256;
 constexpr std::size_t max_history_bytes = std::size_t{1} << 20;
 constexpr std::size_t max_op_bytes      = std::size_t{4} << 20; // a bigger single change is not worth remembering
@@ -26,6 +27,37 @@ void wipe_tail(secure_string& s, std::size_t from) noexcept
     if (from >= s.size()) { return; }
     detail::secure_wipe(s.data() + from, s.size() - from);
     s.resize(from);
+}
+
+// the bracket at the caret (or just before it) and the one it pairs with; only brackets of the same kind count, so a
+// bracket inside a string or comment can mislead it. false when there is none (or no partner within a few hundred KB)
+[[nodiscard]] bool find_bracket_pair(std::string_view t, std::size_t caret, std::size_t& first, std::size_t& second) noexcept
+{
+    constexpr std::string_view opens  = "([{";
+    constexpr std::string_view closes = ")]}";
+    const auto is_bracket = [&](std::size_t i) { return i < t.size() && (opens.find(t[i]) != npos || closes.find(t[i]) != npos); };
+    std::size_t at = npos;
+    if (is_bracket(caret)) { at = caret; }
+    else if (caret > 0 && is_bracket(caret - 1)) { at = caret - 1; }
+    if (at == npos) { return false; }
+
+    constexpr std::size_t limit = 400000;
+    const char c = t[at];
+    const bool forward = opens.find(c) != npos;
+    const char partner = forward ? closes[opens.find(c)] : opens[closes.find(c)];
+    int depth = 0;
+    if (forward) {
+        for (std::size_t i = at; i < t.size() && i - at < limit; ++i) {
+            if (t[i] == c) { ++depth; }
+            else if (t[i] == partner && --depth == 0) { first = at; second = i; return true; }
+        }
+    } else {
+        for (std::size_t i = at + 1; i-- > 0 && at - i < limit;) {
+            if (t[i] == c) { ++depth; }
+            else if (t[i] == partner && --depth == 0) { first = i; second = at; return true; }
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -390,6 +422,12 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     const id      key      = hash_id(label, current_seed());
     ed_prepare_spans(focus_id_ == key ? edit_buf_.size() : current.size(), fnt, lh, asc, false);
 
+    // what input_code asks of this field (it applies to this call only)
+    const code_mode code = code_;
+    code_ = {};
+    const bool code_on = code.on;
+    const auto has_code = [&](code_flags f) { return code_on && (static_cast<u8>(code.flags) & static_cast<u8>(f)) != 0; };
+
     const bool frameless = has_flag(flags, input_flags::no_frame);
     const bool auto_h    = has_flag(flags, input_flags::auto_height);
     const color text_col = ml_color_.a != 0 ? ml_color_ : style_.text;
@@ -419,7 +457,17 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     const rect track = {{box.max.x - bar_w - 1.0f, box.min.y + 3.0f}, {box.max.x - 2.0f, box.max.y - 3.0f}};
     const f32  pad_x = frameless ? 0.0f : style_.frame_padding.x;
     const f32  pad_y = frameless ? 0.0f : style_.frame_padding.y;
-    const rect inner = {{box.min.x + pad_x, box.min.y + pad_y},
+
+    // line numbers: a gutter at the left, wide enough for the last one
+    f32 gutter_w = 0.0f;
+    if (has_code(code_flags::line_numbers)) {
+        std::size_t lines = 1;
+        for (const char c : (focus_id_ == key ? std::string_view{edit_buf_} : current)) { lines += c == '\n' ? 1u : 0u; }
+        int digits = 1;
+        for (std::size_t n = lines; n >= 10; n /= 10) { ++digits; }
+        gutter_w = font_.measure(fnt, "0").x * static_cast<f32>(std::max(digits, 3)) + 18.0f;
+    }
+    const rect inner = {{box.min.x + pad_x + gutter_w, box.min.y + pad_y},
                         {box.max.x - (st->overflow ? bar_w + 3.0f : pad_x), box.max.y - pad_y}};
     const f32  view_w = std::max(inner.width(), 8.0f);
     const f32  view_h = std::max(inner.height(), lh);
@@ -554,6 +602,18 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         edit_history_on_ = !readonly;
 
         if (typed_len_ != 0) {
+            if (has_code(code_flags::auto_indent) && typed_len_ == 1 && typed_[0] == '}' && edit_cursor_ == edit_anchor_) {
+                // a } on a line that holds only indentation steps back one level
+                const std::string_view t0 = edit_buf_;
+                const std::size_t nl = edit_cursor_ == 0 ? npos : t0.rfind('\n', edit_cursor_ - 1);
+                const std::size_t ls = nl == npos ? 0 : nl + 1;
+                bool blank = edit_cursor_ > ls;
+                for (std::size_t i = ls; i < edit_cursor_ && blank; ++i) { blank = t0[i] == ' '; }
+                if (blank) {
+                    const std::size_t drop = std::min<std::size_t>(edit_cursor_ - ls, static_cast<std::size_t>(std::max(code.tab_size, 1)));
+                    changed = edit_replace(edit_cursor_ - drop, drop, {}, edit_kind::other) || changed;
+                }
+            }
             changed = edit_insert({typed_.data(), typed_len_}, true) || changed;
             typed_len_   = 0;
             caret_time_  = time_;
@@ -646,12 +706,43 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
                 if (ev.ctrl) {
                     submitted_ = true;
                 } else if (!readonly) {
-                    changed = edit_insert("\n", false) || changed;
+                    if (has_code(code_flags::auto_indent)) {
+                        // the new line starts with the indentation of this one, a level deeper after an opening bracket
+                        const std::size_t lo = std::min(edit_cursor_, edit_anchor_);
+                        const std::size_t nl = lo == 0 ? npos : t.rfind('\n', lo - 1);
+                        const std::size_t ls = nl == npos ? 0 : nl + 1;
+                        std::size_t n = 0;
+                        while (ls + n < lo && (t[ls + n] == ' ' || t[ls + n] == '\t')) { ++n; }
+                        std::string insert = "\n";
+                        insert.append(t.substr(ls, n));
+                        std::size_t k = lo;
+                        while (k > ls && (t[k - 1] == ' ' || t[k - 1] == '\t')) { --k; }
+                        if (k > ls && (t[k - 1] == '{' || t[k - 1] == '(' || t[k - 1] == '[')) {
+                            insert.append(static_cast<std::size_t>(std::max(code.tab_size, 1)), ' ');
+                        }
+                        changed = edit_insert(insert, false) || changed;
+                    } else {
+                        changed = edit_insert("\n", false) || changed;
+                    }
                 }
                 break;
             case key::tab:
-                if (!ev.shift && !readonly) {
-                    changed = edit_insert("    ", false) || changed;
+                if (!readonly) {
+                    if (code_on) {
+                        const std::size_t lo = std::min(edit_cursor_, edit_anchor_);
+                        const std::size_t hi = std::max(edit_cursor_, edit_anchor_);
+                        const bool many_lines = has_sel && t.substr(lo, hi - lo).find('\n') != npos;
+                        if (many_lines || ev.shift) {
+                            changed = edit_indent_lines(ev.shift, code.tab_size) || changed;
+                        } else { // to the next tab stop
+                            const std::size_t nl  = lo == 0 ? npos : t.rfind('\n', lo - 1);
+                            const std::size_t col = lo - (nl == npos ? 0 : nl + 1);
+                            const std::size_t tab = static_cast<std::size_t>(std::max(code.tab_size, 1));
+                            changed = edit_insert(std::string(tab - col % tab, ' '), false) || changed;
+                        }
+                    } else if (!ev.shift) {
+                        changed = edit_insert("    ", false) || changed;
+                    }
                 }
                 break;
             case key::escape:
@@ -682,6 +773,10 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     const f32 max_scroll = std::max(0.0f, content_h - view_h);
     st->content_h = content_h;
     st->overflow  = max_scroll > 0.0f;
+    if (code_on && code.goto_offset != npos) { // a jump to a match / line (the caret follows, below, when the field has focus)
+        const std::size_t gl = ml_line_of(std::min(code.goto_offset, text_now().size()));
+        st->scroll = std::max(0.0f, static_cast<f32>(gl) * lh - view_h * 0.35f);
+    }
     if (st->overflow && wheel_ != 0.0f && !wheel_consumed_ && pointer_over(box)) {
         st->scroll -= wheel_ * lh * 3.0f;
         wheel_consumed_ = true;
@@ -732,9 +827,40 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     sel.fill_top    = style_.accent.scaled_alpha(0.45f);
     sel.fill_bottom = sel.fill_top;
 
+    std::size_t bracket_a = npos, bracket_b = npos;
+    if (has_code(code_flags::bracket_match) && focused && !has_selection) {
+        (void)find_bracket_pair(t, edit_cursor_, bracket_a, bracket_b);
+    }
+    const std::size_t caret_line = focused ? ml_line_of(edit_cursor_) : npos;
+
     for (std::size_t li = first; li < last; ++li) {
         const ml_line& l = ml_lines_[li];
         const f32 y = inner.min.y + static_cast<f32>(li) * lh - st->scroll;
+        if (has_code(code_flags::highlight_line) && li == caret_line && !has_selection) {
+            dl_.rect_filled({{inner.min.x - 3.0f, y}, {inner.max.x + 2.0f, y + lh}}, style_.accent.scaled_alpha(0.07f));
+        }
+        if (code_on && !code.marks.empty()) { // find matches: all of them faintly, the current one strongly
+            auto it = std::lower_bound(code.marks.begin(), code.marks.end(), l.start,
+                                       [](const std::pair<u32, u32>& m, std::size_t v) { return m.first < v; });
+            for (; it != code.marks.end() && it->first <= l.end; ++it) {
+                const bool current_mark = static_cast<int>(it - code.marks.begin()) == code.mark_active;
+                const std::size_t end = std::min<std::size_t>(it->first + it->second, l.end);
+                const f32 x0 = text_x + line_x(li, it->first);
+                const f32 x1 = text_x + line_x(li, end);
+                shape_style mark;
+                mark.radius      = radii(2.0f);
+                mark.fill_top    = current_mark ? color{255, 176, 64, 150} : color{255, 200, 80, 60};
+                mark.fill_bottom = mark.fill_top;
+                dl_.shape({{x0, y}, {std::max(x1, x0 + 2.0f), y + lh}}, mark);
+            }
+        }
+        for (const std::size_t p : {bracket_a, bracket_b}) { // the pair of brackets at the caret
+            if (p == npos || p < l.start || p >= l.end) { continue; }
+            const f32 x0 = text_x + line_x(li, p);
+            const f32 x1 = text_x + line_x(li, next_boundary(t, p));
+            dl_.rect_filled({{x0, y}, {x1, y + lh}}, style_.accent.scaled_alpha(0.28f), 2.0f);
+            dl_.rect_outline({{x0, y}, {x1, y + lh}}, style_.accent_hover, 2.0f, 1.0f);
+        }
         if (has_selection) {
             const bool hard = !(li + 1 < line_count && ml_lines_[li + 1].start == l.end);
             const std::size_t sa = std::clamp<std::size_t>(sel_lo, l.start, l.end);
@@ -775,6 +901,18 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         }
     }
     dl_.pop_clip();
+    if (gutter_w > 0.0f) { // line numbers, right aligned; the caret's line brighter
+        const rect g = {{box.min.x + 1.0f, box.min.y + 1.0f}, {inner.min.x - 4.0f, box.max.y - 1.0f}};
+        dl_.rect_filled(g, color{0, 0, 0, 44}, style_.rounding * 0.7f, corners::tl | corners::bl);
+        dl_.rect_filled({{g.max.x, g.min.y}, {g.max.x + 1.0f, g.max.y}}, style_.border.scaled_alpha(0.7f));
+        dl_.push_clip(g);
+        for (std::size_t li = first; li < last; ++li) {
+            const std::string num = std::to_string(li + 1);
+            const f32 y = inner.min.y + static_cast<f32>(li) * lh - st->scroll;
+            dl_.text({g.max.x - 8.0f - font_.measure(fnt, num).x, y}, li == caret_line ? style_.text : style_.text_dim.scaled_alpha(0.75f), num, fnt);
+        }
+        dl_.pop_clip();
+    }
     if (want_chip) { draw_ime_chip(chip_at, lh, fnt); }
 
     if (st->overflow) {

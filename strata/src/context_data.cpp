@@ -3,7 +3,9 @@
 #include "strata/context.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <format>
 #include <numbers>
 #include <optional>
 
@@ -174,7 +176,7 @@ bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
     return true;
 }
 
-void context::end_popup()
+void context::end_popup_at()
 {
     layout_ = popup_saved_layout_;
     dl_.pop_clip();
@@ -423,7 +425,7 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
             push_id(label);
             changed = picker_body(key, c, flags);
             pop_id();
-            end_popup();
+            end_popup_at();
         }
     }
     return changed;
@@ -674,23 +676,102 @@ bool context::begin_table(std::string_view id_label, u32 columns, table_flags fl
     return true;
 }
 
-void context::table_setup_column(std::string_view label, f32 fixed_width, f32 stretch_weight)
+void context::table_setup_column(std::string_view label, f32 fixed_width, f32 stretch_weight, table_column_flags flags)
 {
     if (!table_.active || table_.setup_count >= table_.ncols) {
         return;
     }
-    table_.cols[table_.setup_count++] = {label, fixed_width, stretch_weight};
+    table_.cols[table_.setup_count++] = {label, fixed_width, stretch_weight, flags};
 }
 
+// where every column is: hidden ones take no room, the visible ones share the width by their fractions
 void context::table_recompute_x() noexcept
 {
-    f32 x = table_.origin.x;
-    for (u32 i = 0; i < table_.ncols; ++i) {
-        table_.col_x[i] = x;
-        x += table_.state->frac[i] * table_.width;
+    const table_state& st = *table_.state;
+    f32 total = 0.0f;
+    for (u32 c = 0; c < table_.ncols; ++c) {
+        if ((st.hidden & (1u << c)) == 0) { total += st.frac[c]; }
     }
-    table_.col_x[table_.ncols] = table_.origin.x + table_.width;
+    if (total <= 0.0f) { total = 1.0f; }
+    table_.frac_total = total;
+
+    f32 x = table_.origin.x;
+    u32 nv = 0;
+    for (u32 p = 0; p < table_.ncols; ++p) {
+        const u32 c = st.order[p];
+        if ((st.hidden & (1u << c)) != 0) {
+            table_.x0[c] = table_.x1[c] = x;
+            continue;
+        }
+        table_.col_x[nv] = x;
+        table_.vis[nv]   = static_cast<u8>(c);
+        table_.x0[c]     = x;
+        x += st.frac[c] / total * table_.width;
+        table_.x1[c]     = x;
+        ++nv;
+    }
+    table_.col_x[nv] = table_.origin.x + table_.width;
+    table_.nvis      = nv;
 }
+
+namespace {
+
+// "order=2,0,1;hidden=1;widths=0.3,0.3,0.4" (column indexes and the widths as fractions); false if it does not fit `ncols`
+[[nodiscard]] bool parse_table_layout(std::string_view text, u32 ncols, std::array<u8, 16>& order, u16& hidden, std::array<f32, 16>& frac)
+{
+    std::array<u8, 16>  o{};
+    std::array<f32, 16> w{};
+    u16 h = 0;
+    bool have_order = false, have_widths = false;
+    while (!text.empty()) {
+        const std::size_t semi = text.find(';');
+        std::string_view part = text.substr(0, semi);
+        text = semi == std::string_view::npos ? std::string_view{} : text.substr(semi + 1);
+        const std::size_t eq = part.find('=');
+        if (eq == std::string_view::npos) { continue; }
+        const std::string_view key = part.substr(0, eq);
+        std::string_view       val = part.substr(eq + 1);
+        u32 n = 0;
+        while (!val.empty()) {
+            const std::size_t comma = val.find(',');
+            const std::string_view item = val.substr(0, comma);
+            val = comma == std::string_view::npos ? std::string_view{} : val.substr(comma + 1);
+            if (key == "widths") {
+                f32 v{};
+                if (n >= ncols || std::from_chars(item.data(), item.data() + item.size(), v).ec != std::errc{}) { return false; }
+                w[n++] = v;
+            } else {
+                u32 v{};
+                if (item.empty()) { continue; }
+                if (std::from_chars(item.data(), item.data() + item.size(), v).ec != std::errc{} || v >= ncols) { return false; }
+                if (key == "order") {
+                    if (n >= ncols) { return false; }
+                    o[n++] = static_cast<u8>(v);
+                } else if (key == "hidden") {
+                    h = static_cast<u16>(h | (1u << v));
+                }
+            }
+        }
+        if (key == "order")  { if (n != ncols) { return false; } have_order = true; }
+        if (key == "widths") { if (n != ncols) { return false; } have_widths = true; }
+    }
+    if (have_order) { // a permutation
+        u32 seen = 0;
+        for (u32 i = 0; i < ncols; ++i) { seen |= 1u << o[i]; }
+        if (seen != (1u << ncols) - 1u) { return false; }
+        order = o;
+    }
+    if (have_widths) {
+        f32 sum = 0.0f;
+        for (u32 i = 0; i < ncols; ++i) { sum += w[i]; }
+        if (sum <= 0.0f) { return false; }
+        for (u32 i = 0; i < ncols; ++i) { frac[i] = w[i] / sum; }
+    }
+    hidden = h;
+    return true;
+}
+
+} // namespace
 
 void context::table_finalize_columns()
 {
@@ -717,8 +798,31 @@ void context::table_finalize_columns()
             sum += st.frac[i];
         }
         for (u32 i = 0; i < table_.ncols && sum > 0.0f; ++i) { st.frac[i] /= sum; }
+        st.hidden = 0;
+        for (u32 i = 0; i < table_.ncols; ++i) {
+            st.order[i] = static_cast<u8>(i);
+            if ((static_cast<u8>(table_.cols[i].flags) & static_cast<u8>(table_column_flags::default_hidden)) != 0) {
+                st.hidden = static_cast<u16>(st.hidden | (1u << i));
+            }
+        }
         st.inited = true;
     }
+    // a layout loaded with table_load_layout(): once
+    for (auto it = table_pending_.begin(); it != table_pending_.end(); ++it) {
+        if (it->first != st.key) { continue; }
+        std::array<u8, 16>  order = st.order;
+        std::array<f32, 16> frac  = st.frac;
+        u16                 hidden = st.hidden;
+        if (parse_table_layout(it->second, table_.ncols, order, hidden, frac)) {
+            st.order  = order;
+            st.frac   = frac;
+            st.hidden = hidden;
+        }
+        table_pending_.erase(it);
+        break;
+    }
+    const u16 all = static_cast<u16>((1u << table_.ncols) - 1u);
+    if ((st.hidden & all) == all) { st.hidden = 0; } // at least one column shows
     table_recompute_x();
 }
 
@@ -733,22 +837,106 @@ int context::table_headers_row(int sort_column, bool ascending)
     const f32 lh    = font_.line_height(f);
     const f32 hh    = lh + 2.0f * table_.pad_y + 2.0f;
     const f32 y0    = table_.row_y;
+    const rect header_area = {{table_.origin.x, y0}, {table_.origin.x + table_.width, y0 + hh}};
+    const auto column_flag = [&](u32 c, table_column_flags fl) { return (static_cast<u8>(table_.cols[c].flags) & static_cast<u8>(fl)) != 0; };
+
+    // right-click: a menu of the columns to show
+    if (has_flag(table_.flags, table_flags::hideable)) {
+        if (mouse_right_pressed_ && pointer_over(header_area)) {
+            open_popup_menu("##columns", mouse_);
+        }
+        if (begin_popup_menu("##columns")) {
+            for (u32 p = 0; p < table_.ncols; ++p) {
+                const u32 c = st.order[p];
+                bool shown = (st.hidden & (1u << c)) == 0;
+                const std::string_view name = table_.cols[c].label.empty() ? std::string_view{"(unnamed)"} : visible_label(table_.cols[c].label);
+                menu_item_options o;
+                o.keep_open = true;
+                o.enabled   = !(shown && (table_.nvis <= 1 || column_flag(c, table_column_flags::no_hide)));
+                push_id(std::to_string(c));
+                if (menu_item(name, shown, o)) {
+                    st.hidden = static_cast<u16>(shown ? (st.hidden & ~(1u << c)) : (st.hidden | (1u << c)));
+                    table_recompute_x();
+                }
+                pop_id();
+            }
+            end_popup_menu();
+        }
+    }
 
     // resize handles first: they win the mouse over the header cells beneath them
     if (has_flag(table_.flags, table_flags::resizable)) {
-        for (u32 i = 0; i + 1 < table_.ncols; ++i) {
-            const rect grip = {{table_.col_x[i + 1] - 4.0f, y0}, {table_.col_x[i + 1] + 4.0f, y0 + hh}};
-            const interaction in = interact(hash_id("##grip", hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, current_seed())), grip);
+        for (u32 k = 0; k + 1 < table_.nvis; ++k) {
+            const u32 a = table_.vis[k];
+            const u32 b = table_.vis[k + 1];
+            const rect grip = {{table_.col_x[k + 1] - 4.0f, y0}, {table_.col_x[k + 1] + 4.0f, y0 + hh}};
+            const interaction in = interact(hash_id("##grip", hash_id({reinterpret_cast<const char*>(&a), sizeof(a)}, current_seed())), grip);
             if (in.held && mouse_delta_.x != 0.0f) {
-                const f32 min_frac = 36.0f / table_.width;
-                const f32 dx = std::clamp(mouse_delta_.x / table_.width, min_frac - st.frac[i], st.frac[i + 1] - min_frac);
-                st.frac[i]     += dx;
-                st.frac[i + 1] -= dx;
+                const f32 per_px   = table_.frac_total / table_.width; // what a pixel is worth in `frac` units
+                const f32 min_frac = 36.0f * per_px;
+                const f32 dx = std::clamp(mouse_delta_.x * per_px, min_frac - st.frac[a], st.frac[b] - min_frac);
+                st.frac[a] += dx;
+                st.frac[b] -= dx;
                 table_recompute_x();
             }
             if (in.hovered || in.held) {
-                dl_.rect_filled({{table_.col_x[i + 1] - 1.0f, y0 + 3.0f}, {table_.col_x[i + 1] + 1.0f, y0 + hh - 3.0f}},
+                dl_.rect_filled({{table_.col_x[k + 1] - 1.0f, y0 + 3.0f}, {table_.col_x[k + 1] + 1.0f, y0 + hh - 3.0f}},
                                 style_.accent.scaled_alpha(in.held ? 0.9f : 0.6f));
+            }
+        }
+    }
+
+    // the header cells: press = sort, drag = move the column
+    struct header_hit { id key{}; bool pressed{}; };
+    std::array<header_hit, 16> hits{};
+    const u8 was_dragging = st.drag_col1;
+    if (!mouse_down_) { st.drag_col1 = 0; st.press_col1 = 0; }
+    for (u32 k = 0; k < table_.nvis; ++k) {
+        const u32  c    = table_.vis[k];
+        const rect cell = {{table_.col_x[k], y0}, {table_.col_x[k + 1], y0 + hh}};
+        const id   key  = hash_id(table_.cols[c].label, hash_id({reinterpret_cast<const char*>(&c), sizeof(c)}, current_seed()));
+        const interaction in = interact(key, {{cell.min.x + 4.0f, cell.min.y}, {cell.max.x - 4.0f, cell.max.y}});
+        hits[c] = {key, in.pressed && was_dragging != c + 1};
+        anim_slot* a = anim_find(key);
+        if (a == nullptr && in.hovered) { a = &anim_for(key); }
+        if (a != nullptr) {
+            a->hover = approach(a->hover, in.hovered ? 1.0f : 0.0f);
+            a->last_frame = (a->hover == 0.0f && !in.hovered) ? 0 : frame_;
+        }
+        if (has_flag(table_.flags, table_flags::reorderable) && !column_flag(c, table_column_flags::no_reorder)) {
+            if (active_ == key && mouse_pressed_) {
+                st.press_col1 = static_cast<u8>(c + 1);
+                st.press_x    = mouse_.x;
+            }
+            if (st.drag_col1 == 0 && st.press_col1 == c + 1 && active_ == key && mouse_down_ && std::abs(mouse_.x - st.press_x) > 5.0f) {
+                st.drag_col1 = static_cast<u8>(c + 1);
+            }
+        }
+    }
+    if (st.drag_col1 != 0 && mouse_down_) { // the dragged column takes the place of the one its middle has passed
+        const u32 c = st.drag_col1 - 1u;
+        u32 slot = 0, target = 0;
+        for (u32 k = 0; k < table_.nvis; ++k) {
+            if (table_.vis[k] == c) { slot = k; }
+            else if ((table_.col_x[k] + table_.col_x[k + 1]) * 0.5f < mouse_.x) { ++target; }
+        }
+        if (target != slot) {
+            const u32 d = table_.vis[target];
+            u32 from = 0, to = 0;
+            for (u32 p = 0; p < table_.ncols; ++p) {
+                if (st.order[p] == c) { from = p; }
+                if (st.order[p] == d) { to = p; }
+            }
+            bool blocked = false; // a pinned column in between cannot be passed
+            for (u32 p = std::min(from, to); p <= std::max(from, to); ++p) {
+                if (p != from && column_flag(st.order[p], table_column_flags::no_reorder)) { blocked = true; }
+            }
+            if (!blocked) {
+                const u8 moved = st.order[from];
+                if (from < to) { for (u32 p = from; p < to; ++p) { st.order[p] = st.order[p + 1]; } }
+                else           { for (u32 p = from; p > to; --p) { st.order[p] = st.order[p - 1]; } }
+                st.order[to] = moved;
+                table_recompute_x();
             }
         }
     }
@@ -760,26 +948,22 @@ int context::table_headers_row(int sort_column, bool ascending)
     dl_.shape({{table_.origin.x, y0}, {table_.origin.x + table_.width, y0 + hh}}, bg);
 
     int clicked = -1;
-    for (u32 i = 0; i < table_.ncols; ++i) {
-        const rect cell = {{table_.col_x[i], y0}, {table_.col_x[i + 1], y0 + hh}};
-        const id key = hash_id(table_.cols[i].label, hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, current_seed()));
-        const interaction in = interact(key, {{cell.min.x + 4.0f, cell.min.y}, {cell.max.x - 4.0f, cell.max.y}});
-        if (in.pressed) { clicked = static_cast<int>(i); }
+    for (u32 k = 0; k < table_.nvis; ++k) {
+        const u32  c    = table_.vis[k];
+        const rect cell = {{table_.col_x[k], y0}, {table_.col_x[k + 1], y0 + hh}};
+        if (hits[c].pressed) { clicked = static_cast<int>(c); }
 
-        anim_slot* a = anim_find(key);
-        if (a == nullptr && in.hovered) { a = &anim_for(key); }
-        f32 hover = 0.0f;
-        if (a != nullptr) {
-            a->hover = approach(a->hover, in.hovered ? 1.0f : 0.0f);
-            hover    = a->hover;
-            a->last_frame = (hover == 0.0f && !in.hovered) ? 0 : frame_;
-        }
+        const anim_slot* a = anim_find(hits[c].key);
+        const f32 hover = a != nullptr ? a->hover : 0.0f;
         if (hover > 0.01f) {
             dl_.rect_filled(cell, style_.widget_hover.scaled_alpha(0.5f * hover));
         }
+        if (st.drag_col1 == c + 1 && mouse_down_) {
+            dl_.rect_filled(cell, style_.accent.scaled_alpha(0.22f));
+        }
 
-        const std::string_view label = visible_label(table_.cols[i].label);
-        const bool sorted = static_cast<int>(i) == sort_column;
+        const std::string_view label = visible_label(table_.cols[c].label);
+        const bool sorted = static_cast<int>(c) == sort_column;
         const f32 text_max = cell.width() - 2.0f * table_.pad_x - (sorted ? 14.0f : 0.0f);
         if (rich_depth_ > 0) { // markup cannot be cut safely: clip it instead
             const vec2 ts = label_size(f, label);
@@ -807,11 +991,11 @@ int context::table_headers_row(int sort_column, bool ascending)
         }
 
         if (sorted) {
-            const vec2 c{cell.max.x - table_.pad_x - 3.0f, cell.center().y};
+            const vec2 sc{cell.max.x - table_.pad_x - 3.0f, cell.center().y};
             if (ascending) {
-                dl_.triangle_filled({c.x - 4.0f, c.y + 2.5f}, {c.x, c.y - 3.0f}, {c.x + 4.0f, c.y + 2.5f}, style_.accent_hover);
+                dl_.triangle_filled({sc.x - 4.0f, sc.y + 2.5f}, {sc.x, sc.y - 3.0f}, {sc.x + 4.0f, sc.y + 2.5f}, style_.accent_hover);
             } else {
-                dl_.triangle_filled({c.x - 4.0f, c.y - 2.5f}, {c.x + 4.0f, c.y - 2.5f}, {c.x, c.y + 3.0f}, style_.accent_hover);
+                dl_.triangle_filled({sc.x - 4.0f, sc.y - 2.5f}, {sc.x + 4.0f, sc.y - 2.5f}, {sc.x, sc.y + 3.0f}, style_.accent_hover);
             }
         }
     }
@@ -927,14 +1111,14 @@ bool context::table_next_column()
     ++table_.col;
     const auto c = static_cast<u32>(table_.col);
     layout_        = {};
-    layout_.origin = {table_.col_x[c] + table_.pad_x, table_.row_top + table_.pad_y};
-    layout_.width  = std::max(table_.col_x[c + 1] - table_.col_x[c] - 2.0f * table_.pad_x, 1.0f);
+    layout_.origin = {table_.x0[c] + table_.pad_x, table_.row_top + table_.pad_y};
+    layout_.width  = std::max(table_.x1[c] - table_.x0[c] - 2.0f * table_.pad_x, 1.0f);
 
-    // cell content never spills into the neighbouring column
+    // cell content never spills into the neighbouring column (a hidden column has no width: nothing shows)
     const rect outer_clip = dl_.clip();
-    dl_.push_clip({{table_.col_x[c], outer_clip.min.y}, {table_.col_x[c + 1], outer_clip.max.y}});
+    dl_.push_clip({{table_.x0[c], outer_clip.min.y}, {table_.x1[c], outer_clip.max.y}});
     table_.cell_clip = true;
-    return true;
+    return table_.x1[c] > table_.x0[c];
 }
 
 void context::end_table()
@@ -967,15 +1151,15 @@ void context::end_table()
         const f32 max_scroll = std::max(0.0f, st.content_h - table_.body_h);
         st.scroll = std::clamp(st.scroll, 0.0f, max_scroll);
         if (max_scroll > 0.0f) {
+            const f32  track_top = table_.body_top + 2.0f;
             const f32  track_h = table_.body_h - 4.0f;
             const f32  thumb_h = std::max(20.0f, track_h * table_.body_h / st.content_h);
-            const f32  thumb_y = table_.body_top + 2.0f + (track_h - thumb_h) * (st.scroll / max_scroll);
             const f32  x1      = table_.origin.x + table_.width - 3.0f;
-            const rect thumb   = {{x1 - 5.0f, thumb_y}, {x1, thumb_y + thumb_h}};
-            const interaction in = interact(hash_id("##tscroll", current_seed()), thumb.expanded(2.0f));
-            if (in.held) {
-                st.scroll = std::clamp(st.scroll + mouse_delta_.y * st.content_h / table_.body_h, 0.0f, max_scroll);
-            }
+            f32 thumb_y = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
+            const interaction in = interact(hash_id("##tscroll", current_seed()), rect{{x1 - 7.0f, thumb_y}, {x1 + 2.0f, thumb_y + thumb_h}});
+            st.scroll = thumb_drag(in, st.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, st.scroll);
+            thumb_y   = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
+            const rect thumb = {{x1 - 5.0f, thumb_y}, {x1, thumb_y + thumb_h}};
             shape_style bar;
             bar.radius      = radii(2.5f);
             bar.fill_top    = style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.8f : 0.45f);
@@ -988,7 +1172,7 @@ void context::end_table()
 
     const rect bounds = {table_.origin, {table_.origin.x + table_.width, table_.origin.y + total_h}};
     if (has_flag(table_.flags, table_flags::borders)) {
-        for (u32 i = 1; i < table_.ncols; ++i) {
+        for (u32 i = 1; i < table_.nvis; ++i) {
             dl_.rect_filled({{std::round(table_.col_x[i]), bounds.min.y}, {std::round(table_.col_x[i]) + 1.0f, bounds.max.y}},
                             style_.border.scaled_alpha(0.55f));
         }
@@ -1008,6 +1192,207 @@ void context::end_table()
     table_ = {};
     if (table_depth_ > 0) { // back to the table this one was nested in
         table_ = table_stack_[--table_depth_];
+    }
+}
+
+
+void context::table_skip_rows(int count)
+{
+    if (!table_.active || count <= 0) {
+        return;
+    }
+    table_finalize_columns();
+    if (table_.in_row) {
+        table_finish_row();
+    }
+    table_start_body();
+    table_.row_y     += static_cast<f32>(count) * std::max(table_.state->row_hint, table_.min_row_h);
+    table_.row_index += static_cast<u32>(count);
+}
+
+std::string context::table_save_layout(std::string_view id_label) const
+{
+    const id key = hash_id(id_label, current_seed());
+    for (const table_state& t : tables_) {
+        if (t.key != key || !t.inited) { continue; }
+        std::string out = "order=";
+        for (u32 p = 0; p < t.columns; ++p) { out += (p ? "," : "") + std::to_string(t.order[p]); }
+        out += ";hidden=";
+        bool first = true;
+        for (u32 c = 0; c < t.columns; ++c) {
+            if ((t.hidden & (1u << c)) != 0) { out += (first ? "" : ",") + std::to_string(c); first = false; }
+        }
+        out += ";widths=";
+        for (u32 c = 0; c < t.columns; ++c) { out += (c ? "," : "") + std::format("{:.4f}", t.frac[c]); }
+        return out;
+    }
+    return {};
+}
+
+void context::table_load_layout(std::string_view id_label, std::string_view text)
+{
+    const id key = hash_id(id_label, current_seed());
+    for (auto& p : table_pending_) {
+        if (p.first == key) {
+            p.second.assign(text);
+            return;
+        }
+    }
+    table_pending_.emplace_back(key, std::string{text});
+}
+
+// tree tables --------------------------------------------------------------------------------
+
+bool context::table_tree_node(std::string_view label, tree_flags flags)
+{
+    if (cur_ == nullptr || !table_.active || table_.col < 0) {
+        return false;
+    }
+    const font_id f = current_font();
+    const id key    = hash_id(label, current_seed());
+    const std::string_view shown = visible_label(label);
+    const f32 h     = rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f);
+
+    const f32 indent = 18.0f * static_cast<f32>(table_.tree_depth);
+    layout_.origin.x += indent;
+    layout_.width     = std::max(layout_.width - indent, 1.0f);
+    const rect row = layout_place({layout_.width, h});
+    layout_.origin.x -= indent;
+    layout_.width    += indent;
+    const rect hit = {{row.min.x - indent - table_.pad_x + 2.0f, row.min.y - 2.0f}, {row.max.x + table_.pad_x - 2.0f, row.max.y + 2.0f}};
+    const interaction in = interact(key, hit);
+
+    bool& open = tree_open_state(key, has_flag(flags, tree_flags::default_open));
+    const bool arrow_hit = mouse_.x < row.min.x + 16.0f;
+    item_pressed_ = in.pressed;
+    if (in.pressed && (!has_flag(flags, tree_flags::arrow_only) || arrow_hit)) {
+        open = !open;
+    }
+    const bool is_open = open;
+
+    anim_slot& a = anim_for(key);
+    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(a.toggle, is_open ? 1.0f : 0.0f, style_.anim_speed * 0.9f);
+
+    const bool selected = has_flag(flags, tree_flags::selected);
+    if (selected || a.hover > 0.01f) {
+        shape_style bg;
+        bg.radius      = radii(style_.rounding * 0.55f);
+        bg.fill_top    = selected ? style_.accent.scaled_alpha(0.28f + 0.1f * a.hover)
+                                  : style_.widget_hover.scaled_alpha(0.75f * a.hover);
+        bg.fill_bottom = bg.fill_top;
+        dl_.shape(hit, bg);
+    }
+
+    const vec2 c{row.min.x + 8.0f, row.center().y};
+    const f32  ang = a.toggle * std::numbers::pi_v<f32> * 0.5f;
+    const f32  cs = std::cos(ang);
+    const f32  sn = std::sin(ang);
+    const auto rot = [&](vec2 p) { return vec2{c.x + p.x * cs - p.y * sn, c.y + p.x * sn + p.y * cs}; };
+    dl_.triangle_filled(rot({-2.5f, -4.0f}), rot({4.0f, 0.0f}), rot({-2.5f, 4.0f}),
+                        lerp(style_.text_dim, style_.text, std::max(a.hover, a.toggle)));
+    const vec2 tsize = label_size(f, shown);
+    label_draw({row.min.x + 20.0f, row.min.y + (row.height() - tsize.y) * 0.5f},
+               selected ? style_.accent_hover : style_.text, shown, f);
+
+    if (!is_open) {
+        return false;
+    }
+    ++table_.tree_depth;
+    push_id(label);
+    return true;
+}
+
+bool context::table_tree_leaf(std::string_view label, bool selected)
+{
+    if (cur_ == nullptr || !table_.active || table_.col < 0) {
+        return false;
+    }
+    const font_id f = current_font();
+    const id key    = hash_id(label, current_seed());
+    const std::string_view shown = visible_label(label);
+    const f32 h     = rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f);
+
+    const f32 indent = 18.0f * static_cast<f32>(table_.tree_depth);
+    layout_.origin.x += indent;
+    layout_.width     = std::max(layout_.width - indent, 1.0f);
+    const rect row = layout_place({layout_.width, h});
+    layout_.origin.x -= indent;
+    layout_.width    += indent;
+    const rect hit = {{row.min.x - indent - table_.pad_x + 2.0f, row.min.y - 2.0f}, {row.max.x + table_.pad_x - 2.0f, row.max.y + 2.0f}};
+    const interaction in = interact(key, hit);
+    item_pressed_ = in.pressed;
+
+    anim_slot* a = anim_find(key);
+    if (a == nullptr && in.hovered) { a = &anim_for(key); }
+    f32 hover = 0.0f;
+    if (a != nullptr) {
+        a->hover = approach(a->hover, in.hovered ? 1.0f : 0.0f);
+        hover    = a->hover;
+        a->last_frame = (hover == 0.0f && !in.hovered) ? 0 : frame_;
+    }
+    if (selected || hover > 0.01f) {
+        shape_style bg;
+        bg.radius      = radii(style_.rounding * 0.55f);
+        bg.fill_top    = selected ? style_.accent.scaled_alpha(0.28f + 0.1f * hover)
+                                  : style_.widget_hover.scaled_alpha(0.75f * hover);
+        bg.fill_bottom = bg.fill_top;
+        dl_.shape(hit, bg);
+    }
+    const vec2 tsize = label_size(f, shown);
+    label_draw({row.min.x + 20.0f, row.min.y + (row.height() - tsize.y) * 0.5f}, selected ? style_.accent_hover : style_.text, shown, f);
+    return in.pressed;
+}
+
+void context::table_tree_pop()
+{
+    if (!table_.active || table_.tree_depth == 0) {
+        return;
+    }
+    --table_.tree_depth;
+    pop_id();
+}
+
+// long lists ---------------------------------------------------------------------------------
+
+void context::list_clip_begin(int count, f32 item_height, int& first, int& last)
+{
+    first = last = 0;
+    if (cur_ == nullptr || count <= 0) {
+        return;
+    }
+    f32 pitch;
+    f32 y0;
+    if (table_.active) {
+        table_finalize_columns();
+        if (table_.in_row) { table_finish_row(); }
+        table_start_body();
+        pitch = std::max(table_.state->row_hint, table_.min_row_h);
+        y0    = table_.row_y;
+    } else {
+        pitch = (item_height > 0.0f ? item_height : font_.line_height(current_font())) + style_.item_spacing;
+        y0    = layout_next_y();
+    }
+    const rect view = dl_.clip();
+    first = std::clamp(static_cast<int>(std::floor((view.min.y - y0) / pitch)) - 1, 0, count);
+    last  = std::clamp(static_cast<int>(std::ceil((view.max.y - y0) / pitch)) + 1, first, count);
+    if (first > 0) {
+        if (table_.active) { table_skip_rows(first); }
+        else               { (void)layout_place({0.0f, static_cast<f32>(first) * pitch - style_.item_spacing}); }
+    }
+}
+
+void context::list_clip_end(int count, f32 item_height, int last)
+{
+    if (cur_ == nullptr || last >= count) {
+        return;
+    }
+    const int rest = count - last;
+    if (table_.active) {
+        table_skip_rows(rest);
+    } else {
+        const f32 pitch = (item_height > 0.0f ? item_height : font_.line_height(current_font())) + style_.item_spacing;
+        (void)layout_place({0.0f, static_cast<f32>(rest) * pitch - style_.item_spacing});
     }
 }
 

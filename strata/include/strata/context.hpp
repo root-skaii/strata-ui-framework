@@ -1,13 +1,16 @@
 #pragma once
 
+#include "strata/datetime.hpp"
 #include "strata/draw_list.hpp"
 #include "strata/font.hpp"
 #include "strata/log.hpp"
 #include "strata/types.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <concepts>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <initializer_list>
@@ -15,6 +18,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <string_view>
 #include <vector>
 
@@ -64,6 +68,23 @@ struct input_state {
 
 // readable name of a windows virtual-key code ("A", "F5", "Space", "Mouse 4" ...); "None" for 0
 [[nodiscard]] std::string_view key_name(u32 virtual_key) noexcept;
+
+// a key (virtual-key code or extra mouse button, see input_state::pressed_key) with the exact modifiers held with it
+struct key_chord {
+    u32  key{};    // 0 = unbound
+    bool ctrl{};
+    bool shift{};
+    bool alt{};
+
+    [[nodiscard]] constexpr bool bound() const noexcept { return key != 0; }
+    friend constexpr bool operator==(const key_chord&, const key_chord&) noexcept = default;
+};
+
+// "Ctrl+Shift+S": modifiers first, then key_name(). empty for an unbound chord
+[[nodiscard]] std::string chord_to_string(const key_chord& chord);
+// the inverse, also for the accelerator() syntax ("ctrl + s", "Alt+F4"). "" gives an unbound chord; false (and `out`
+// untouched) if a part is not known
+[[nodiscard]] bool chord_from_string(std::string_view text, key_chord& out) noexcept;
 
 // text fields copy / paste through these; win32_platform::clipboard() provides them
 struct clipboard_hooks {
@@ -154,7 +175,7 @@ struct item_result {
     bool pressed{};
 };
 
-enum class input_flags : u8 {
+enum class input_flags : u16 {
     none                = 0,
     password            = 1, // shows bullets, disables copy / cut / undo
     read_only           = 2, // selectable and copyable, not editable
@@ -162,12 +183,31 @@ enum class input_flags : u8 {
     no_wrap             = 8, // input_multiline: do not wrap long lines, scroll sideways instead
     no_frame            = 16, // input_multiline: no background, border or padding (the text sits directly in the layout)
     auto_height         = 32, // input_multiline: as tall as its text, so it never scrolls
+    reveal              = 64, // with password: an eye button at the right end shows the text while it is toggled on
 };
 
 [[nodiscard]] constexpr input_flags operator|(input_flags a, input_flags b) noexcept
 {
-    return static_cast<input_flags>(static_cast<u8>(a) | static_cast<u8>(b));
+    return static_cast<input_flags>(static_cast<u16>(a) | static_cast<u16>(b));
 }
+
+// what input_code adds to a multi-line field
+enum class code_flags : u8 {
+    none           = 0,
+    line_numbers   = 1,  // a gutter with the line numbers
+    highlight_line = 2,  // a faint bar behind the line the caret is on
+    bracket_match  = 4,  // the bracket next to the caret and the one it pairs with are boxed
+    auto_indent    = 8,  // Enter keeps the indentation (and adds a level after an opening bracket), a typed } steps back
+    find_replace   = 16, // Ctrl+F / Ctrl+H open a find / replace bar above the text
+};
+
+[[nodiscard]] constexpr code_flags operator|(code_flags a, code_flags b) noexcept
+{
+    return static_cast<code_flags>(static_cast<u8>(a) | static_cast<u8>(b));
+}
+
+inline constexpr code_flags code_default =
+    code_flags::line_numbers | code_flags::highlight_line | code_flags::bracket_match | code_flags::auto_indent | code_flags::find_replace;
 
 template <class E>
     requires std::is_enum_v<E>
@@ -237,6 +277,8 @@ enum class table_flags : u8 {
     borders   = 2, // outer border, column separators, row lines
     resizable = 4, // drag the header edges to resize columns
     row_hover = 8, // highlight the row under the pointer
+    hideable    = 16, // right-click the header for a menu that shows / hides columns
+    reorderable = 32, // drag a header sideways to move its column
 };
 
 [[nodiscard]] constexpr table_flags operator|(table_flags a, table_flags b) noexcept
@@ -246,6 +288,18 @@ enum class table_flags : u8 {
 
 inline constexpr table_flags table_default =
     table_flags::striped | table_flags::borders | table_flags::resizable | table_flags::row_hover;
+
+enum class table_column_flags : u8 {
+    none           = 0,
+    default_hidden = 1, // hidden until the user shows it (table_flags::hideable)
+    no_hide        = 2, // the menu cannot hide it
+    no_reorder     = 4, // it stays where it is: it cannot be dragged, and columns do not move past it
+};
+
+[[nodiscard]] constexpr table_column_flags operator|(table_column_flags a, table_column_flags b) noexcept
+{
+    return static_cast<table_column_flags>(static_cast<u8>(a) | static_cast<u8>(b));
+}
 
 // modal windows: what closes them besides the code
 enum class modal_flags : u8 {
@@ -263,6 +317,9 @@ enum class modal_flags : u8 {
 
 enum class toast_kind : u8 { info, success, warning, error };
 
+// the color a kind is drawn in (toasts, badges): green / amber / red, and the theme's accent for info
+[[nodiscard]] color kind_color(toast_kind kind, const style& theme) noexcept;
+
 // a toast that can be told about later (progress, closing, which button was pressed); 0 = none
 using toast_handle = u64;
 inline constexpr f32 toast_no_progress = -1.0f;
@@ -277,6 +334,43 @@ struct toast_options {
     f32                               progress{toast_no_progress}; // 0..1: a bar that fills; toast_busy: an endless one
 };
 enum class screen_corner : u8 { top_right, top_left, bottom_right, bottom_left };
+
+// a small pill: a label with an optional close button and / or selected state (see context::chip)
+struct chip_options {
+    bool             closable{false};   // a small x at the right; pressing it reports `closed`, removing the chip is up to you
+    bool*            selected{nullptr}; // toggled by a click on the body: a chip that acts as a filter / tag toggle
+    color            tint{0, 0, 0, 0};  // alpha 0: the theme's accent
+    std::string_view icon;              // a glyph drawn with `icon_font` before the label
+    font_id          icon_font{0};
+};
+
+struct chip_result {
+    bool clicked{};
+    bool closed{};
+};
+
+// what drop_target() found: a payload of the wanted type is over the widget (`hovering`), and it was let go there (`dropped`)
+struct drop_result {
+    bool                 hovering{};
+    bool                 dropped{};
+    vec2                 local{};  // the pointer inside the widget, 0..1 on both axes (top / bottom half for an insert position)
+    std::span<const u8>  data{};   // the payload bytes, valid when dropped
+
+    [[nodiscard]] explicit operator bool() const noexcept { return dropped; }
+    template <class T>
+        requires std::is_trivially_copyable_v<T>
+    [[nodiscard]] T as() const noexcept
+    {
+        T value{};
+        if (data.size() == sizeof(T)) { std::memcpy(&value, data.data(), sizeof(T)); }
+        return value;
+    }
+};
+
+enum class drop_flags : u8 {
+    none         = 0,
+    no_highlight = 1, // do not outline the widget while a matching payload is over it (draw your own insert marker)
+};
 
 enum class log_view_flags : u8 {
     none       = 0,
@@ -350,6 +444,51 @@ struct tab_desc {
     constexpr tab_desc(const char* l) noexcept : label{l} {}
     constexpr tab_desc(std::string_view l, std::string_view i = {}) noexcept : label{l}, icon{i} {}
 };
+
+enum class tab_bar_flags : u8 {
+    none        = 0,
+    closable    = 1, // an x on every tab
+    reorderable = 2, // drag a tab sideways to move it
+    add_button  = 4, // a "+" after the last tab
+};
+
+[[nodiscard]] constexpr tab_bar_flags operator|(tab_bar_flags a, tab_bar_flags b) noexcept
+{
+    return static_cast<tab_bar_flags>(static_cast<u8>(a) | static_cast<u8>(b));
+}
+
+// what happened in a tab bar this frame. the bar only reports: removing and moving tabs in your own list is up to you
+// (apply_tab_events does both, and keeps `selected` on the tab it was on). tabs are told apart by their label, so labels
+// have to be unique
+struct tab_events {
+    bool changed{};      // `selected` changed
+    int  closed{-1};     // the tab whose x was pressed
+    int  moved_from{-1}; // the tab that was dragged past a neighbour, and the index it belongs at now
+    int  moved_to{-1};
+    bool add{};          // the "+" was pressed
+};
+
+// applies tab_events to a list of tabs and the selected index
+template <class T>
+void apply_tab_events(const tab_events& ev, std::vector<T>& items, int& selected)
+{
+    const int size = static_cast<int>(items.size());
+    if (ev.moved_from >= 0 && ev.moved_from < size && ev.moved_to >= 0 && ev.moved_to < size && ev.moved_from != ev.moved_to) {
+        const int from = ev.moved_from;
+        const int to   = ev.moved_to;
+        T moved = std::move(items[static_cast<std::size_t>(from)]);
+        items.erase(items.begin() + from);
+        items.insert(items.begin() + to, std::move(moved));
+        if (selected == from)                         { selected = to; }
+        else if (from < selected && selected <= to)   { --selected; }
+        else if (to <= selected && selected < from)   { ++selected; }
+    }
+    if (ev.closed >= 0 && ev.closed < static_cast<int>(items.size())) {
+        items.erase(items.begin() + ev.closed);
+        if (ev.closed < selected) { --selected; }
+        selected = std::clamp(selected, 0, std::max(0, static_cast<int>(items.size()) - 1));
+    }
+}
 
 class context;
 
@@ -509,6 +648,38 @@ private:
     bool     open_;
 };
 
+// end_popup() when it goes out of scope; converts to false while the popup is closed
+class popup_scope {
+public:
+    popup_scope(context& ctx, bool open) noexcept : ctx_{&ctx}, open_{open} {}
+    ~popup_scope();
+
+    popup_scope(const popup_scope&)            = delete;
+    popup_scope& operator=(const popup_scope&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept { return open_; }
+
+private:
+    context* ctx_;
+    bool     open_;
+};
+
+// end_drag_source() when it goes out of scope; converts to true while the widget is being dragged
+class drag_source_scope {
+public:
+    drag_source_scope(context& ctx, bool active) noexcept : ctx_{&ctx}, active_{active} {}
+    ~drag_source_scope();
+
+    drag_source_scope(const drag_source_scope&)            = delete;
+    drag_source_scope& operator=(const drag_source_scope&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept { return active_; }
+
+private:
+    context* ctx_;
+    bool     active_;
+};
+
 class context {
 public:
     [[nodiscard]] static std::expected<context, font_error> create(const context_config& cfg = {});
@@ -558,7 +729,8 @@ public:
         return {*this, begin_window(title, initial_pos, width)};
     }
     bool begin_window(std::string_view title, vec2 initial_pos, f32 width = 280.0f);
-    // size.y == 0: the height follows the content, otherwise the content scrolls. the size is remembered when resizable.
+    // size.y == 0: the height follows the content, up to the bottom of the display (then it scrolls); otherwise the
+    // window has that height and the content scrolls. the size is remembered when resizable.
     [[nodiscard]] window_scope window(std::string_view title, vec2 initial_pos, vec2 size, window_flags flags)
     {
         return {*this, begin_window(title, initial_pos, size, flags)};
@@ -668,6 +840,27 @@ public:
                          input_flags flags = input_flags::none, std::string_view hint = {},
                          std::size_t max_bytes = std::size_t{1} << 20);
 
+    // input mask: the field only takes what the mask allows and adds the fixed characters itself, so `value` always holds the
+    // formatted text. in the mask  # a digit, A a letter, U / L a letter turned to upper / lower case, X a letter or digit,
+    // ? anything, \ makes the next character a literal, everything else is a literal:
+    //   ui.input_masked("phone", phone, "(###) ###-####");     ui.input_masked("plate", plate, "UU-###");
+    // typing, deleting and pasting all keep the shape; the undo history is off for masked fields. returns true when the
+    // text changed.
+    bool input_masked(std::string_view label, std::string& value, std::string_view mask, std::string_view hint = {},
+                      input_flags flags = input_flags::none);
+
+    // a code editor: a multi-line field without wrapping, and (code_flags) line numbers, current line, bracket matching,
+    // auto indent, Tab / Shift+Tab that indent and unindent the lines of a selection, and a find / replace bar (Ctrl+F,
+    // Ctrl+H) that marks every match. colours come from input_spans() as usual. size.y == 0 is about 12 lines.
+    bool input_code(std::string_view label, std::string& value, vec2 size = {}, code_flags flags = code_default,
+                    std::string_view hint = {}, std::size_t max_bytes = std::size_t{1} << 22, int tab_size = 4);
+    // scrolls a code field to a line (1 = the first) and, when it has the keyboard, puts the caret there; call in the id
+    // scope of input_code
+    void code_goto_line(std::string_view label, int line);
+    // opens the find bar of a code field (with the replace row) and gives it the keyboard; `text` is what to search for
+    // (empty: what was searched last). also in the id scope of input_code
+    void code_find(std::string_view label, std::string_view text = {}, bool with_replace = false);
+
     // styles ranges of the NEXT input_text / input_multiline (syntax highlighting, live markup preview). recompute the
     // spans when the field reports a change; for the one frame in between the old ranges are clamped. passwords ignore
     // them, on overlap the first span wins, at most 4096 are used.
@@ -705,6 +898,12 @@ public:
     {
         return tab_bar(id, tabs.begin(), tabs.size(), selected, icon_font);
     }
+    // the same with closable / reorderable tabs and an add button. any number of tabs: when they do not fit they scroll
+    // (mouse wheel) and a list button at the right end opens a menu of all of them.
+    //   auto ev = ui.tab_bar("docs", tabs.data(), tabs.size(), current, tab_bar_flags::closable | tab_bar_flags::reorderable);
+    //   apply_tab_events(ev, tab_list, current);
+    tab_events tab_bar(std::string_view id, const tab_desc* tabs, std::size_t count, int& selected, tab_bar_flags flags,
+                       font_id icon_font = 0);
 
     // color -------------------------------------------------------------
     // swatch + hex readout; clicking it opens a popup with the full picker
@@ -739,12 +938,41 @@ public:
     //       ui.end_table();
     //   }
     // height > 0 makes the body a scrolling region under a fixed header.
+    // table_flags::hideable / reorderable let the user hide and move columns (right-click / drag the header). the code
+    // keeps filling the cells in the order it declared the columns; table_next_column() is false for a hidden one, and
+    // table_headers_row returns the column that was clicked by its declared index.
     bool begin_table(std::string_view id, u32 columns, table_flags flags = table_default, f32 height = 0.0f);
-    void table_setup_column(std::string_view label, f32 fixed_width = 0.0f, f32 stretch_weight = 1.0f);
+    void table_setup_column(std::string_view label, f32 fixed_width = 0.0f, f32 stretch_weight = 1.0f,
+                            table_column_flags flags = table_column_flags::none);
     int  table_headers_row(int sort_column = -1, bool ascending = true);
     bool table_next_row();
     bool table_next_column();
     void end_table();
+    // skips `count` rows without submitting them (they are `row height` tall, so a scrollbar stays right): for big tables
+    // together with list_clipper
+    void table_skip_rows(int count);
+    // the column order, widths and hidden columns of a table as text (for a config file) and back. call with the id
+    // scope of begin_table; loading may happen before the table is first shown
+    [[nodiscard]] std::string table_save_layout(std::string_view id) const;
+    void table_load_layout(std::string_view id, std::string_view text);
+
+    // tree tables: rows of a table with expandable nodes in one of the cells. call these inside a cell instead of text();
+    // the children are the rows that follow (each with an indented leaf or node in the same column):
+    //   ui.table_next_row(); ui.table_next_column();
+    //   const bool open = ui.table_tree_node("src");    ui.table_next_column(); ui.text("folder");
+    //   if (open) {
+    //       ui.table_next_row(); ui.table_next_column(); (void)ui.table_tree_leaf("main.cpp"); ui.table_next_column(); ui.text("4 KB");
+    //       ui.table_tree_pop();
+    //   }
+    bool table_tree_node(std::string_view label, tree_flags flags = tree_flags::none);
+    bool table_tree_leaf(std::string_view label, bool selected = false);
+    void table_tree_pop();
+
+    // long lists -----------------------------------------------------------
+    // only the rows that can be seen are submitted: see list_clipper. the two calls reserve the space of the rows above
+    // and below them (rows of one height, `item_height` 0 = one line of text; in a table the row height of its rows)
+    void list_clip_begin(int count, f32 item_height, int& first, int& last);
+    void list_clip_end(int count, f32 item_height, int last);
 
     // rich text ------------------------------------------------------------
     // text with inline markup: <f=N>..</f> switches to font id N, <c=rrggbb[aa]>..</c> colors. tags nest, "<<" is a
@@ -819,9 +1047,74 @@ public:
     // key binding: click, then press a key or side mouse button. Esc cancels, Backspace / Delete clears.
     // `key_code` is a virtual-key code, 0 = unbound.
     bool hotkey(std::string_view label, u32& key_code);
+    // the same for a key with modifiers: hold Ctrl / Shift / Alt while pressing the key (a bare Esc cancels, a bare
+    // Backspace / Delete unbinds)
+    bool hotkey_chord(std::string_view label, key_chord& chord);
 
     void push_id(std::string_view s) noexcept;
     void pop_id() noexcept;
+
+    // popups ---------------------------------------------------------------
+    // a panel with ordinary widgets in it that opens under the last widget (or at `pos`) and closes on Esc or a click
+    // outside it. one popup is open at a time (menus, dropdowns and this share the slot), so no popup inside a popup.
+    // call open_popup / popup with the same id scope. `width` 0 is the width of the widget it opened from (at least 180).
+    //   if (ui.button("options")) { ui.toggle_popup("opts"); }
+    //   if (auto p = ui.popup("opts")) { ui.checkbox("wrap", wrap); if (ui.button("done")) { ui.close_popup(); } }
+    void open_popup(std::string_view id);
+    void open_popup(std::string_view id, vec2 pos);
+    void toggle_popup(std::string_view id);
+    bool begin_popup(std::string_view id, f32 width = 0.0f);
+    void end_popup();
+    void close_popup() noexcept { popup_id_ = 0; }
+    [[nodiscard]] bool popup_is_open(std::string_view id) const noexcept;
+    [[nodiscard]] popup_scope popup(std::string_view id, f32 width = 0.0f) { return {*this, begin_popup(id, width)}; }
+    // the screen rectangle of the last widget that was hit-tested (button, field, row ...)
+    [[nodiscard]] rect last_item_rect() const noexcept { return last_item_rect_; }
+
+    // drag and drop ----------------------------------------------------------
+    // pick something up with the mouse and drop it on a widget that wants it. the payload is a small copy of your data
+    // (an index, an id) tagged with a type name; a target only takes the type it asks for. Esc cancels.
+    //   ui.selectable(row.name);
+    //   if (auto d = ui.drag_source("row", i)) { ui.text(row.name); }         // the preview that follows the pointer
+    //   ...
+    //   ui.selectable(other.name);
+    //   if (auto drop = ui.drop_target("row")) { move_row(drop.as<int>(), j); }
+    // begin_drag_source() / end_drag_source() are the unscoped form. the source widget does not report a click for
+    // the release that ends its drag.
+    [[nodiscard]] bool begin_drag_source();
+    void set_drag_payload(std::string_view type, const void* data, std::size_t size);
+    template <class T>
+        requires std::is_trivially_copyable_v<T>
+    void set_drag_payload(std::string_view type, const T& value) { set_drag_payload(type, &value, sizeof(T)); }
+    void end_drag_source();
+    template <class T>
+        requires std::is_trivially_copyable_v<T>
+    [[nodiscard]] drag_source_scope drag_source(std::string_view type, const T& payload)
+    {
+        const bool active = begin_drag_source();
+        if (active) { set_drag_payload(type, payload); }
+        return {*this, active};
+    }
+    [[nodiscard]] drop_result drop_target(std::string_view type, drop_flags flags = drop_flags::none);
+    [[nodiscard]] bool dragging() const noexcept { return dd_active_; }
+    [[nodiscard]] std::string_view drag_payload_type() const noexcept { return dd_active_ ? std::string_view{dd_type_} : std::string_view{}; }
+
+    // date and time pickers ---------------------------------------------------
+    // a field showing the value; clicking it opens a popup: a month calendar (arrows for months and years, today marked,
+    // a Today button) or grids of hours / minutes (and seconds) with - / + for the minutes in between. each returns true
+    // when the value changed. see datetime.hpp for date, time_of_day, parsing and formatting
+    bool date_picker(std::string_view label, date& value);
+    bool time_picker(std::string_view label, time_of_day& value, bool seconds = false);
+    bool datetime_picker(std::string_view label, date& d, time_of_day& t, bool seconds = false);
+
+    // small status widgets ----------------------------------------------------
+    // a rotating arc for work of unknown length; `diameter` 0 fits the line. put a label next to it with same_line()
+    void spinner(f32 diameter = 0.0f, color c = {0, 0, 0, 0});
+    // a non-interactive pill with a short text ("3", "new", "beta"); the kind picks the color
+    void badge(std::string_view text, toast_kind kind = toast_kind::info);
+    void badge(std::string_view text, color tint);
+    // a removable / toggleable tag: a pill you can click, with an optional x. chips flow with same_line()
+    chip_result chip(std::string_view label, const chip_options& options = {});
 
     // drag sliders and number inputs ---------------------------------------
     // a number you drag sideways (Shift = fine, Alt = coarse) or click to type. `speed` is the change per pixel.
@@ -918,6 +1211,8 @@ public:
     // true on the frame the combination ("Ctrl+O", "Alt+F4", "F5", "Del" ...) is pressed; modifiers must match exactly.
     // while a text field has the keyboard only Ctrl / Alt combinations count, except the ones the field uses (Ctrl+A/C/V/X/Z/Y)
     [[nodiscard]] bool accelerator(std::string_view combo) const;
+    // the same for a chord you keep (see keybinds). never true while a hotkey field is waiting for a key
+    [[nodiscard]] bool chord_pressed(const key_chord& chord) const;
     void menu_separator();
     // a popup menu that opens where you right-click the last widget, or the given area:
     //   if (auto m = ui.context_menu("row")) { if (ui.menu_item("Delete")) ...; }
@@ -962,6 +1257,18 @@ public:
     // docking animation -----------------------------------------------------------------------
     // panes slide to their new place when a window docks, undocks or a pane closes (off by default)
     void set_dock_animation(bool on) noexcept { dock_animation_ = on; }
+
+    // true when the key was pressed this frame with exactly these modifiers (auto-repeat included). a text field that has
+    // the keyboard uses its keys up while it is drawn, so ask before it (or use accelerator() / chord_pressed())
+    [[nodiscard]] bool key_pressed(key k, bool ctrl = false, bool shift = false) const noexcept
+    {
+        for (u32 i = 0; i < key_count_; ++i) {
+            if (keys_[i].k == k && keys_[i].ctrl == ctrl && keys_[i].shift == shift) { return true; }
+        }
+        return false;
+    }
+    // the text field with this label (in the current id scope) takes the keyboard the next time it is drawn, its text selected
+    void request_text_focus(std::string_view label) noexcept { focus_request_ = hash_id(label, current_seed()); }
 
     // modifier keys (as of this frame)
     [[nodiscard]] bool ctrl_down() const noexcept  { return mod_ctrl_; }
@@ -1038,10 +1345,12 @@ private:
         f32  height{};      // 0: follows the content
         f32  content_h{};
         f32  scroll{};
+        f32  grab{};        // scrollbar: where in the thumb it was pressed
         bool collapsed{};
         bool resizable{};
         bool size_set{};
-        bool overflow{};    // content taller than the body last frame (fixed-height windows)
+        bool overflow{};    // content taller than the body last frame (scrolling windows)
+        f32  capped_h{};    // auto-height window that would reach past the display: the height it is shown at, 0 = not capped
         // docking
         u32  dock{};        // 1 + index of the dock node the window sits in, 0 = floating
         u32  dock_order{};  // position among the tabs of its node
@@ -1065,6 +1374,7 @@ private:
         f32  bottom{};
         f32  next_width{};
         f32  bound_bottom{}; // bottom of the space a fill-height child / strip may use (0 = unbounded)
+        f32  right{};        // the furthest right edge of anything placed
         bool same_line{};
         bool first{true};
     };
@@ -1112,15 +1422,22 @@ private:
         u64                                last_frame{};
         u32                                columns{};
         std::array<f32, max_table_columns> frac{}; // column widths as fractions of the table width
+        std::array<u8, max_table_columns>  order{}; // the column shown at each position (reorderable tables)
+        u16                                hidden{}; // a bit per column
+        u8                                 press_col1{}; // 1 + the header that was pressed / is being dragged, 0 = none
+        u8                                 drag_col1{};
+        f32                                press_x{};
         f32                                row_hint{};
         f32                                scroll{};
+        f32                                grab{};
         f32                                content_h{};
         bool                               inited{};
     };
     struct table_column {
-        std::string_view label;
-        f32              fixed{};
-        f32              weight{1.0f};
+        std::string_view   label;
+        f32                fixed{};
+        f32                weight{1.0f};
+        table_column_flags flags{};
     };
     struct table_frame { // the table being built this frame
         bool                                      active{};
@@ -1129,7 +1446,12 @@ private:
         u32                                       ncols{};
         u32                                       setup_count{};
         std::array<table_column, max_table_columns> cols{};
-        std::array<f32, max_table_columns + 1>    col_x{};
+        std::array<f32, max_table_columns + 1>    col_x{};   // the edges of the visible columns, left to right
+        std::array<f32, max_table_columns>        x0{}, x1{}; // where each column is (by declared index; hidden: empty)
+        std::array<u8, max_table_columns>         vis{};     // the declared index of each visible column, left to right
+        u32                                       nvis{};
+        f32                                       frac_total{1.0f}; // the widths of the visible columns add up to this
+        u32                                       tree_depth{};
         f32                                       height_limit{};
         vec2                                      origin{};
         f32                                       width{};
@@ -1155,6 +1477,7 @@ private:
         id   key{};
         u64  last_frame{};
         f32  scroll{};
+        f32  grab{};
         f32  content_h{};
         bool overflow{};
     };
@@ -1337,8 +1660,20 @@ private:
     void                   apply_layer_order();
     [[nodiscard]] bool     pointer_over(const rect& r) const noexcept;
     bool begin_popup_at(id key, const rect& anchor, vec2 size);
-    void end_popup();
+    void end_popup_at();
     bool picker_body(id key, color& c, color_flags flags);
+    bool hotkey_field(std::string_view label, u32& key_code, key_chord* chord);
+    // a scrollbar thumb that follows the pointer: the new scroll offset while it is pressed / dragged. `grab` remembers where
+    // in the thumb the press was (a press beside the thumb puts its middle under the pointer), `travel` is how far the
+    // thumb can move along the track
+    [[nodiscard]] f32 thumb_drag(const interaction& in, f32& grab, f32 thumb_y, f32 thumb_h, f32 track_top, f32 travel,
+                                 f32 max_scroll, f32 scroll) const noexcept;
+    void apply_input_mask();
+    bool edit_indent_lines(bool unindent, int tab_size);
+    void picker_field(id key, const rect& box, const interaction& in, bool open, std::string_view text, int icon);
+    bool pick_cell(id key, const rect& r, std::string_view text, bool selected, bool faded, bool marked);
+    bool calendar_body(date& value, bool close_on_pick);
+    bool time_body(time_of_day& value, bool seconds);
     void draw_checker(const rect& r, f32 cell);
     bool row_item(id key, std::string_view shown, bool selected, f32 text_indent, f32 row_height);
     [[nodiscard]] bool& tree_open_state(id key, bool default_open);
@@ -1588,6 +1923,71 @@ private:
     f32         ime_line_h_{};
     void draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f);
 
+    // table layouts loaded before the table was drawn: applied once when it is
+    std::vector<std::pair<id, std::string>> table_pending_;
+
+    // tab bars: scratch for the cells of the bar being built, and the tab that is being dragged to a new place
+    std::vector<rect> tab_cells_;
+    std::vector<f32>  tab_emph_;
+    id                tabdrag_tab_{};
+    id                tabdrag_cand_{};
+    f32               tabdrag_grab_{};
+    f32               tabdrag_press_x_{};
+
+    // input masks and code fields: what the text field being built has to do beyond plain editing
+    std::string_view edit_mask_;         // input_masked: the mask (only while the call runs)
+    id               focus_request_{};   // a text field that should take the keyboard when it is drawn next
+    struct code_mode {
+        bool                                          on{};
+        code_flags                                    flags{};
+        int                                           tab_size{4};
+        std::span<const std::pair<u32, u32>>          marks{}; // find matches (start, length), sorted
+        int                                           mark_active{-1};
+        std::size_t                                   goto_offset{~std::size_t{0}};
+    };
+    code_mode code_;
+    struct code_state { // per code field, across frames
+        id          key{};
+        u64         last_frame{};
+        bool        find_open{};
+        bool        replace_open{};
+        bool        match_case{};
+        bool        open_request{}; // code_find(): give the find field the keyboard
+        int         active{-1};
+        int         want_line{};
+        std::string find;
+        std::string replace;
+    };
+    std::vector<code_state>                code_states_;
+    std::vector<std::pair<u32, u32>>       code_marks_;
+    [[nodiscard]] code_state& code_state_for(id key);
+
+    // date picker: the month being shown, and the popup it belongs to
+    id  cal_key_{};
+    i32 cal_year_{};
+    i32 cal_month_{};
+
+    // generic popups (open_popup): where it opened from and how big its content was last frame
+    rect gpopup_anchor_{};
+    vec2 gpopup_size_{};
+    id   gpopup_key_{};       // the popup gpopup_size_ was measured for
+    bool gpopup_hidden_{};    // this frame's popup is only being measured
+
+    // drag and drop
+    bool            dd_active_{};     // a payload is being dragged
+    bool            dd_cancelled_{};  // Esc: ignored until the button is let go
+    id              dd_source_{};     // the widget it was picked up from
+    id              dd_candidate_{};  // a pressed widget that becomes a drag source once the pointer has moved
+    vec2            dd_press_pos_{};
+    std::string     dd_type_;
+    std::vector<u8> dd_data_;
+    vec2            dd_size_{};       // the preview panel, measured last frame
+    bool            dd_hidden_{};
+    bool            dd_saved_overlay_{};
+    u32             dd_prev_owner_{};
+    layout_state    dd_saved_layout_{};
+    rect            last_item_rect_{};
+
     // popup (combo)
     id   popup_id_{};
     bool in_overlay_{};
@@ -1669,6 +2069,49 @@ private:
     std::array<window_state, max_windows> windows_{};
     std::vector<anim_slot>                anims_;     // open addressing, power-of-two size, grows on demand
     u32                                   anim_used_{}; // occupied slots, live or stale
+};
+
+
+// a loop over the rows of a long list that only submits the ones in view; the rest are reserved as empty space, so the
+// scrollbar and the layout are those of the whole list. use it inside a scrolling area (a fixed-height window, a child, a
+// table with a height): every row must have the same height.
+//   strata::list_clipper clip(ui, rows.size(), ui.frame_height());
+//   while (clip.step()) { for (int i = clip.begin(); i < clip.end(); ++i) { draw_row(rows[i]); } }
+class list_clipper {
+public:
+    list_clipper(context& ui, std::size_t count, f32 item_height = 0.0f) noexcept
+        : ui_{&ui}, count_{static_cast<int>(count)}, height_{item_height} {}
+    ~list_clipper()
+    {
+        if (state_ == 1) { ui_->list_clip_end(count_, height_, end_); } // the loop was left early
+    }
+    list_clipper(const list_clipper&)            = delete;
+    list_clipper& operator=(const list_clipper&) = delete;
+
+    // true once (the rows begin() .. end() are to be submitted), then false
+    [[nodiscard]] bool step()
+    {
+        if (state_ == 0) {
+            ui_->list_clip_begin(count_, height_, begin_, end_);
+            state_ = 1;
+            return true;
+        }
+        if (state_ == 1) {
+            ui_->list_clip_end(count_, height_, end_);
+            state_ = 2;
+        }
+        return false;
+    }
+    [[nodiscard]] int begin() const noexcept { return begin_; }
+    [[nodiscard]] int end() const noexcept { return end_; }
+
+private:
+    context* ui_;
+    int      count_;
+    f32      height_;
+    int      begin_{};
+    int      end_{};
+    int      state_{};
 };
 
 } // namespace strata

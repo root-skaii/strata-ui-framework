@@ -4,9 +4,13 @@ include(strata_shaders)
 
 add_library(strata STATIC
     src/bidi.cpp
+    src/config.cpp
     src/context.cpp
+    src/context_badge.cpp
+    src/context_code.cpp
     src/context_combo.cpp
     src/context_data.cpp
+    src/context_datetime.cpp
     src/context_dock.cpp
     src/context_extra.cpp
     src/context_image.cpp
@@ -14,12 +18,16 @@ add_library(strata STATIC
     src/context_menu.cpp
     src/context_modal.cpp
     src/context_number.cpp
+    src/context_popup.cpp
     src/context_plot.cpp
     src/context_rich.cpp
+    src/context_tabs.cpp
     src/context_text.cpp
     src/context_toast.cpp
+    src/datetime.cpp
     src/draw_list.cpp
     src/font.cpp
+    src/keybinds.cpp
     src/platform_win32.cpp
     src/texture.cpp
     src/themes.cpp
@@ -34,11 +42,14 @@ target_sources(strata PUBLIC
         include/strata/backend/d3d11.hpp
         include/strata/backend/d3d12.hpp
         include/strata/bidi.hpp
+        include/strata/config.hpp
         include/strata/platform/win32.hpp
         include/strata/context.hpp
+        include/strata/datetime.hpp
         include/strata/draw_list.hpp
         include/strata/font.hpp
         include/strata/icons.hpp
+        include/strata/keybinds.hpp
         include/strata/strata.hpp
         include/strata/texture.hpp
         include/strata/themes.hpp

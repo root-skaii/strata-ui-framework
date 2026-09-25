@@ -215,14 +215,16 @@ void context::end_child()
             wheel_consumed_ = true;
         }
         if (!has_flag(f.flags, child_flags::no_scrollbar)) {
+            const f32  track_top = f.bounds.min.y + 5.0f;
             const f32  track_h = f.bounds.height() - 10.0f;
             const f32  thumb_h = std::max(20.0f, track_h * view_h / st.content_h);
-            const f32  thumb_y = f.bounds.min.y + 5.0f + (track_h - thumb_h) * (st.scroll / max_scroll);
-            const rect thumb   = {{f.bounds.max.x - 9.0f, thumb_y}, {f.bounds.max.x - 4.0f, thumb_y + thumb_h}};
-            const interaction in = interact(hash_id("##cscroll", current_seed()), thumb.expanded(3.0f));
-            if (in.held) {
-                st.scroll = std::clamp(st.scroll + mouse_delta_.y * st.content_h / view_h, 0.0f, max_scroll);
-            }
+            const f32  x0      = f.bounds.max.x - 9.0f;
+            // the whole track takes the press: a click beside the thumb moves it there, and it can be dragged from anywhere
+            f32 thumb_y = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
+            const interaction in = interact(hash_id("##cscroll", current_seed()), {{x0 - 3.0f, track_top}, {x0 + 8.0f, track_top + track_h}});
+            st.scroll = thumb_drag(in, st.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, st.scroll);
+            thumb_y   = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
+            const rect thumb = {{x0, thumb_y}, {f.bounds.max.x - 4.0f, thumb_y + thumb_h}};
             shape_style bar;
             bar.radius      = radii(2.5f);
             bar.fill_top    = style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.4f);
@@ -476,6 +478,17 @@ void context::tooltip(std::string_view text)
 
 bool context::hotkey(std::string_view label, u32& key_code)
 {
+    return hotkey_field(label, key_code, nullptr);
+}
+
+bool context::hotkey_chord(std::string_view label, key_chord& chord)
+{
+    return hotkey_field(label, chord.key, &chord);
+}
+
+// `chord` is null for a plain key; otherwise key_code is chord->key and the modifiers held with the key are stored too
+bool context::hotkey_field(std::string_view label, u32& key_code, key_chord* chord)
+{
     if (cur_ == nullptr) {
         return false;
     }
@@ -497,13 +510,17 @@ bool context::hotkey(std::string_view label, u32& key_code)
 
     bool changed = false;
     if (capturing && pressed_key_ != 0) {
-        if (pressed_key_ == 0x1b) {                       // Esc: leave it as it was
-        } else if (pressed_key_ == 0x08 || pressed_key_ == 0x2e) { // Backspace / Delete: unbind
+        const bool bare = chord == nullptr || !(mod_ctrl_ || mod_shift_ || mod_alt_);
+        if (pressed_key_ == 0x1b && bare) {                                     // Esc: leave it as it was
+        } else if ((pressed_key_ == 0x08 || pressed_key_ == 0x2e) && bare) {   // Backspace / Delete: unbind
             changed  = key_code != 0;
             key_code = 0;
+            if (chord != nullptr) { *chord = {}; }
         } else {
-            changed  = key_code != pressed_key_;
+            const key_chord next{pressed_key_, mod_ctrl_, mod_shift_, mod_alt_};
+            changed  = chord != nullptr ? *chord != next : key_code != pressed_key_;
             key_code = pressed_key_;
+            if (chord != nullptr) { *chord = next; }
         }
         capturing       = false;
         hotkey_capture_ = 0;
@@ -524,7 +541,11 @@ bool context::hotkey(std::string_view label, u32& key_code)
     field.shadow_blur = 8.0f * a.toggle;
     dl_.shape(box, field);
 
-    std::string_view shown = capturing ? std::string_view{"press a key..."} : key_name(key_code);
+    std::string chord_text;
+    if (chord != nullptr && !capturing) { chord_text = chord_to_string(*chord); }
+    std::string_view shown = capturing ? std::string_view{"press a key..."}
+                           : chord != nullptr ? (chord_text.empty() ? std::string_view{"None"} : std::string_view{chord_text})
+                                              : key_name(key_code);
     color tc = key_code == 0 && !capturing ? style_.text_dim : style_.text;
     if (capturing) {
         const f32 pulse = 0.65f + 0.35f * std::sin(static_cast<f32>(time_) * 7.0f);

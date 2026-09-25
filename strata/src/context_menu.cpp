@@ -49,13 +49,28 @@ struct mnemonic_label {
     return m;
 }
 
+[[nodiscard]] bool iequals(std::string_view a, std::string_view b) noexcept
+{
+    if (a.size() != b.size()) { return false; }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) { return false; }
+    }
+    return true;
+}
+
+[[nodiscard]] std::string_view trim_spaces(std::string_view s) noexcept
+{
+    while (!s.empty() && s.front() == ' ') { s.remove_prefix(1); }
+    while (!s.empty() && s.back() == ' ') { s.remove_suffix(1); }
+    return s;
+}
+
 // the virtual-key code a name of the accelerator syntax stands for; 0 if unknown
 [[nodiscard]] u32 key_from_name(std::string_view t) noexcept
 {
     if (t.size() == 1) {
         const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(t[0])));
         if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) { return static_cast<u32>(c); }
-        return 0;
     }
     std::string lower;
     for (const char c : t) { lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
@@ -74,33 +89,65 @@ struct mnemonic_label {
     for (const named& n : names) {
         if (n.name == lower) { return n.vk; }
     }
+    for (u32 vk = 1; vk < 0xff; ++vk) { // whatever key_name() prints: "Page Up", "Num +", "Mouse 4", ";" ...
+        const std::string_view name = key_name(vk);
+        if (name != "Key ?" && iequals(name, t)) { return vk; }
+    }
     return 0;
 }
 
 } // namespace
 
+std::string chord_to_string(const key_chord& chord)
+{
+    if (!chord.bound()) { return {}; }
+    std::string s;
+    if (chord.ctrl)  { s += "Ctrl+"; }
+    if (chord.shift) { s += "Shift+"; }
+    if (chord.alt)   { s += "Alt+"; }
+    s += key_name(chord.key);
+    return s;
+}
+
+bool chord_from_string(std::string_view text, key_chord& out) noexcept
+{
+    key_chord c;
+    std::string_view rest = trim_spaces(text);
+    if (rest.empty()) {
+        out = c;
+        return true;
+    }
+    for (;;) { // modifiers, in any order; what is left is the key, which may itself contain a '+' ("Num +")
+        const std::size_t plus = rest.find('+');
+        if (plus == std::string_view::npos) { break; }
+        const std::string_view head = trim_spaces(rest.substr(0, plus));
+        bool* mod = iequals(head, "ctrl") || iequals(head, "control") ? &c.ctrl
+                  : iequals(head, "shift")                             ? &c.shift
+                  : iequals(head, "alt")                               ? &c.alt
+                                                                       : nullptr;
+        if (mod == nullptr) { break; }
+        *mod = true;
+        rest = trim_spaces(rest.substr(plus + 1));
+    }
+    c.key = key_from_name(rest);
+    if (c.key == 0) { return false; }
+    out = c;
+    return true;
+}
+
 bool context::accelerator(std::string_view combo) const
 {
-    bool ctrl = false, shift = false, alt = false;
-    u32 vk = 0;
-    std::size_t i = 0;
-    while (i <= combo.size()) {
-        std::size_t e = combo.find('+', i);
-        if (e == std::string_view::npos) { e = combo.size(); }
-        std::string_view tok = combo.substr(i, e - i);
-        while (!tok.empty() && tok.front() == ' ') { tok.remove_prefix(1); }
-        while (!tok.empty() && tok.back() == ' ') { tok.remove_suffix(1); }
-        if (!tok.empty()) {
-            std::string lower;
-            for (const char c : tok) { lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
-            if (lower == "ctrl" || lower == "control") { ctrl = true; }
-            else if (lower == "shift") { shift = true; }
-            else if (lower == "alt") { alt = true; }
-            else { vk = key_from_name(tok); if (vk == 0) { return false; } }
-        }
-        i = e + 1;
-    }
-    if (vk == 0 || pressed_key_ != vk) {
+    key_chord c;
+    return chord_from_string(combo, c) && c.bound() && chord_pressed(c);
+}
+
+bool context::chord_pressed(const key_chord& c) const
+{
+    const u32  vk    = c.key;
+    const bool ctrl  = c.ctrl;
+    const bool shift = c.shift;
+    const bool alt   = c.alt;
+    if (vk == 0 || pressed_key_ != vk || hotkey_capture_ != 0) {
         return false;
     }
     if (mod_ctrl_ != ctrl || mod_shift_ != shift || mod_alt_ != alt) {
@@ -191,7 +238,8 @@ bool context::menu_begin_level(u32 level, id menu_key)
         pos.y = std::max(4.0f, display_.y - 4.0f - size.y);
     }
     m.rect_cur = {pos, pos + size};
-    const f32 fade = measured ? std::clamp(m.age / 0.09f, 0.0f, 1.0f) : 0.0f; // the first frame only measures
+    const f32 lin  = std::clamp(m.age / 0.12f, 0.0f, 1.0f);
+    const f32 fade = measured ? lin * lin * (3.0f - 2.0f * lin) : 0.0f; // eased at both ends; the first frame only measures
 
     menu_frame& frame = menu_stack_[menu_depth_];
     frame = {};
