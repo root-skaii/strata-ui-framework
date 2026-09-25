@@ -28,6 +28,7 @@ add_library(strata STATIC
     src/draw_list.cpp
     src/font.cpp
     src/keybinds.cpp
+    src/limits.cpp
     src/platform_win32.cpp
     src/texture.cpp
     src/themes.cpp
@@ -56,7 +57,7 @@ target_sources(strata PUBLIC
         include/strata/types.hpp
         include/strata/vmem.hpp
 )
-target_sources(strata PRIVATE src/text_util.hpp)
+target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/dock_state.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
 target_compile_features(strata PUBLIC cxx_std_23)

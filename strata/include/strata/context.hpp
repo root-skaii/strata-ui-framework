@@ -15,6 +15,7 @@
 #include <format>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -492,6 +493,13 @@ void apply_tab_events(const tab_events& ev, std::vector<T>& items, int& selected
 
 class context;
 
+namespace internal { // (src/dock_state.hpp)
+struct dock_state;
+struct dock_target;
+struct dock_guide;
+struct dock_space;
+} // namespace internal
+
 // converts to false when the window is collapsed; end_window always runs
 class window_scope {
 public:
@@ -686,8 +694,8 @@ public:
 
     context(font_atlas atlas, const strata::style& theme, draw_list_limits limits = {});
     ~context();
-    context(context&&) noexcept            = default;
-    context& operator=(context&&) noexcept = default;
+    context(context&&) noexcept;
+    context& operator=(context&&) noexcept;
 
     // frame lifecycle ------------------------------------------------------
     void begin_frame(const input_state& input);
@@ -741,6 +749,9 @@ public:
     // docking --------------------------------------------------------------
     // windows with window_flags::dockable can be dragged by the title bar into a dock space (centre = join as a tab,
     // edges = split). up to 8 spaces exist at once; one you stop calling every frame is gone. without a space nothing docks.
+    // while dragging: drop guides show over a pane, the tab bar of a pane takes the window as a tab at the pointer, Shift
+    // moves it without docking, Esc cancels docking. tabs reorder by dragging along their bar; double-click floats a tab
+    // or resets a splitter / edge dock.
     //   dock_area(rect), dock_area("name", rect)   the main space / a named one over any region
     //   dock_edge(name, side, size, region)        a resizable panel along a side of `region` that takes room only while
     //                                              windows are docked in it. returns what is left, so calls chain:
@@ -1255,7 +1266,7 @@ public:
     void log_view(std::string_view id, log_buffer& log, vec2 size = {0.0f, 0.0f}, log_view_flags flags = log_view_flags::none);
 
     // docking animation -----------------------------------------------------------------------
-    // panes slide to their new place when a window docks, undocks or a pane closes (off by default)
+    // panes slide to their new place when a window docks, undocks or a pane closes (on by default)
     void set_dock_animation(bool on) noexcept { dock_animation_ = on; }
 
     // true when the key was pressed this frame with exactly these modifiers (auto-repeat included). a text field that has
@@ -1356,6 +1367,7 @@ private:
         u32  dock_order{};  // position among the tabs of its node
         vec2 float_size{};  // size to go back to when un-docked
         bool docked_now{};  // drawn as a docked window this frame
+        f32  ghost{};       // 0..1: see-through while it is carried over a dock target
         f32  title_h{};
         u64  last_frame{};
         id   dock_owner{};     // docked in a floating dock: that dock's window (the windows stack together)
@@ -1498,48 +1510,8 @@ private:
         layout_state outer{};
     };
 
-    // dock tree: leaves hold windows as tabs, split nodes divide their area between two children
-    static constexpr u32 max_dock_nodes = 32;
-    static constexpr u8  no_node        = 0xff;
-    struct dock_node {
-        bool used{};
-        u8   parent{no_node};
-        std::array<u8, 2> child{no_node, no_node}; // both no_node: a leaf
-        bool vertical{};   // false: children side by side, true: stacked
-        f32  ratio{0.5f};  // share of the first child
-        id   active{};     // leaf: the selected tab (window key)
-        rect area;         // this frame: the whole node (the layout's target)
-        rect content;      // this frame, leaf: below the tab bar
-        rect shown_area;   // what is drawn: follows `area`, animated when dock animation is on
-        rect shown_content;
-        bool fresh{true};  // no shown_* yet
-        u8   space{0};     // the dock space this node belongs to
-        [[nodiscard]] bool leaf() const noexcept { return child[0] == no_node; }
-    };
-    struct dock_target {
-        bool      valid{};
-        u8        space{no_node};
-        u8        node{no_node}; // no_node: the space is empty
-        dock_zone zone{dock_zone::center};
-        bool      outer{};       // splits the root instead of the node under the pointer
-        rect      preview;
-    };
-
-    // a dock space: one tree of panes over a region. the main area, named areas, edge docks and floating docks are all spaces
-    static constexpr u32 max_dock_spaces = 8;
-    struct dock_space {
-        id   key{};          // 0 = free slot
-        u8   root{no_node};
-        rect area;           // where its panes are laid out this frame
-        rect drop;           // where a dragged window is accepted (a strip for an empty edge dock)
-        rect panel;          // the whole panel an empty edge dock would take: the drop preview
-        f32  edge_size{};    // edge docks: their width / height
-        id   owner{};        // a floating dock: the key of its window
-        bool set{};          // given a rectangle this frame
-        bool hidden{};       // a collapsed floating dock: what is docked in it is hidden
-        bool edge{};
-        u64  last_frame{};
-    };
+    // docking: the tree of panes and the drag state are in internal::dock_state (src/dock_state.hpp)
+    static constexpr u8 no_node = 0xff;
 
     // text editing: undo history of the focused field
     enum class edit_kind : u8 { other, typing, erase_back, erase_fwd };
@@ -1708,8 +1680,13 @@ private:
     void dock_relayout() noexcept;
     [[nodiscard]] u8   dock_new_node() noexcept;
     void dock_free_node(u8 node) noexcept;
-    [[nodiscard]] dock_target dock_pick(vec2 pointer, u8 exclude_leaf = no_node) const noexcept;
-    void dock_attach(window_state& w, u8 space, u8 node, dock_zone zone, bool outer, f32 size = 0.0f) noexcept;
+    [[nodiscard]] internal::dock_target dock_pick(vec2 pointer, u8 exclude_leaf = no_node, vec2 want = {}) const noexcept; // want: the size the window has
+    void dock_attach(window_state& w, u8 space, u8 node, dock_zone zone, bool outer, f32 size = 0.0f, int tab = -1) noexcept;
+    [[nodiscard]] f32 dock_tab_width(const window_state& w) const noexcept;
+    [[nodiscard]] u32 dock_leaf_tabs(u8 leaf, std::array<u8, max_windows>& out, bool shown_only) const noexcept; // indices into windows_, in tab order
+    void dock_move_tab(window_state& w, u32 index) noexcept;                                  // to that place among its neighbours
+    [[nodiscard]] u32 dock_guides(const internal::dock_space& sp, u8 leaf, std::array<internal::dock_guide, 9>& out) const noexcept;
+    [[nodiscard]] bool dock_double_click(id key) noexcept;                                    // the second press of a quick pair on `key`
     [[nodiscard]] u8 dock_space_at(id key) noexcept;                 // finds or creates the space with this key
     [[nodiscard]] static id dock_space_key(std::string_view name) noexcept;
     void dock_set_space(u8 space, const rect& area, const rect& drop, const rect& panel) noexcept;
@@ -1878,8 +1855,7 @@ private:
     u64           toast_seq_{};
 
     // docking animation
-    bool          dock_animation_{};
-    bool          dock_splitting_{}; // a splitter is being dragged: panes follow the pointer without easing
+    bool          dock_animation_{true};
 
     // text input
     edit_history  undo_;
@@ -2026,22 +2002,12 @@ private:
     std::vector<rich_line>                 rich_lines_;
 
     // docking
-    std::array<dock_node, max_dock_nodes>  dock_nodes_{};
-    std::array<dock_space, max_dock_spaces> dock_spaces_{};
-    bool                                   dock_any_set_{};   // some space got a rectangle this frame
-    u32                                    dock_counter_{};
-    dock_target                            dock_target_cur_{};
-    dock_target                            dock_target_prev_{};
-    id                                     dock_drag_win_{};  // the floating dockable window being dragged this frame
-    id                                     dock_drag_prev_{}; // ... and in the previous one (a drop happens on the release frame)
+    std::unique_ptr<internal::dock_state>  dock_;
     bool                                   dock_chrome_cur_{};
     bool                                   dock_chrome_prev_{};
     bool                                   hovered_docked_cur_{};
     bool                                   hovered_docked_prev_{};
-    vec2                                   dock_press_pos_{};
-    u8                                     dock_group_src_{no_node}; // a whole pane (its tabs) is being dragged by the grip of its tab bar
-    bool                                   dock_group_moved_{};
-
+    bool                                   window_faded_{};   // the window being built pushed an alpha that end_window pops
     // child regions, cards
     std::array<child_state, max_children>  children_{};
     std::array<child_frame, max_child_depth> child_stack_{};

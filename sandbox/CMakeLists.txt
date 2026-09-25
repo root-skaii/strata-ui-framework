@@ -6,6 +6,12 @@ add_executable(strata_sandbox WIN32
     main.cpp
     ../tests/selftest.cpp
     ../tests/selftest.hpp
+    ../tests/selftest_common.hpp
+    ../tests/selftest_text.cpp
+    ../tests/selftest_dock.cpp
+    ../tests/selftest_widgets.cpp
+    ../tests/selftest_windows.cpp
+    ../tests/selftest_misc.cpp
     demo2.cpp
     demo3.cpp
     demo3.hpp
@@ -47,7 +53,16 @@ set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT strat
 # a golden is what one machine drew (fonts, gpu rounding): regenerate them when you change how something looks or
 # when you move to a machine with other fonts. on a mismatch the sandbox writes <name>.actual.png and <name>.diff.png into
 # <build dir>/test_artifacts (never next to the sources).
+# on a machine with other fonts keep goldens of its own instead of rewriting the committed ones:
+#   -DSTRATA_GOLDEN_DIR=C:/somewhere/goldens     (strata_update_goldens then fills that folder)
+# and loosen the comparison if text still lands a pixel off:
+#   -DSTRATA_GOLDEN_TOLERANCE=12 (per channel, of 255)   -DSTRATA_GOLDEN_ALLOWED=1.0 (percent of the pixels)
+set(STRATA_GOLDEN_DIR "${PROJECT_SOURCE_DIR}/tests/golden" CACHE PATH "folder of the golden screenshots")
+set(STRATA_GOLDEN_TOLERANCE 6   CACHE STRING "a pixel matches when every channel is within this of the golden (of 255)")
+set(STRATA_GOLDEN_ALLOWED   0.3 CACHE STRING "percent of the pixels that may not match")
+
 if(STRATA_BUILD_TESTS)
+    file(MAKE_DIRECTORY "${STRATA_GOLDEN_DIR}")
     add_test(NAME strata_selftest COMMAND strata_sandbox --selftest)
     set_tests_properties(strata_selftest PROPERTIES TIMEOUT 120)
 
@@ -60,8 +75,10 @@ if(STRATA_BUILD_TESTS)
             if(NOT STRATA_BUILD_${api_upper})
                 continue()
             endif()
-            set(golden "${PROJECT_SOURCE_DIR}/tests/golden/${name}_${api}.png")
-            add_test(NAME shot_${name}_${api} COMMAND strata_sandbox --${api} ${ARGN} --golden "${golden}" --artifacts "${CMAKE_BINARY_DIR}/test_artifacts")
+            set(golden "${STRATA_GOLDEN_DIR}/${name}_${api}.png")
+            add_test(NAME shot_${name}_${api} COMMAND strata_sandbox --${api} ${ARGN} --golden "${golden}"
+                     --golden-tolerance ${STRATA_GOLDEN_TOLERANCE} --golden-allowed ${STRATA_GOLDEN_ALLOWED}
+                     --artifacts "${CMAKE_BINARY_DIR}/test_artifacts")
             set_tests_properties(shot_${name}_${api} PROPERTIES LABELS "gpu" TIMEOUT 180)
             add_custom_target(strata_update_golden_${name}_${api}
                 COMMAND strata_sandbox --${api} ${ARGN} --golden "${golden}" --update-golden

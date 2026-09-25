@@ -1,6 +1,8 @@
 #include "strata/context.hpp"
 
 #include "strata/bidi.hpp"
+#include "dock_state.hpp"
+#include "limits.hpp"
 #include "text_util.hpp"
 
 #include <algorithm>
@@ -121,7 +123,11 @@ context::context(font_atlas atlas, const strata::style& theme, draw_list_limits 
     , dl_{limits}
     , style_{theme}
     , anims_(1024)
+    , dock_(std::make_unique<internal::dock_state>())
 {}
+
+context::context(context&&) noexcept = default;
+context& context::operator=(context&&) noexcept = default;
 
 // frame lifecycle ----------------------------------------------------------
 
@@ -207,15 +213,15 @@ void context::begin_frame(const input_state& in)
     table_depth_         = 0;
     table_               = {};
 
-    dock_any_set_     = false;
-    for (dock_space& sp : dock_spaces_) {
+    dock_->any_set     = false;
+    for (dock_space& sp : dock_->spaces) {
         sp.set    = false;
         sp.hidden = false;
     }
-    dock_target_prev_ = dock_target_cur_;
-    dock_target_cur_  = {};
-    dock_drag_prev_   = dock_drag_win_;
-    dock_drag_win_    = 0;
+    dock_->target_prev = dock_->target_cur;
+    dock_->target_cur  = {};
+    dock_->drag_prev   = dock_->drag_win;
+    dock_->drag_win    = 0;
     dock_chrome_prev_ = dock_chrome_cur_;
     dock_chrome_cur_  = false;
 
@@ -435,6 +441,7 @@ context::window_state* context::window_for(id key, vec2 pos, f32 width) noexcept
         }
     }
     if (free_slot == nullptr) {
+        internal::limit_reached("windows (max_windows)", max_windows);
         return nullptr;
     }
     *free_slot = {.key = key, .pos = pos, .width = width};
@@ -479,6 +486,8 @@ void context::push_id(std::string_view s) noexcept
     if (id_depth_ < max_id_depth) {
         const id next = hash_id(s, current_seed());
         id_stack_[++id_depth_] = next;
+    } else {
+        internal::limit_reached("push_id nesting (max_id_depth): ids will collide", max_id_depth);
     }
 }
 
@@ -493,6 +502,8 @@ void context::push_font(font_id f) noexcept
 {
     if (f < font_.font_count() && font_depth_ < max_font_depth) {
         font_stack_[++font_depth_] = f;
+    } else if (f < font_.font_count()) {
+        internal::limit_reached("push_font nesting (max_font_depth)", max_font_depth);
     }
 }
 
@@ -521,6 +532,8 @@ void context::bring_to_front(id key) noexcept
     if (i == no_z) {
         if (z_count_ < max_windows) {
             z_order_[z_count_++] = key;
+        } else {
+            internal::limit_reached("window stacking order (max_windows)", max_windows);
         }
         return;
     }
@@ -537,6 +550,7 @@ void context::switch_run(u32 owner) noexcept
             runs_[run_count_++] = {run_start_, now - run_start_, run_owner_};
         } else {
             runs_overflow_ = true;
+            internal::limit_reached("draw runs per frame (max_runs): windows will not stack correctly", max_runs);
         }
     }
     run_owner_ = owner;
@@ -662,6 +676,7 @@ f32& context::var_ref(style_var which) noexcept
 void context::push_color(style_color which, color c) noexcept
 {
     if (color_depth_ >= max_overrides) {
+        internal::limit_reached("push_color nesting (max_overrides)", max_overrides);
         return;
     }
     color& slot = color_ref(which);
@@ -680,6 +695,7 @@ void context::pop_color(u32 count) noexcept
 void context::push_var(style_var which, f32 value) noexcept
 {
     if (var_depth_ >= max_overrides) {
+        internal::limit_reached("push_var nesting (max_overrides)", max_overrides);
         return;
     }
     f32& slot = var_ref(which);
@@ -883,10 +899,10 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     const dock_node*  node  = nullptr;
     const dock_space* space = nullptr;
     if (st->dock != 0 && st->dock <= max_dock_nodes && has_flag(flags, window_flags::dockable)) {
-        const dock_node& n = dock_nodes_[st->dock - 1];
-        if (n.used && n.leaf() && n.space < max_dock_spaces && dock_spaces_[n.space].set) {
+        const dock_node& n = dock_->nodes[st->dock - 1];
+        if (n.used && n.leaf() && n.space < max_dock_spaces && dock_->spaces[n.space].set) {
             node  = &n;
-            space = &dock_spaces_[n.space];
+            space = &dock_->spaces[n.space];
         }
     }
     const bool docked     = node != nullptr;
@@ -956,9 +972,13 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     if (body_dragging) {
         st->pos += mouse_delta_;
     }
-    if (!docked && dock_any_set_ && has_flag(flags, window_flags::dockable) && (drag_in.held || body_dragging)) {
-        dock_drag_win_   = wid;
-        dock_target_cur_ = dock_pick(mouse_);
+    if (!docked && dock_->any_set && has_flag(flags, window_flags::dockable) && (drag_in.held || body_dragging)) {
+        if (key_pressed(key::escape)) { dock_->void_key = wid; } // Esc: this drag does not dock
+        if (dock_->void_key != wid && !mod_shift_) {             // ... and neither does one with Shift held
+            dock_->drag_win   = wid;
+            const f32 shown_h = st->height > 0.0f ? st->height : title_h + 2.0f * pad + st->content_h;
+            dock_->target_cur = dock_pick(mouse_, no_node, {st->width, shown_h});
+        }
     }
 
     // resizing: the right edge, the bottom edge and the corner (last frame's geometry)
@@ -1025,6 +1045,13 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
             hovered_z_          = z;
             hovered_docked_cur_ = docked;
         }
+    }
+
+    // a window carried to a dock target goes see-through, so the pane it is aimed at shows through it
+    st->ghost = approach(st->ghost, !docked && dock_->drag_prev == wid && dock_->target_prev.valid ? 1.0f : 0.0f);
+    if (st->ghost > 0.01f) {
+        dl_.push_alpha(1.0f - 0.45f * st->ghost);
+        window_faded_ = true;
     }
 
     const f32 round = style_.rounding;
@@ -1173,6 +1200,10 @@ void context::end_window()
     }
 
     dl_.pop_clip();
+    if (window_faded_) {
+        dl_.pop_alpha();
+        window_faded_ = false;
+    }
     switch_run(run_base);
     pop_id();
     cur_        = nullptr;

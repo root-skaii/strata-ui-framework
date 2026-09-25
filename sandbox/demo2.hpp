@@ -102,7 +102,7 @@ struct demo2_state {
     // requests to the host (main applies them between frames)
     float pending_scale  = 0.0f;  // > 0: set_scale(pending_scale)
     int   scale_combo    = 0;
-    bool  dock_anim      = false;
+    bool  dock_anim      = true;
 };
 
 // draws the decorative backdrop (call before the windows; it lands behind all of them)

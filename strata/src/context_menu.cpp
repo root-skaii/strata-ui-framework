@@ -2,6 +2,8 @@
 
 #include "strata/context.hpp"
 
+#include "limits.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -434,6 +436,7 @@ bool context::begin_menu(std::string_view label, bool enabled)
         menu_frame& frame = menu_stack_[menu_depth_ - 1];
         const u32 level = frame.level;
         if (level + 1 >= max_menu_levels) {
+            internal::limit_reached("submenu levels (max_menu_levels)", max_menu_levels);
             return false;
         }
         frame.content_w = std::max(frame.content_w, check_column + ts.x + arrow_column + 12.0f);

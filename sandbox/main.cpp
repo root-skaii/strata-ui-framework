@@ -40,6 +40,8 @@ struct options {
     std::string    golden;              // compare the last frame with this png and exit (0 = same)
     std::string    artifacts;           // where a failed comparison writes its .actual / .diff images (default: the temp folder)
     bool           update_golden = false;
+    strata::u32    golden_tolerance = 6;    // per channel, out of 255: gpus round a little differently
+    double         golden_allowed   = 0.3;  // percent of the pixels that may be further off than that (other fonts move glyphs)
     strata::i32    shot_frames = 24;    // frames rendered (fixed 1/60 s steps) before the screenshot
     const wchar_t* log_path   = nullptr; // redirect stderr (debug layer output, frame report) to a file
 
@@ -80,6 +82,8 @@ constexpr const wchar_t* usage_text =
     L"  --scene NAME             start with one scene only: default, features, visuals, menus, config, tabs, dnd, lists, editor, ...\n"
     L"  --shot FILE              render --shot-frames fixed steps, save the last frame as a png and exit\n"
     L"  --golden FILE            same, but compare with the png FILE (exit code 0 = match); --update-golden rewrites it\n"
+    L"  --golden-tolerance N     a pixel matches when every channel is within N of the golden (default 6, of 255)\n"
+    L"  --golden-allowed PCT     percent of the pixels that may not match (default 0.3)\n"
     L"  --menu                   show only the sidebar settings-menu example\n"
     L"  --selftest               run the headless ui checks (text editing, docking, ...) and exit\n"
     L"  --features               start with the docked feature windows only (multi-line input, rich text, images, tables)\n"
@@ -165,6 +169,8 @@ struct app {
         else if (a == L"--golden")         { opt.golden = to_utf8(value(i)); }
         else if (a == L"--update-golden")  { opt.update_golden = true; }
         else if (a == L"--artifacts")      { opt.artifacts = to_utf8(value(i)); }
+        else if (a == L"--golden-tolerance") { opt.golden_tolerance = static_cast<strata::u32>(std::clamp(integer(i), 0, 255)); }
+        else if (a == L"--golden-allowed") { opt.golden_allowed = std::clamp(static_cast<double>(real(i)), 0.0, 100.0); }
         else if (a == L"--shot-frames")    { opt.shot_frames = std::max(integer(i), 1); }
         else if (a == L"--menu")           { opt.menu_only = true; }
         else if (a == L"--selftest")       { opt.selftest = true; }
@@ -1110,7 +1116,7 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
 void apply_scene(demo_state& s, const std::string& name)
 {
     if (name.empty() || name == "default") { return; }
-    if (name == "features") {
+    if (name == "features" || name == "dockdrag") { // (dockdrag: a tab of it is being dragged, see demo2_script)
         s.show_features = s.features_only = s.dock_pending = true;
     } else if (name == "visuals") {
         s.x.art = s.x.show_visuals = true;
@@ -1194,12 +1200,10 @@ int finish_shot(gfx_host& host, const options& opt)
         (void)imgio::write_png(artifact_path(opt, "actual"), px, w, h);
         return 1;
     }
-    constexpr strata::u32 tolerance = 6;      // per channel, out of 255: gpus round a little differently
-    constexpr double      allowed   = 0.003;  // share of pixels that may be further off than that
-    const imgio::compare_result r = imgio::compare(px, ref, w, h, tolerance);
-    std::fprintf(stderr, "[shot] %s: %.4f%% of the pixels differ (largest channel difference %u)\n", opt.golden.c_str(),
-                 r.fraction() * 100.0, r.max_difference);
-    if (r.fraction() > allowed) {
+    const imgio::compare_result r = imgio::compare(px, ref, w, h, opt.golden_tolerance);
+    std::fprintf(stderr, "[shot] %s: %.4f%% of the pixels differ (largest channel difference %u; allowed %.4f%% beyond %u)\n",
+                 opt.golden.c_str(), r.fraction() * 100.0, r.max_difference, opt.golden_allowed, opt.golden_tolerance);
+    if (r.fraction() * 100.0 > opt.golden_allowed) {
         (void)imgio::write_png(artifact_path(opt, "actual"), px, w, h);
         (void)imgio::write_png(artifact_path(opt, "diff"), imgio::diff_image(px, ref, w, h), w, h);
         std::fprintf(stderr, "[shot] MISMATCH - see %s and the .diff image beside it\n", artifact_path(opt, "actual").c_str());
@@ -1409,6 +1413,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     apply_scene(state, opt.scene);
     init_rows(state);
     apply_theme(ui, state, opt.theme);
+    state.x.dock_anim = state.x.dock_anim && opt.shot.empty() && opt.golden.empty(); // (screenshots are taken of the settled layout)
     ui.set_dock_animation(state.x.dock_anim);
     if (!opt.theme_file.empty()) {
         strata::themes::theme_result r;

@@ -2,6 +2,8 @@
 
 #include "strata/context.hpp"
 
+#include "limits.hpp"
+
 #include <algorithm>
 
 namespace strata {
@@ -13,6 +15,7 @@ void context::open_modal(std::string_view title)
         if (modal_stack_[i] == wid) { return; } // already open
     }
     if (modal_count_ >= max_modals) {
+        internal::limit_reached("modals open at once (max_modals)", max_modals);
         return;
     }
     modal_stack_[modal_count_++] = wid;

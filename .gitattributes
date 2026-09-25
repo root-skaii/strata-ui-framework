@@ -1,0 +1,7 @@
+# sources are LF; batch files need CRLF to be reliable (goto / labels); images are never touched
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.dll binary
+*.lib binary

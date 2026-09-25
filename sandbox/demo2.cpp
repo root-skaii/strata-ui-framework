@@ -918,6 +918,11 @@ void demo2_script(const demo2_state& s, int frame, demo2_sim& sim)
         if (frame == 6) { sim.pos = {300.0f, 214.0f}; }
     } else if (s.scene == "charts") { // hover the first chart
         if (frame == 6) { sim.pos = {330.0f, 190.0f}; }
+    } else if (s.scene == "dockdrag") { // pull the "images" tab out of its pane and hold it over the editor: the drop guides show
+        if (frame == 6)  { sim.pos = {322.0f, 485.0f}; }
+        if (frame == 8)  { sim.down[0] = true; }
+        if (frame == 10) { sim.pos = {350.0f, 520.0f}; }
+        if (frame == 14) { sim.pos = {560.0f, 300.0f}; }
     } else if (s.scene == "multiselect") { // open the "layers" dropdown and hover its third row
         if (frame == 5)  { sim.pos = {290.0f, 592.0f}; }
         if (frame == 7)  { sim.down[0] = true; }

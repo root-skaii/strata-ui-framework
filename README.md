@@ -251,6 +251,13 @@ ui.dock_load_layout(layout);                     // ... and bring it back (befor
   submitted for a frame leaves the dock and its pane collapses into its sibling. Docked windows sit below floating ones,
   the tab bars and splitters count for `want_capture_mouse()`. `dock_window(title, zone, target, size)` /
   `undock_window` / `is_docked` / `window_rect` do the same from code (e.g. for a default layout). Up to 32 panes; without a space a docked window just floats where it last was.
+- **Docking comfort:** while a window is dragged over a pane, a cross of **drop guides** shows in its middle (centre = tab, the
+  four arrows = split that side) and one guide per border of a big space (splits the whole tree); the guide under the pointer
+  lights up together with the preview, and the rest of the pane still works by position. Dropping on a pane's **tab bar** joins
+  its tabs at the place under the pointer (a marker shows where). Drag a tab sideways along its bar to **reorder** the tabs, pull it
+  down or up to tear it off. **Double-click** a tab to float its window, a splitter or an edge-dock handle to reset it (equal
+  halves / the size it was given). Hold **Shift** while dragging a window (or a whole pane) to move it without docking;
+  **Esc** cancels the docking of the drag in progress.
 - **Dock spaces:** every dock area is a *space* with its own tree of panes, up to 8 at once, so docks are not all over the app:
   `dock_area(rect)` is the main one, `dock_area("name", rect)` adds more, `dock_edge(name, side, size, region)` is a panel
   along the left / right / top / bottom of a region that returns what is left, so several chain around the client area
@@ -603,7 +610,7 @@ if (auto w = ui.window("settings", {260, 90}, {740, 480}, flags)) {
   unbinds. `key_code` is a virtual-key code (`strata::key_name(code)` gives its name). `input_state::pressed_key` carries the
   key; `win32_platform` fills it. `ui.hotkey_chord("Label", chord)` does the same for a key with modifiers (see below).
 - **Docking animation:** `ui.set_dock_animation(true)` makes panes slide to their new place when a window docks, undocks or a pane closes
-  (a new pane grows out of the edge it was dropped at); dragging a splitter always follows the pointer. Off by default.
+  (a new pane grows out of the edge it was dropped at); dragging a splitter always follows the pointer. On by default; `set_dock_animation(false)` snaps panes into place.
 - **Alpha and transitions:** `ui.push_alpha(a)` / `pop_alpha()` scale everything drawn (nearly invisible content is inert);
   `ui.page_transition(key, page, slide)` fades and slides the content that follows when `page` changes.
 - **Layout helper:** `ui.same_line(x)` continues on the same line at an x offset from the left of the content area

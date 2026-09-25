@@ -2,6 +2,8 @@
 
 #include "strata/context.hpp"
 
+#include "limits.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -501,6 +503,9 @@ bool context::tree_leaf(std::string_view label, bool selected)
 
 bool context::tree_node(std::string_view label, tree_flags flags)
 {
+    if (cur_ != nullptr && tree_depth_ >= max_tree_depth) {
+        internal::limit_reached("tree_node nesting (max_tree_depth)", max_tree_depth);
+    }
     if (cur_ == nullptr || tree_depth_ >= max_tree_depth) {
         return false;
     }
@@ -636,6 +641,12 @@ bool context::begin_table(std::string_view id_label, u32 columns, table_flags fl
 {
     // a table inside a cell of another one is fine: the outer frame is parked on a stack until end_table().
     // tables repeated in rows need distinct ids (push_id(row)) to keep separate column widths and scroll positions
+    if (cur_ != nullptr && columns > max_table_columns) {
+        internal::limit_reached("table columns (max_table_columns)", max_table_columns);
+    }
+    if (cur_ != nullptr && table_.active && table_depth_ >= max_table_depth) {
+        internal::limit_reached("tables inside tables (max_table_depth)", max_table_depth);
+    }
     if (cur_ == nullptr || columns == 0 || columns > max_table_columns || (table_.active && table_depth_ >= max_table_depth)) {
         return false;
     }

@@ -2,6 +2,7 @@
 
 #include "strata/context.hpp"
 
+#include "limits.hpp"
 #include "text_util.hpp"
 
 #include <algorithm>
@@ -140,6 +141,9 @@ f32 context::layout_next_y() const noexcept
 
 bool context::begin_child(std::string_view id_label, vec2 size, child_flags flags)
 {
+    if (cur_ != nullptr && child_depth_ >= max_child_depth) {
+        internal::limit_reached("child regions inside child regions (max_child_depth)", max_child_depth);
+    }
     if (cur_ == nullptr || child_depth_ >= max_child_depth) {
         return false;
     }
@@ -244,6 +248,9 @@ void context::end_child()
 
 bool context::begin_card(std::string_view title, std::string_view icon, font_id icon_font)
 {
+    if (cur_ != nullptr && card_depth_ >= max_card_depth) {
+        internal::limit_reached("cards inside cards (max_card_depth)", max_card_depth);
+    }
     if (cur_ == nullptr || card_depth_ >= max_card_depth) {
         return false;
     }
