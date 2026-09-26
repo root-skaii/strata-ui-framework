@@ -440,21 +440,124 @@ bool& context::tree_open_state(id key, bool default_open)
     auto it = std::lower_bound(tree_states_.begin(), tree_states_.end(), key,
                                [](const tree_state& s, id k) { return s.key < k; });
     if (it == tree_states_.end() || it->key != key) {
-        it = tree_states_.insert(it, tree_state{key, default_open});
+        // a node that first appears while an open-all is running starts open, so expanding a whole tree does not
+        // have to be driven one level per frame from the outside
+        bool start_open = default_open;
+        if (tree_bulk_ != 0 && id_in_scope(tree_bulk_seed_)) {
+            start_open = tree_bulk_ == 1;
+        }
+        it = tree_states_.insert(it, tree_state{key, current_seed(), start_open});
+    } else {
+        it->seed = current_seed();
     }
     return it->open;
+}
+
+// is `seed` one of the id scopes the item being submitted sits in? 0 is the root scope: everything is in it
+bool context::id_in_scope(id seed) const noexcept
+{
+    if (seed == 0) {
+        return true;
+    }
+    for (u32 i = 0; i <= id_depth_; ++i) {
+        if (id_stack_[i] == seed) { return true; }
+    }
+    return false;
+}
+
+// the id scope a node was submitted in, 0 when it has no state (and so no parent we know of)
+// sets a node's open state without touching the scope it was submitted in (the keyboard acts on it from outside
+// that scope, so tree_open_state would record the wrong parent)
+void context::tree_open_set(id key, bool open) noexcept
+{
+    const auto it = std::lower_bound(tree_states_.begin(), tree_states_.end(), key,
+                                     [](const tree_state& s, id k) { return s.key < k; });
+    if (it != tree_states_.end() && it->key == key) {
+        it->open = open;
+    }
+}
+
+id context::tree_seed_of(id key) const noexcept
+{
+    const auto it = std::lower_bound(tree_states_.begin(), tree_states_.end(), key,
+                                     [](const tree_state& s, id k) { return s.key < k; });
+    return it != tree_states_.end() && it->key == key ? it->seed : id{0};
+}
+
+// does the chain of id scopes above `node` reach `root`? (`root` 0 is the whole ui)
+bool context::tree_under(id node, id root) const noexcept
+{
+    if (root == 0) {
+        return true;
+    }
+    id at = tree_seed_of(node);
+    for (u32 i = 0; i < max_tree_depth && at != 0; ++i) {
+        if (at == root) { return true; }
+        at = tree_seed_of(at);
+    }
+    return false;
+}
+
+// open / close every node under `seed` -- the ones that exist right now by walking their scopes, and the ones that
+// only appear as their parents open through the pending request, which lives long enough for a tree of the maximum
+// depth to unfold
+void context::tree_set_bulk(id seed, bool open) noexcept
+{
+    for (tree_state& st : tree_states_) {
+        if (st.key != seed && tree_under(st.key, seed)) { st.open = open; }
+    }
+    tree_bulk_        = open ? u8{1} : u8{2};
+    tree_bulk_seed_   = seed;
+    // opening unfolds one level per frame, so the request has to live long enough for the deepest tree; closing
+    // hides everything below at once and needs no more than the frame it was asked on
+    tree_bulk_frames_ = open ? max_tree_depth : 1;
+}
+
+void context::tree_set_recursive(id key, bool open) noexcept
+{
+    tree_set_bulk(key, open);
+}
+
+// set_next_item_open() and a running bulk / recursive request, applied on top of the stored state
+bool& context::tree_open_resolved(id key, bool default_open, bool& recursive_out) noexcept
+{
+    const u8 next = next_open_;
+    next_open_    = 0;
+    recursive_out = next >= 3;
+
+    // nodes that already exist were set by tree_set_bulk's walk; the pending request only catches the ones that
+    // appear later, as their parents open, which tree_open_state applies when it creates their state
+    bool& open = tree_open_state(key, default_open);
+    if (next != 0) {
+        open = next == 1 || next == 3;
+        if (recursive_out) { tree_set_recursive(key, open); }
+    }
+    return open;
 }
 
 // a full-width clickable row with hover / selected highlight; the caller draws the content
 bool context::row_item(id key, std::string_view shown, bool selected, f32 text_indent, f32 row_height)
 {
     const font_id f = current_font();
+    const f32 gutter = std::exchange(next_gutter_, 0.0f); // room set_next_item_gutter() reserved for accessories
     const rect row = layout_place({layout_.width, row_height});
     // inside a table cell the highlight reaches over the cell padding so text lines up with its neighbours
     const rect hit = table_.active ? rect{{row.min.x - table_.pad_x + 2.0f, row.min.y - 2.0f}, {row.max.x + table_.pad_x - 2.0f, row.max.y + 2.0f}}
                                    : row;
+    // a row that is scrolled out of view costs nothing beyond the place it takes in the layout
+    note_row_anchor(key, hit);
+    if (item_culled(hit)) {
+        note_culled_item(key, hit);
+        nav_record(key, hit, tree_depth_, false, false);
+        const bool taken = nav_take(key);
+        item_pressed_    = taken;
+        return taken;
+    }
     const interaction in = interact(key, hit);
-    item_pressed_ = in.pressed;
+    const bool activated = in.pressed || nav_take(key);
+    item_pressed_ = activated;
+    if (in.pressed) { nav_click(key); }
+    nav_record(key, hit, tree_depth_, false, false);
 
     anim_slot* a = anim_find(key);
     if (a == nullptr && in.hovered) { a = &anim_for(key); }
@@ -465,43 +568,69 @@ bool context::row_item(id key, std::string_view shown, bool selected, f32 text_i
         a->last_frame = (hover == 0.0f && !in.hovered) ? 0 : frame_;
     }
 
-    if (selected || hover > 0.01f) {
+    const bool focused = last_item_focused_;
+    if (selected || focused || hover > 0.01f) {
         shape_style bg;
         bg.radius      = radii(style_.rounding * 0.55f);
         bg.fill_top    = selected ? style_.accent.scaled_alpha(0.28f + 0.1f * hover)
                                   : style_.widget_hover.scaled_alpha(0.75f * hover);
         bg.fill_bottom = bg.fill_top;
+        if (focused) { // the keyboard cursor: an outline, so it reads on a selected or hovered row too
+            bg.border       = style_.accent_hover;
+            bg.border_width = std::max(style_.border_width, 1.0f);
+        }
         dl_.shape(hit, bg);
     }
-    const vec2 tsize = label_size(f, shown);
-    label_draw({row.min.x + (table_.active ? 0.0f : text_indent), row.min.y + (row.height() - tsize.y) * 0.5f},
-               selected ? style_.accent_hover : style_.text, shown, f);
-    return in.pressed;
+    const f32   indent = table_.active ? 0.0f : text_indent;
+    const vec2  tsize  = label_size(f, shown);
+    const vec2  at{row.min.x + indent, row.min.y + (row.height() - tsize.y) * 0.5f};
+    const color col = selected ? style_.accent_hover : style_.text;
+    // the label stops at the end of the row, minus whatever the row reserved for its accessories, instead of running
+    // out from under it: item_truncated() then says whether it was cut
+    label_clipped(at, std::max(row.max.x - gutter - at.x, 0.0f), col, shown, f);
+    return activated;
 }
 
 bool context::selectable(std::string_view label, bool selected)
 {
-    if (cur_ == nullptr) {
-        return false;
-    }
-    const font_id f = current_font();
-    const std::string_view shown = visible_label(label);
-    const f32 lh = rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f);
-    return row_item(hash_id(label, current_seed()), shown, selected, 8.0f, table_.active ? lh : lh + 8.0f);
+    return selectable(label, {}, selected);
 }
 
-bool context::tree_leaf(std::string_view label, bool selected)
+bool context::selectable(std::string_view label, std::string_view id_extra, bool selected)
 {
     if (cur_ == nullptr) {
         return false;
     }
     const font_id f = current_font();
     const std::string_view shown = visible_label(label);
-    const f32 h = (rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f)) + 8.0f;
-    return row_item(hash_id(label, current_seed()), shown, selected, 22.0f, h);
+    const f32 lh  = rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f);
+    const id  key = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
+    return row_item(key, shown, selected, 8.0f, table_.active ? lh : lh + 8.0f);
+}
+
+bool context::tree_leaf(std::string_view label, bool selected)
+{
+    return tree_leaf(label, {}, selected);
+}
+
+bool context::tree_leaf(std::string_view label, std::string_view id_extra, bool selected)
+{
+    if (cur_ == nullptr) {
+        return false;
+    }
+    const font_id f = current_font();
+    const std::string_view shown = visible_label(label);
+    const f32 h   = (rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f)) + 8.0f;
+    const id  key = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
+    return row_item(key, shown, selected, 22.0f, h);
 }
 
 bool context::tree_node(std::string_view label, tree_flags flags)
+{
+    return tree_node(label, {}, flags);
+}
+
+bool context::tree_node(std::string_view label, std::string_view id_extra, tree_flags flags)
 {
     if (cur_ != nullptr && tree_depth_ >= max_tree_depth) {
         internal::limit_reached("tree_node nesting (max_tree_depth)", max_tree_depth);
@@ -510,32 +639,69 @@ bool context::tree_node(std::string_view label, tree_flags flags)
         return false;
     }
     const font_id f = current_font();
-    const id key    = hash_id(label, current_seed());
+    const id key    = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
     const std::string_view shown = visible_label(label);
     const f32 h     = (rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f)) + 8.0f;
 
+    const f32 gutter = std::exchange(next_gutter_, 0.0f);
     const rect row = layout_place({layout_.width, h});
+    bool  recursive = false;
+    bool& open      = tree_open_resolved(key, has_flag(flags, tree_flags::default_open), recursive);
+
+    constexpr f32 indent = 18.0f;
+    // a node that is scrolled out of view still owns its open / closed state and its place in the layout; only the
+    // hit test, the animation slot, the measuring and the geometry go away
+    note_row_anchor(key, row);
+    if (item_culled(row)) {
+        note_culled_item(key, row);
+        nav_record(key, row, tree_depth_, true, open);
+        (void)nav_take(key);
+        if (!open) {
+            return false;
+        }
+        tree_stack_[tree_depth_++] = {row.min.x + 10.0f, row.max.y, layout_.origin.x, layout_.width};
+        layout_.origin.x += indent;
+        layout_.width    -= indent;
+        push_id_value(key);
+        return true;
+    }
+
     const interaction in = interact(key, row);
 
-    bool& open = tree_open_state(key, has_flag(flags, tree_flags::default_open));
     const bool arrow_hit = mouse_.x < row.min.x + h;
-    item_pressed_ = in.pressed;
-    if (in.pressed && (!has_flag(flags, tree_flags::arrow_only) || arrow_hit)) {
+    const bool activated = in.pressed || nav_take(key);
+    item_pressed_    = activated;
+    last_item_arrow_ = in.pressed && arrow_hit;
+    if (in.pressed) { nav_click(key); }
+    if (activated && (!has_flag(flags, tree_flags::arrow_only) || arrow_hit)) {
         open = !open;
+        // Ctrl or Shift held while it is clicked applies the change to the whole subtree
+        if (in.pressed && (mod_ctrl_ || mod_shift_)) { tree_set_recursive(key, open); }
     }
     const bool is_open = open;
+    nav_record(key, row, tree_depth_, true, is_open);
 
-    anim_slot& a = anim_for(key);
+    anim_slot* slot = anim_find(key);
+    if (slot == nullptr) {
+        slot         = &anim_for(key);
+        slot->toggle = is_open ? 1.0f : 0.0f; // a node scrolling back into view keeps the arrow it had
+    }
+    anim_slot& a = *slot;
     a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
     a.toggle = approach(a.toggle, is_open ? 1.0f : 0.0f, style_.anim_speed * 0.9f);
 
     const bool selected = has_flag(flags, tree_flags::selected);
-    if (selected || a.hover > 0.01f) {
+    const bool focused  = last_item_focused_;
+    if (selected || focused || a.hover > 0.01f) {
         shape_style bg;
         bg.radius      = radii(style_.rounding * 0.55f);
         bg.fill_top    = selected ? style_.accent.scaled_alpha(0.28f + 0.1f * a.hover)
                                   : style_.widget_hover.scaled_alpha(0.75f * a.hover);
         bg.fill_bottom = bg.fill_top;
+        if (focused) {
+            bg.border       = style_.accent_hover;
+            bg.border_width = std::max(style_.border_width, 1.0f);
+        }
         dl_.shape(row, bg);
     }
 
@@ -548,19 +714,19 @@ bool context::tree_node(std::string_view label, tree_flags flags)
     dl_.triangle_filled(rot({-2.5f, -4.0f}), rot({4.0f, 0.0f}), rot({-2.5f, 4.0f}),
                         lerp(style_.text_dim, style_.text, std::max(a.hover, a.toggle)));
 
-    const vec2 tsize = label_size(f, shown);
-    label_draw({row.min.x + 22.0f, row.min.y + (row.height() - tsize.y) * 0.5f},
-               selected ? style_.accent_hover : style_.text, shown, f);
+    const vec2  tsize = label_size(f, shown);
+    const vec2  at{row.min.x + 22.0f, row.min.y + (row.height() - tsize.y) * 0.5f};
+    const color col = selected ? style_.accent_hover : style_.text;
+    label_clipped(at, std::max(row.max.x - gutter - at.x, 0.0f), col, shown, f);
 
     if (!is_open) {
         return false;
     }
 
-    constexpr f32 indent = 18.0f;
     tree_stack_[tree_depth_++] = {c.x, row.max.y, layout_.origin.x, layout_.width};
     layout_.origin.x += indent;
     layout_.width    -= indent;
-    push_id(label);
+    push_id_value(key);
     return true;
 }
 
@@ -596,10 +762,11 @@ void context::text_ellipsis(std::string_view s)
         dl_.pop_clip();
         return;
     }
-    if (font_.measure(f, s).x <= avail) {
+    if (measure_cached(f, s).x <= avail) {
         text(s);
         return;
     }
+    last_item_truncated_ = true; // the caller can add a tooltip with the whole string
 
     constexpr std::string_view dots = "...";
     const f32 budget = avail - font_.measure(f, dots).x;
@@ -616,6 +783,7 @@ void context::text_ellipsis(std::string_view s)
     }
     cut += dots;
     text(cut);
+    last_item_truncated_ = true;
 }
 
 // tables ---------------------------------------------------------------------------------------

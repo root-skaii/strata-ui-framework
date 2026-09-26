@@ -384,6 +384,16 @@ input_state win32_platform::new_frame() noexcept
     in.shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
     in.alt   = (::GetKeyState(VK_MENU) & 0x8000) != 0;
 
+    // every key held right now, so context::key_down() can answer about keys the ui has no name for. GetKeyboardState
+    // is one call for all 256 of them and, unlike GetAsyncKeyState, reports the state this message queue has seen --
+    // which is what the rest of the frame's input is in step with.
+    std::array<BYTE, 256> vk{};
+    if (::GetKeyboardState(vk.data())) {
+        for (std::size_t i = 0; i < vk.size(); ++i) {
+            in.set_held(static_cast<u32>(i), (vk[i] & 0x80) != 0);
+        }
+    }
+
     const std::int64_t now = query_ticks();
     in.delta_time = static_cast<f32>(now - last_ticks_) / static_cast<f32>(tick_frequency());
     last_ticks_   = now;

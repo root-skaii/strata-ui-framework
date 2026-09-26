@@ -2,6 +2,7 @@
 
 #include "strata/bidi.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 
@@ -694,6 +695,29 @@ void draw_list::circle(vec2 center, f32 radius, color c, f32 thickness)
     shape({{center.x - radius, center.y - radius}, {center.x + radius, center.y + radius}}, st);
 }
 
+void draw_list::corner_brackets(const rect& r, color c, f32 thickness, f32 arm)
+{
+    const f32 w = r.width();
+    const f32 h = r.height();
+    if (c.a == 0 || thickness <= 0.0f || w <= 0.0f || h <= 0.0f) {
+        return;
+    }
+    const f32 shorter = std::min(w, h);
+    const f32 leg     = std::min(arm > 0.0f ? arm : shorter * 0.25f, shorter * 0.5f);
+    // each corner is two legs; drawn as rectangles so they stay crisp and need no joins
+    const f32 t = thickness;
+    const auto bar = [&](f32 x0, f32 y0, f32 x1, f32 y1) { rect_filled({{x0, y0}, {x1, y1}}, c); };
+
+    bar(r.min.x, r.min.y, r.min.x + leg, r.min.y + t);          // top left
+    bar(r.min.x, r.min.y, r.min.x + t,   r.min.y + leg);
+    bar(r.max.x - leg, r.min.y, r.max.x, r.min.y + t);          // top right
+    bar(r.max.x - t,   r.min.y, r.max.x, r.min.y + leg);
+    bar(r.min.x, r.max.y - t,   r.min.x + leg, r.max.y);        // bottom left
+    bar(r.min.x, r.max.y - leg, r.min.x + t,   r.max.y);
+    bar(r.max.x - leg, r.max.y - t,   r.max.x, r.max.y);        // bottom right
+    bar(r.max.x - t,   r.max.y - leg, r.max.x, r.max.y);
+}
+
 void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_flags style)
 {
     if (c.a == 0 || s.empty() || atlas_ == nullptr) {
@@ -709,8 +733,18 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
     c = fade(c);
     const f32 lh = atlas_->line_height_px(font);
     const vec2 p0 = pos * scale_;
+    // text that starts past the clip rectangle -- and, just as often, text scrolled off the top or the left of it --
+    // has nothing to contribute: leave before reserving 4 vertices per glyph and walking the string. the width is
+    // unknown until the glyphs are measured, so the left-hand test uses only where the run starts: one line of text
+    // cannot reach back to the left of its own origin.
     if (p0.y > phys_clip_.max.y || p0.x > phys_clip_.max.x) {
         return;
+    }
+    {   // how tall the run is: a byte scan, against a glyph walk plus 4 vertices per character
+        const f32 lines = 1.0f + static_cast<f32>(std::count(s.begin(), s.end(), '\n'));
+        if (p0.y + lines * lh < phys_clip_.min.y) {
+            return;
+        }
     }
 
     const bool bold      = has_text_flag(style, text_flags::bold);

@@ -46,7 +46,8 @@ strata_sandbox.exe [options]        (strata_sandbox.exe --help lists everything)
   --theme N|NAME           a built-in theme by index or name (midnight, light, ocean, rose, dracula, nord, solarized_dark,
                            solarized_light, high_contrast, forest, amber, glass);  --theme-file FILE applies a theme file on top
   --scale F                ui scale (default: the monitor's dpi scale; --width / --height are logical pixels)
-  --scene NAME             only one scene: default, features, visuals, inputs, multiselect, charts, textures, scripts, textlog, menus, context, modal, toasts, config, palette, tabs, dnd, lists, editor, ...
+  --scene NAME             only one scene: default, features, visuals, inputs, multiselect, charts, textures, scripts, textlog, menus, context, modal, toasts, config, palette, tabs, dnd, lists, editor, icons, bigtree, rows, app, ...
+  --icon-page HEX          with --scene icons: a raw page of 256 code points with their hex values, for picking one
   --menu                   only the sidebar settings-menu example
   --features               only the docked feature windows: multi-line input, rich text, images, nested tables
   --selftest               headless checks of the ui logic (text editing, docking, menus, modals, ...), exit code 0 = passed
@@ -186,6 +187,25 @@ if (ui.begin_table("files", 3, strata::table_default, /*scroll height*/ 240.0f))
   drawn above every window with the normal layout redirected into them, so any widget works inside.
 - **Trees:** guide lines, animated arrow, `arrow_only` (arrow toggles, the row is read with `ui.item_pressed()`),
   `selected`, `default_open`. `selectable` is the same row without children.
+- **Rows outside the view cost nothing.** `selectable`, `tree_leaf`, `tree_node`, `table_tree_*` and `custom_item`
+  place themselves in the layout and then stop if their rectangle does not meet the clip rectangle: no hit test, no
+  animation slot, no measuring, no geometry. The layout advance, the open / closed state and the `tree_pop` nesting
+  are the same either way, so the scrollbar range and everything below are unchanged and nothing has to opt in. This
+  is what makes a deep tree affordable when `list_clipper` cannot be used, because the rows are not all one height:
+  `--scene bigtree` is 5 704 nodes over four levels, all expanded, at 0.4 ms of UI time a frame with 22 rows drawn.
+- **Telling rows apart without building strings.** Ids come from the label, so rows that repeat a name used to need a
+  `name + "##" + path` per row per frame. The extra-id overloads take the identity separately -- it is hashed after
+  the label and never shown -- and `push_id` also accepts a pointer, a `u64` or an `int`:
+
+```cpp
+ui.selectable(node.name, {reinterpret_cast<const char*>(&node.id), sizeof(node.id)}, node.id == selected);
+ui.tree_node(ns.name, ns.full_path, tree_flags::default_open);
+ui.push_id(&object);  /* rows of this object */  ui.pop_id();
+```
+- **Opening and closing:** `set_next_item_open(bool)` (and `set_next_item_open_recursive`) overrides the stored state
+  of the next node; Ctrl or Shift held while a node's arrow is clicked applies it to the whole subtree;
+  `open_all_tree_nodes()` / `close_all_tree_nodes()` do the same for everything in the current id scope, and keep
+  applying for a few frames so a tree unfolds all the way instead of one level per frame.
 - **Tables:** widths are stored as fractions of the table width, so they survive window resizing and drag-resizing
   keeps the total constant. Each cell is clipped to its column. With a height, the body scrolls (wheel or scrollbar)
   under a fixed header; `table_next_row()` returns false for rows outside the view so big tables stay cheap.
@@ -287,7 +307,9 @@ Everything - padding, rounding, icons, table columns, your `custom_item`s - stay
 `scale` times their configured size, so text stays sharp instead of being stretched. `font_atlas` has both flavours of metrics
 (`measure` / `line_height` in logical, `*_px` in physical pixels). Scaling costs one atlas rebuild (0.3 s for the sandbox's four fonts);
 font `ranges` / `data` given to `create()` must outlive the context if you rescale. `context::scale()`, `font_generation()`.
-The sandbox uses the monitor's dpi at start, follows `WM_DPICHANGED`, and has an "ui scale" combo.
+The sandbox uses the monitor's dpi at start, follows `WM_DPICHANGED`, and has an "ui scale" combo. The dpi scale is
+the right default but a poor setting: see *UI scale at runtime* below for changing it while the ui is up, which the
+overlay does for you (atlas re-upload included).
 
 ## Drawing: gradients, curves, acrylic
 
@@ -462,7 +484,138 @@ if (ui.table_tree_node("src", tree_flags::default_open)) {
   `table_headers_row` returns the clicked column by its declared index. `table_column_flags`: `default_hidden`, `no_hide`, `no_reorder`.
 - **Tree tables:** `table_tree_node` / `table_tree_leaf` / `table_tree_pop` draw an arrow, indent by depth and keep their open state by label.
 - **Auto-height windows:** a window that follows its content never grows past the bottom of the display: it scrolls instead.
-- `--scene lists` shows all of it, with the column menu open.
+- **Rows of mixed height** do not need a clipper at all: they are culled one by one (see *Color, trees, tables*).
+  `ui.skip_item(h)` / `ui.skip_items(n, h)` reserve the space of a run the caller culled itself.
+- **Scrolling** is now controllable from the code, for the innermost region being built (a `child`, otherwise the
+  window): `scroll_y()`, `scroll_max_y()`, `set_scroll_y()`, `scroll_to_top()` / `scroll_to_bottom()`, and
+  `ensure_item_visible()` / `scroll_to_item()` for the row that was just submitted -- which is how "reveal the
+  selection" works. The new offset shows on the next frame, so it is called every frame the selection holds.
+- **Keyboard navigation** is opt-in per list: between `nav_begin()` and `nav_end()` (or `auto n = ui.navigation("id");`)
+  Up / Down move a cursor over the rows, Home / End jump, PageUp / PageDown move by ten, Left closes a node or steps
+  out to its parent, Right opens it or steps in, and Enter reports the row exactly like a click. Clicking a row moves
+  the cursor to it; the row under the cursor reports `item_focused()` and draws a focus ring; the view follows it. The
+  scope only takes the keys while no text field has them, which is what `nav_active()` says.
+- `--scene lists` shows the tables, `--scene bigtree` the deep tree with a live `ui.stats()` panel.
+
+## Rows: overlapping items, right-aligned controls, diagnostics
+
+```cpp
+// a full-width header row with its own buttons on the right
+{
+    auto g = ui.right_gutter(76.0f);              // everything below is laid out 76 px narrower ...
+    row = ui.custom_item("row", {0.0f, 30.0f});   // ... so the row ends where its buttons start
+    ui.label_clipped(pos, row.bounds.width() - 16.0f, ui.theme().text, component.name);  // "..." at the edge
+}
+ui.allow_item_overlap();                          // what follows may take the press from the row
+ui.same_line_right(76.0f);  ui.toggle("##on", component.enabled);
+ui.same_line_right(24.0f);  if (ui.icon_button(icons_font, icons::trash)) { remove(); }
+if (row.pressed && !ui.item_claimed()) { select(); }
+if (ui.item_clicked(strata::mouse_button::right)) { ui.open_popup("row menu"); }
+```
+
+- **`same_line_right(width)`** places the next item so it ends at the right edge of the content area -- which already
+  accounts for the padding and for a scrollbar that is showing, so a right-aligned control does not move when either
+  changes. **`push_right_gutter(w)` / `pop_right_gutter()`** (or the scoped `ui.right_gutter(w)`) take `w` off the
+  width everything until the pop is laid out in, while `same_line_right` still reaches the real edge: the full-width
+  item submitted first ends at the gutter instead of running under whatever is drawn in it, and its label is
+  ellipsized there. `ui.label_clipped(pos, max_width, color, text)` is `text_ellipsis` for a custom item that paints
+  its own row.
+- **Overlapping items.** By default the item submitted *first* claims the press, which is wrong when a button is drawn
+  on top of a row. `allow_item_overlap()` after an item lets a later overlapping one take the press instead (exactly,
+  in the same frame) and drops its hover highlight while the pointer is over that later item (one frame late -- the
+  item on top has not been submitted yet when the one below draws itself). `item_claimed()` says whether that
+  happened. Nothing changes for code that does not call it.
+- **The last item** can be asked about without submitting an invisible one over it: `item_rect()`, `item_hovered()`,
+  `item_clicked(mouse_button)` (right and middle are reported on the press, left on the release, like the widget's own
+  return value) and `item_double_clicked()`.
+- **`draw().corner_brackets(rect, color)`** marks a rectangle by its four corners only -- the viewport outline an
+  object picker draws over what is under the cursor, which reads on top of a busy scene without boxing it in.
+- **`ui.stats()`** reports what the frame that just ended cost: items submitted and how many of those were culled,
+  vertices, indices, draw calls, label measurements and how many the cache answered, animation-table occupancy, and
+  the time in `begin_frame` / `end_frame`. It is what tells you whether a stall is strata or your own data walk.
+- **Tooltip delay** is `style::tooltip_delay_s` (0.4 s by default, `style_var::tooltip_delay` to push it), so tooltips
+  do not pop on every row a pointer crosses while a tree scrolls past.
+- **Text fields** take `input_flags::clear_button` (a small x while the field has text) beside the existing
+  `select_all_on_focus`.
+- **Row accessories** are the ready-made version of all that, for the common case -- a small control at the right
+  end of a row. Tell the row how much to reserve with `set_next_item_gutter(w)` before submitting it, then call
+  `row_accessory_button` / `row_accessory_checkbox` / `row_accessory_toggle` after it. strata places them right to
+  left inside the row, clips them to it, keeps them clear of the scrollbar, takes the press away from the row and
+  elides the row's own label at the gutter -- no hit boxes, hover halos, clip intersections or gradient fades in the
+  caller:
+
+```cpp
+ui.set_next_item_gutter(56.0f);
+if (ui.selectable(object.name, id, selected)) { select(); }
+if (ui.item_truncated()) { ui.tooltip(object.name); }          // it was cut: show the whole thing
+if (ui.row_accessory_button(icon_font, icons::trash)) { destroy(); }
+ui.row_accessory_checkbox("vis", object.visible);
+```
+- **Row labels are elided** to the room the row actually has (its width, minus the indent, minus the gutter) instead
+  of running out from under whatever is drawn on top. `item_truncated()` says whether that happened, for a row or
+  for `text_ellipsis()`, so a caller does not have to re-measure to decide whether a tooltip is worth showing.
+- **Plain text is an item.** `text()`, `text_dim()`, `textf()` and `text_colored()` register their rectangle, so
+  `item_hovered()`, `item_rect()`, `tooltip()` and `context_menu()` after them are about the text and not about
+  whatever widget came before it. They still take no press, so nothing about clicking changes.
+- `--scene rows` shows the overlapping header rows, the gutter and the keyboard list; `--scene app` shows the
+  accessories, the selection, the disabled buttons, the filtered combo and the runtime scale together.
+
+## Shortcuts, focus, disabled items, selections
+
+```cpp
+// a shortcut that only fires while the user is looking at this panel, and never while a name is being typed
+if (ui.window_focused()) {
+    if (ui.key_pressed(VK_DELETE))      { ui.ask_confirm("destroy", "Destroy the selection?", sel.size()); }
+    if (ui.key_pressed(VK_F2))          { ui.request_text_focus("name"); }
+    if (ui.key_pressed('D', true))      { duplicate(); }        // Ctrl+D
+}
+{   auto d = ui.disabled_if(sel.empty());                        // greyed, dead, still explains itself
+    if (ui.button("Destroy selected")) { ... }
+    if (sel.empty()) { ui.tooltip("select something first"); }
+}
+if (ui.selectable(rows[i].name, id, sel.contains(i))) { ui.selection_click(sel, i); }   // ctrl / shift rules
+switch (ui.confirm("destroy", {"Destroy", "Cancel"}, {.remember = &never_ask, .danger = 1})) { case 1: ...; }
+```
+
+- **Raw keys.** `key_pressed(vk, ctrl, shift, alt)` is the edge, `key_down(vk)` the level, over windows virtual-key
+  codes -- so Delete, F2, F5 and the rest need no `GetAsyncKeyState` and no held/not-held bit of your own. Both stay
+  quiet while a text field or a hotkey field has the keyboard. `key_down` needs `input_state::keys_held`, which
+  `win32_platform` fills; a host that cannot always answers false, while `key_pressed` works either way.
+  `accelerator("Del")` has always worked outside a menu too, and follows the same focus rule.
+- **Raw mouse buttons:** `mouse_down(b)`, `mouse_clicked(b)`, `mouse_released(b)`, 0 left / 1 right / 2 middle. Ask
+  `item_clicked(mouse_button)` instead when you mean "on the thing I just submitted".
+- **Which window has the keyboard.** `window_focused()` is about the window being submitted right now and
+  `is_window_focused(title)` about any of them, so Delete in one panel does not act on another's selection. It
+  follows the last window that was pressed in, docked panels included (which never restack, so "topmost" could not
+  answer this).
+- **Text focus** is idempotent: `request_text_focus(label)` does nothing when that field already has the keyboard,
+  so it can be called every frame with no "did I ask already" flag and without taking the caret back on every
+  keystroke. `focused_field()` and `field_focused(label)` say which field is live -- no more inferring it from
+  hover plus `want_text_input()`.
+- **Disabled items:** `begin_disabled(cond)` / `end_disabled()`, or the scoped `ui.disabled_if(cond)`. Everything
+  inside is faded and inert -- no hover highlight, no press, no keyboard -- but still reports `item_hovered()`, so
+  the tooltip that explains why it is disabled works. They nest, and an enabled scope inside a disabled one stays
+  disabled.
+- **Selections:** `selection_state` holds the indices, `ui.selection_click(sel, index)` applies the rules a list is
+  expected to have -- plain click selects one, Ctrl toggles, Shift takes the range from the anchor, and the anchor
+  stays put so dragging the range keeps working. `clamp_to(count)` drops what a shrinking list left behind.
+- **Confirmations** own their state: `ask_confirm(id, message, user_data)` opens one and remembers what it was about
+  (`confirm_data()`), `confirm(id, buttons, options)` draws it and returns the button (1..n), -1 for Esc, 0 while
+  nothing is being asked. `confirm_options::remember` points at a "don't ask again" flag: the dialog renders the
+  checkbox, stores the answer there, and while the flag is set it never opens and answers `remembered` straight
+  away -- so the caller needs no special case for it, and no member-variable pair per dialog. `danger` draws one
+  button in the warning colour. The id is global, like a modal's title.
+- **Clipboard:** `ui.copy_text(string_view)` and `ui.paste_text(std::string&)` go through the hooks the text fields
+  already use, instead of `GlobalAlloc` / `OpenClipboard` in the app.
+- **Geometry you should not have to re-derive:** `context::scrollbar_width()`, `content_rect()` (the visible
+  rectangle of the innermost scrolling region, in logical screen coordinates) and `item_arrow_hit()` (the press on
+  the last tree row landed on its arrow, not its label).
+- **Long dropdowns:** `combo_filtered()` opens with the keyboard in a search box, narrows as you type
+  (case-insensitive substring), submits only the rows in view, and takes Up / Down / PageUp / PageDown / Enter /
+  Esc. A few hundred entries are what it is for.
+- **Tabs** can keep their identity apart from their caption: `tab_desc{label, icon, id}`. A tab whose text gains a
+  dirty dot, a pin marker or a count keeps its place, its selection and its drag state only if it keeps its `id`.
+  Middle-clicking a closable tab closes it.
 
 ## Code editor, passwords and input masks
 
@@ -777,6 +930,42 @@ auto ui = strata::context::create(cfg).value();
   for Indic and Southeast Asian scripts (Devanagari, Thai, Tamil ... need GSUB / GPOS: a shaping engine, see the TODO).
 - **Kerning:** the font's `kern` table is applied to measuring and drawing, in integer pixels like the advances.
   Fonts that only kern through OpenType GPOS get no kerning (`font_atlas::kerning_pair_count()` is 0 then).
+- **Icon fonts and which Windows ships what.** `strata/icons.hpp` names the code points of the two Microsoft icon
+  fonts, which share them: **Segoe MDL2 Assets** (`segmdl2.ttf`, Windows 10, and still present on Windows 11) and
+  **Segoe Fluent Icons** (`SegoeIcons.ttf`, Windows 11 only). Bake `glyph_ranges::private_use` for the icon font and
+  select it with `ui.with_font(icon_font)` or the `icon_*` widgets. A code point the font does not have draws the
+  fallback glyph silently, so **`--scene icons`** draws every `icons::` constant with its name and marks in red the
+  ones the loaded font is missing -- run it once against the font you ship with. `--scene icons --icon-page E700`
+  shows a raw page of 256 code points with their hex values, for picking a new one.
+  One caveat: `icons::eye_off` (U+ED1A, "Hide") is in Segoe Fluent Icons and in current Segoe MDL2 Assets but not in
+  the `segmdl2.ttf` that shipped with Windows 10 up to at least build 19045; use `icons::view` for the hidden state
+  if you have to support those. There is no "clear filter" glyph in either font -- draw `filter` and `cancel`
+  together. Round two added, all checked the same way: `clear` E894, `select_all` E8B3, `rename` E8AC (what F2
+  does), `document` E8A5, `layers` F156, `star_filled` E735, and `expand` E740 / `collapse` E73F for making a view
+  bigger or smaller (`expand_all` / `collapse_all` are the tree ones). Note `import` is E8B5 and `export` EDE1 --
+  E896 / E898 are Segoe's Download and Upload arrows, which are a different thing.
+
+## UI scale at runtime
+
+```cpp
+strata::overlay::options opt;
+opt.ui_scale      = 0.0f;   // 0 = the monitor's dpi scale, which is only where it starts
+opt.scale_hotkeys = true;   // Ctrl + Plus / Minus step it by 10 %, Ctrl + 0 goes back
+...
+strata::overlay::set_ui_scale_percent(125);          // from anywhere, at any time
+ui.textf("ui scale {} %", ui.scale_percent());
+```
+
+The dpi scale is the right *default* and a poor *setting*: an overlay is often wanted a little smaller or larger
+than the desktop. `context::set_scale` has always been able to change it, but it rebuilds the font atlas, and the
+host then has to hand the new atlas to its renderer (`renderer.update_atlas(ui.font())`, then
+`ui.release_font_pixels()`) -- a step that is easy to miss, and text draws from a stale texture when it is missed.
+The overlay now does that itself: `set_ui_scale()` may be called from any thread, and the change is applied at the
+start of the next frame, on the render thread, atlas re-upload included. Everything the ui draws -- text, widgets,
+padding, window sizes -- scales together; the game's own window is not touched.
+
+A rebuild costs tens of milliseconds per baked font, so drive it from a stepper or apply a slider when it is let go,
+not on every tick. `ui.scale_percent()` / `ui.set_scale_percent(n)` are the same thing in the units a setting shows.
 
 ## In-game overlay (direct3d 11 and 12)
 

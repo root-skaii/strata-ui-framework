@@ -36,6 +36,7 @@ struct options {
     float          scale      = 0.0f;   // ui scale; 0 = the monitor's dpi scale
     float          rescale    = 0.0f;   // > 0: switch to this scale after a few frames (exercises the atlas re-upload)
     std::string    scene;               // start with one scene: default, features, visuals, ...
+    int            icon_page  = -1;     // --scene icons: show this 256-code-point page (hex) instead of the named set
     std::string    shot;                // write a screenshot (png) of the last frame and exit
     std::string    golden;              // compare the last frame with this png and exit (0 = same)
     std::string    artifacts;           // where a failed comparison writes its .actual / .diff images (default: the temp folder)
@@ -79,7 +80,9 @@ constexpr const wchar_t* usage_text =
     L"  --theme N|NAME           a built-in theme by index or name (midnight, light, ocean, rose, dracula, nord, ...)\n"
     L"  --theme-file FILE        a theme file applied on top\n"
     L"  --scale F                ui scale (default: the monitor's dpi scale)\n"
-    L"  --scene NAME             start with one scene only: default, features, visuals, menus, config, tabs, dnd, lists, editor, ...\n"
+    L"  --scene NAME             start with one scene only: default, features, visuals, menus, config, tabs, dnd, lists,\n"
+    L"                           editor, icons, bigtree, rows, app, ...\n"
+    L"  --icon-page HEX          with --scene icons: show that page of 256 code points instead of the named set\n"
     L"  --shot FILE              render --shot-frames fixed steps, save the last frame as a png and exit\n"
     L"  --golden FILE            same, but compare with the png FILE (exit code 0 = match); --update-golden rewrites it\n"
     L"  --golden-tolerance N     a pixel matches when every channel is within N of the golden (default 6, of 255)\n"
@@ -165,6 +168,7 @@ struct app {
         else if (a == L"--scale")          { opt.scale = std::max(real(i), 0.0f); }
         else if (a == L"--rescale")        { opt.rescale = std::max(real(i), 0.0f); }
         else if (a == L"--scene")          { opt.scene = to_utf8(value(i)); }
+        else if (a == L"--icon-page")      { opt.icon_page = static_cast<int>(std::wcstol(value(i), nullptr, 16)); }
         else if (a == L"--shot")           { opt.shot = to_utf8(value(i)); }
         else if (a == L"--golden")         { opt.golden = to_utf8(value(i)); }
         else if (a == L"--update-golden")  { opt.update_golden = true; }
@@ -894,6 +898,9 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
     s.x.font_mono = s.font_mono;
     s.x.font_heading = s.font_heading;
     s.x.font_icons = s.font_icons;
+    s.x.d4.font_icons = s.font_icons;
+    s.x.d4.font_mono  = s.font_mono;
+    s.x.d4.deterministic = s.x.deterministic;
     s.x.image_tex = s.image_tex;
     demo2_update(ui, s.x, 0.0f);
     if (s.x.art) { demo2_art(ui, s.x); }
@@ -930,6 +937,10 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
     if (s.x.show_textlog) { demo2_textlog(ui, s.x); }
     if (s.x.show_menus) { demo2_menus(ui, s.x); }
     if (s.x.show_config) { demo2_config(ui, s.x); }
+    if (s.x.d4.show_icons) { demo4_icons(ui, s.x.d4); }
+    if (s.x.d4.show_bigtree) { demo4_bigtree(ui, s.x.d4); }
+    if (s.x.d4.show_rows) { demo4_rows(ui, s.x.d4); }
+    if (s.x.d4.show_app) { demo4_app(ui, s.x.d4); }
     demo2_more(ui, s.x);
     if (s.scene_only) { return; }
 
@@ -1145,6 +1156,14 @@ void apply_scene(demo_state& s, const std::string& name)
         s.x.show_config = s.scene_only = true;
     } else if (name == "menus" || name == "context" || name == "modal" || name == "dialog" || name == "toasts") {
         s.x.show_menus = s.scene_only = true;
+    } else if (name == "icons") {
+        s.x.d4.show_icons = s.scene_only = true;
+    } else if (name == "bigtree") {
+        s.x.d4.show_bigtree = s.scene_only = true;
+    } else if (name == "rows") {
+        s.x.d4.show_rows = s.scene_only = true;
+    } else if (name == "app") {
+        s.x.d4.show_app = s.scene_only = true;
     } else {
         std::fprintf(stderr, "[sandbox] unknown scene '%s'\n", name.c_str());
     }
@@ -1393,6 +1412,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 
     demo_state state;
     state.x.scene         = opt.scene;
+    state.x.d4.icon_page  = opt.icon_page;
     state.x.deterministic = shot_mode;
     state.x.scale_combo   = ui.scale() >= 1.75f ? 3 : (ui.scale() >= 1.375f ? 2 : (ui.scale() >= 1.125f ? 1 : 0));
     state.font_mono    = font_mono;
@@ -1470,9 +1490,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
                 self.pending_dpi = 0.0f;
             }
             if (state.x.pending_scale > 0.0f) {
+                // the "ui scale" combo of the main window keeps the *logical* client size, so the os window grows
+                // and shrinks with the scale. that is a sandbox convenience (the layout stays put between shots),
+                // not what an app wants: see the +/- buttons of --scene app for the other behaviour.
                 want = state.x.pending_scale;
                 state.x.pending_scale = 0.0f;
                 resize_window = true;
+            }
+            if (state.x.d4.pending_scale_percent > 0) {
+                // scaling the ui in place: the window keeps the size it has and the ui inside it gets bigger or
+                // smaller, which is what a "ui scale" setting is expected to do
+                want = static_cast<float>(state.x.d4.pending_scale_percent) / 100.0f;
+                state.x.d4.pending_scale_percent = 0;
             }
             if (want > 0.0f && want != ui.scale()) {
                 const float old_scale = ui.scale();

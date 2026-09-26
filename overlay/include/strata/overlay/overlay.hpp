@@ -42,6 +42,12 @@ struct options {
     std::function<void(context_config&)> configure_context;
     // called once, on the render thread, after the context exists and before its first frame
     std::function<void(context&)>       on_ready;
+    // where the ui scale starts. 0 = the monitor's dpi scale, which is only a starting point: an overlay is often
+    // wanted a little smaller or larger than the desktop is. set_ui_scale() changes it later.
+    float    ui_scale = 0.0f;
+    // Ctrl + Plus / Ctrl + Minus step the ui scale by 10 %, Ctrl + 0 puts it back to `ui_scale`, while the overlay
+    // has the keyboard. Off by default so it cannot collide with the host's own shortcuts.
+    bool     scale_hotkeys = false;
     // debug: write the back buffer (with the ui drawn) to this png after `capture_frame` visible frames, once
     std::string capture_path;
     unsigned    capture_frame = 30;
@@ -62,5 +68,15 @@ void show(bool visible);
 [[nodiscard]] bool attached() noexcept;
 // the swap chain's window, once attached (HWND), nullptr before
 [[nodiscard]] void* window() noexcept;
+
+// the ui scale, as a factor (1.0 = one logical pixel per physical pixel). Changing it rebuilds the font atlas and
+// re-uploads it to the renderer, which only the render thread may do, so the new value is applied at the start of the
+// next frame -- set_ui_scale() may be called from any thread and returns immediately. Everything the ui draws gets
+// bigger or smaller together; nothing about the game's own window changes.
+void set_ui_scale(float scale) noexcept;
+[[nodiscard]] float ui_scale() noexcept;
+// ... and in percent, which is what a setting shows. 50 .. 400, clamped.
+inline void set_ui_scale_percent(int percent) noexcept { set_ui_scale(static_cast<float>(percent) / 100.0f); }
+[[nodiscard]] inline int ui_scale_percent() noexcept { return static_cast<int>(ui_scale() * 100.0f + 0.5f); }
 
 } // namespace strata::overlay

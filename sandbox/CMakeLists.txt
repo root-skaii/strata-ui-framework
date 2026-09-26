@@ -12,10 +12,14 @@ add_executable(strata_sandbox WIN32
     ../tests/selftest_widgets.cpp
     ../tests/selftest_windows.cpp
     ../tests/selftest_misc.cpp
+    ../tests/selftest_rows.cpp
+    ../tests/selftest_app.cpp
     demo2.cpp
     demo3.cpp
     demo3.hpp
     demo2.hpp
+    demo4.cpp
+    demo4.hpp
     imgio.cpp
     imgio.hpp
 )
@@ -107,6 +111,10 @@ if(STRATA_BUILD_TESTS)
     strata_shot(dnd        --scene dnd --height 900)
     strata_shot(lists      --scene lists --height 900)
     strata_shot(editor     --scene editor --height 900)
+    strata_shot(icons      --scene icons --width 1240 --height 1000)
+    strata_shot(bigtree    --scene bigtree --width 1020 --height 900)
+    strata_shot(rows       --scene rows --width 880 --height 620)
+    strata_shot(app        --scene app --width 900 --height 640)
     strata_shot(dracula    --theme dracula)
     strata_shot(glass      --theme glass --scene visuals)
 endif()

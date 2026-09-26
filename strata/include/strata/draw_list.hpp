@@ -141,6 +141,11 @@ public:
     // `display_size` in physical pixels
     void begin(vec2 display_size, const font_atlas& atlas, f32 scale = 1.0f);
 
+    // the four corners of a rectangle only, the way a viewport marks what is selected or what the pointer is over:
+    // an outline that reads on top of a busy scene without boxing it in. `arm` is how far each leg runs along its
+    // edge (0 = a quarter of the shorter side); it never grows past half of it, so small boxes stay corners.
+    void corner_brackets(const rect& r, color c, f32 thickness = 2.0f, f32 arm = 0.0f);
+
     void push_clip(const rect& r) noexcept;
     void pop_clip() noexcept;
     // replaces the clip instead of intersecting with it (popups escape their window); pop_clip() undoes it

@@ -239,7 +239,7 @@ void context::rich_draw(vec2 pos)
 vec2 context::label_size(font_id f, std::string_view s)
 {
     if (rich_depth_ == 0) {
-        return font_.measure(f, s);
+        return measure_cached(f, s);
     }
     const vec2 size = rich_layout(s, f, style_.text, 0.0f, true);
     return s.empty() ? vec2{0.0f, font_.line_height(f)} : size;

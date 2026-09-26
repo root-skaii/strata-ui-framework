@@ -49,6 +49,10 @@ struct state {
     std::atomic<bool>    capture_keys{false};
     std::atomic<u64>     frame_count{0};
     std::atomic<int>     in_hook{0};
+    // a ui scale asked for from another thread, taken up by the render thread at the start of the next frame
+    // (rebuilding the atlas and handing it to the renderer is not something another thread may do)
+    std::atomic<float>   want_scale{0.0f};
+    float                base_scale{1.0f}; // what Ctrl+0 goes back to
     char                 error[256]{};
 
     void**       vtable{};
@@ -494,7 +498,9 @@ bool attach(IDXGISwapChain* sc, bool& fatal)
     g.ui = std::make_unique<context>(std::move(*created));
     g.platform.attach(g.hwnd);
     g.ui->set_clipboard(g.platform.clipboard());
-    (void)g.ui->set_scale(g.platform.dpi_scale());
+    g.base_scale = g.opt.ui_scale > 0.0f ? g.opt.ui_scale : g.platform.dpi_scale();
+    (void)g.ui->set_scale(g.base_scale);
+    g.want_scale.store(0.0f);
     bool renderer_ok = false;
     if (g.backend == state::api::d3d11) {
         renderer_ok = g.renderer.create(g.device.Get(), g.ctx.Get(), g.ui->font());
@@ -559,10 +565,33 @@ bool ensure_target(IDXGISwapChain* sc)
     return true;
 }
 
+// a scale change asked for from anywhere is applied here, on the render thread: the atlas is rebuilt and handed to
+// the renderer, which is the step an app driving set_scale() itself has to remember and usually forgets -- text then
+// draws from a texture that no longer matches the glyph coordinates.
+void apply_pending_scale()
+{
+    const float wanted = g.want_scale.exchange(0.0f);
+    if (wanted <= 0.0f || g.ui == nullptr) {
+        return;
+    }
+    const u32 before = g.ui->font_generation();
+    if (!g.ui->set_scale(wanted) || g.ui->font_generation() == before) {
+        return; // unchanged, or the atlas could not be built at that size: keep the one that works
+    }
+    const bool ok = g.backend == state::api::d3d12 ? g.renderer12.update_atlas(g.ui->font())
+                                                   : g.renderer.update_atlas(g.ui->font());
+    if (!ok) {
+        log_line("apply_pending_scale: the renderer could not take the new atlas");
+    }
+    g.ui->release_font_pixels();
+}
+
 void draw_frame(IDXGISwapChain* sc)
 {
     static bool first = true;
     if (g.backend == state::api::d3d11 && !ensure_target(sc)) { log_line("draw_frame: no render target"); return; }
+
+    apply_pending_scale();
 
     input_state input;
     {
@@ -570,6 +599,16 @@ void draw_frame(IDXGISwapChain* sc)
         input = g.platform.new_frame();
     }
     g.ui->begin_frame(std::move(input));
+    if (g.opt.scale_hotkeys && !g.ui->want_text_input()) {
+        //  Ctrl + Plus / Minus (both the main row and the numeric keypad), Ctrl + 0 back to where it started
+        const auto stepped = [&](int direction) {
+            const float next = std::clamp(g.ui->scale() + 0.1f * static_cast<float>(direction), 0.5f, 4.0f);
+            g.want_scale.store(next);
+        };
+        if (g.ui->key_pressed(VK_OEM_PLUS, true) || g.ui->key_pressed(VK_ADD, true))        { stepped(1); }
+        else if (g.ui->key_pressed(VK_OEM_MINUS, true) || g.ui->key_pressed(VK_SUBTRACT, true)) { stepped(-1); }
+        else if (g.ui->key_pressed('0', true) || g.ui->key_pressed(VK_NUMPAD0, true))       { g.want_scale.store(g.base_scale); }
+    }
     if (g.opt.ui) { g.opt.ui(*g.ui); }
     g.ui->end_frame();
     g.capture_mouse.store(g.ui->want_capture_mouse());
@@ -846,6 +885,18 @@ void show(bool v)
 }
 
 bool visible() noexcept { return g.visible.load(); }
+
+void set_ui_scale(float scale) noexcept
+{
+    g.want_scale.store(std::clamp(scale, 0.5f, 4.0f));
+}
+
+float ui_scale() noexcept
+{
+    const float wanted = g.want_scale.load();
+    if (wanted > 0.0f) { return wanted; } // asked for, not applied yet
+    return g.ui != nullptr ? g.ui->scale() : g.base_scale;
+}
 unsigned long long frames() noexcept { return g.frame_count.load(); }
 const char* last_error() noexcept { return g.error; }
 bool attached() noexcept { return g.chain != nullptr && g.subclassed; }

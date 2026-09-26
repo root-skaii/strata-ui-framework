@@ -87,7 +87,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     rect  drag_rect{};
     int   drag_index = -1;
     for (std::size_t i = 0; i < n; ++i) {
-        const id   key  = hash_id(tabs[i].label, current_seed());
+        const id   key  = hash_id(tabs[i].key(), current_seed());
         const rect body = {cells[i].min, {cells[i].max.x - close_w, cells[i].max.y}};
 
         if (closable) {
@@ -103,6 +103,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
             selected   = static_cast<int>(i);
             ev.changed = true;
         }
+        if (closable && in.hovered && mouse_middle_pressed_) { ev.closed = static_cast<int>(i); }
         if (reorder) {
             if (active_ == key && mouse_pressed_) {
                 tabdrag_cand_    = key;
@@ -184,7 +185,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
         label_draw({tx, cell.min.y + (cell.height() - tsize.y) * 0.5f}, c, shown, f);
 
         if (closable) {
-            const id       key = hash_id(tabs[i].label, current_seed());
+            const id       key = hash_id(tabs[i].key(), current_seed());
             const f32      h   = anim_for(hash_id("##x", key)).hover;
             const vec2     m   = {cell.max.x - 11.0f, cell.center().y};
             const f32      k   = 3.2f;

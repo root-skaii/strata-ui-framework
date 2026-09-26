@@ -43,7 +43,7 @@ struct color_key {
     color style::*   member;
 };
 
-constexpr std::array<number_key, 13> number_keys = {{
+constexpr std::array<number_key, 14> number_keys = {{
     {"padding", &style::padding},
     {"item_spacing", &style::item_spacing},
     {"rounding", &style::rounding},
@@ -57,6 +57,7 @@ constexpr std::array<number_key, 13> number_keys = {{
     {"acrylic_saturation", &style::acrylic_saturation},
     {"acrylic_brightness", &style::acrylic_brightness},
     {"popup_acrylic", &style::popup_acrylic},
+    {"tooltip_delay_s", &style::tooltip_delay_s},
 }};
 
 constexpr std::array<color_key, 13> color_keys = {{

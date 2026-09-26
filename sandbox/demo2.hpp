@@ -5,6 +5,7 @@
 // demo2_state.
 
 #include "demo3.hpp"
+#include "demo4.hpp"
 
 #include <strata/strata.hpp>
 
@@ -98,6 +99,7 @@ struct demo2_state {
     int                config_request = 0;       // 1: save, 2: load (done at the start of the next frame, between widgets)
 
     demo3_state d3;
+    demo4_state d4;
 
     // requests to the host (main applies them between frames)
     float pending_scale  = 0.0f;  // > 0: set_scale(pending_scale)

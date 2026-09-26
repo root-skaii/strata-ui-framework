@@ -10,6 +10,7 @@ add_library(strata STATIC
     src/context_code.cpp
     src/context_combo.cpp
     src/context_data.cpp
+    src/context_nav.cpp
     src/context_datetime.cpp
     src/context_dock.cpp
     src/context_extra.cpp

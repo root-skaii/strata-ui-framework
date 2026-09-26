@@ -160,4 +160,102 @@ int context::dialog(std::string_view title, std::string_view message, std::initi
     return result;
 }
 
+// a confirmation that owns its own open / closed state and remembers what it was asked about, so a caller needs
+// neither a "which object" member nor an "is it open" one. ask_confirm() opens it (or answers straight away when the
+// user has ticked "don't ask again"), confirm() draws it and reports the button.
+void context::ask_confirm(std::string_view id_label, std::string_view message, u64 user_data)
+{
+    // like a modal title, the id is global: ask_confirm() is usually called from inside a window and confirm()
+    // from outside one, and both have to mean the same dialog
+    const id key = hash_id(id_label, 0);
+    confirm_key_      = key;
+    confirm_data_     = user_data;
+    confirm_message_.assign(message);
+    confirm_remember_ = false;
+    confirm_answer_     = 0;
+    confirm_answer_key_ = 0;
+    confirm_pending_    = true; // opened by the next confirm() call, which knows the options
+}
+
+int context::confirm(std::string_view id_label, std::initializer_list<std::string_view> buttons,
+                     const confirm_options& options)
+{
+    const id key = hash_id(id_label, 0);
+
+    // the answer of the frame the button was pressed, handed out once
+    if (confirm_answer_key_ == key && confirm_answer_ != 0) {
+        const int answer    = confirm_answer_;
+        confirm_answer_     = 0;
+        confirm_answer_key_ = 0;
+        return answer;
+    }
+    if (confirm_pending_ && confirm_key_ == key) {
+        confirm_pending_ = false;
+        if (options.remember != nullptr && *options.remember) {
+            return options.remembered; // the user asked not to be asked
+        }
+        open_modal(options.title.empty() ? std::string_view{"Confirm"} : options.title);
+        confirm_open_ = key;
+    }
+    if (confirm_open_ != key) {
+        return 0;
+    }
+
+    const std::string_view title = options.title.empty() ? std::string_view{"Confirm"} : options.title;
+    const id wid = hash_id(title, id_stack_[0]);
+    bool open = false;
+    for (u32 i = 0; i < modal_count_; ++i) { open = open || modal_stack_[i] == wid; }
+    if (!open) {
+        confirm_open_ = 0;
+        return 0;
+    }
+    if (!begin_modal(title, {380.0f, 0.0f}, modal_flags::esc_closes | modal_flags::backdrop_closes)) {
+        confirm_open_ = 0;
+        return -1; // dismissed with Esc / a click outside
+    }
+
+    int result = 0;
+    text_wrapped(confirm_message_);
+    if (options.remember != nullptr) {
+        spacing(style_.item_spacing);
+        (void)checkbox(options.remember_label, confirm_remember_);
+    }
+    spacing(style_.item_spacing * 1.5f);
+
+    f32 total = 0.0f;
+    std::array<f32, 6> widths{};
+    const std::size_t count = std::min<std::size_t>(buttons.size(), widths.size());
+    std::size_t k = 0;
+    for (const std::string_view label : buttons) {
+        if (k >= count) { break; }
+        widths[k] = std::max(label_size(current_font(), visible_label(label)).x + 2.0f * style_.frame_padding.x, 84.0f);
+        total += widths[k] + (k > 0 ? style_.item_spacing : 0.0f);
+        ++k;
+    }
+    (void)layout_place({0.0f, frame_height()});
+    layout_.same_line = true;
+    layout_.cursor_x  = layout_.origin.x + layout_.width - total - style_.item_spacing;
+    k = 0;
+    for (const std::string_view label : buttons) {
+        if (k >= count) { break; }
+        const bool danger = options.danger == static_cast<int>(k) + 1;
+        set_next_item_width(widths[k]);
+        if (danger) { push_color(style_color::accent, kind_color(toast_kind::error, style_)); }
+        if (button(label)) { result = static_cast<int>(k) + 1; }
+        if (danger) { pop_color(); }
+        if (k + 1 < count) { same_line(); }
+        ++k;
+    }
+    end_modal();
+    if (result != 0) {
+        close_modal();
+        confirm_open_ = 0;
+        if (options.remember != nullptr && confirm_remember_) { *options.remember = true; }
+        // reported on the next frame, so it is not mistaken for the click that pressed the button
+        confirm_answer_     = result;
+        confirm_answer_key_ = key;
+    }
+    return 0;
+}
+
 } // namespace strata
