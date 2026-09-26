@@ -120,26 +120,21 @@ constexpr std::array<arabic_form, 43> forms = {{
     }
 }
 
-struct shaped {
-    std::vector<char32_t> cps;
-    std::vector<u32>      origin;   // logical code point of each shaped one (a ligature: its first)
-    std::vector<u8>       span;     // how many logical code points it stands for
-};
-
 [[nodiscard]] bool available(const font_atlas* atlas, font_id f, char32_t cp) noexcept
 {
     return atlas == nullptr || atlas->has_glyph(f, cp);
 }
 
-void shape(const std::vector<char32_t>& in_cps, const font_atlas* atlas, font_id f, shaped& out)
+// joins `in_cps` into out.shaped / out.origin / out.span (the other fields are left alone)
+void shape(const std::vector<char32_t>& in_cps, const font_atlas* atlas, font_id f, visual_scratch& out)
 {
     const std::size_t n = in_cps.size();
-    out.cps.clear();
+    out.shaped.clear();
     out.origin.clear();
     out.span.clear();
-    out.cps.reserve(n);
+    out.shaped.reserve(n);
     const auto push = [&](char32_t c, std::size_t at, u8 span) {
-        out.cps.push_back(c);
+        out.shaped.push_back(c);
         out.origin.push_back(static_cast<u32>(at));
         out.span.push_back(span);
     };
@@ -382,16 +377,15 @@ void append_utf8(std::string& out, char32_t cp)
     }
 }
 
-[[nodiscard]] std::vector<char32_t> decode_line(std::string_view s, std::vector<u32>* offsets = nullptr)
+void decode_line_into(std::vector<char32_t>& cps, std::string_view s, std::vector<u32>* offsets = nullptr)
 {
-    std::vector<char32_t> cps;
+    cps.clear();
     cps.reserve(s.size());
     const std::size_t total = s.size();
     while (!s.empty()) {
         if (offsets != nullptr) { offsets->push_back(static_cast<u32>(total - s.size())); }
         cps.push_back(decode_utf8(s));
     }
-    return cps;
 }
 
 } // namespace
@@ -416,32 +410,41 @@ bool has_rtl_text(std::string_view s) noexcept
     return false;
 }
 
-std::string to_visual(std::string_view text, const font_atlas* atlas, font_id font, text_direction direction)
+void to_visual_into(std::string& out, visual_scratch& sc, std::string_view text, const font_atlas* atlas, font_id font,
+                    text_direction direction)
 {
+    out.clear();
     if (!has_rtl_text(text)) {
-        return std::string{text};
+        out.assign(text);
+        return;
     }
-    std::string out;
-    out.reserve(text.size());
     std::size_t pos = 0;
-    shaped sh;
-    std::vector<u32> order;
-    std::vector<u8>  level;
     for (;;) {
         const std::size_t nl = text.find('\n', pos);
         const std::string_view line = text.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
-        const std::vector<char32_t> cps = decode_line(line);
-        shape(cps, atlas, font, sh);
-        resolve(sh.cps, direction, order, level);
-        for (const u32 idx : order) {
-            char32_t c = sh.cps[idx];
-            if ((level[idx] & 1) != 0) { c = mirrored(c); }
+        decode_line_into(sc.cps, line);
+        shape(sc.cps, atlas, font, sc);
+        resolve(sc.shaped, direction, sc.order, sc.level);
+        for (const u32 idx : sc.order) {
+            char32_t c = sc.shaped[idx];
+            if ((sc.level[idx] & 1) != 0) { c = mirrored(c); }
             append_utf8(out, c);
         }
         if (nl == std::string_view::npos) { break; }
         out.push_back('\n');
         pos = nl + 1;
     }
+}
+
+std::string to_visual(std::string_view text, const font_atlas* atlas, font_id font, text_direction direction)
+{
+    if (!has_rtl_text(text)) {
+        return std::string{text};
+    }
+    std::string    out;
+    visual_scratch sc;
+    out.reserve(text.size());
+    to_visual_into(out, sc, text, atlas, font, direction);
     return out;
 }
 
@@ -460,20 +463,18 @@ void bidi_layout::build(const font_atlas& atlas, font_id font, std::string_view 
         width_ = atlas.measure(font, text).x;
         return;
     }
-    std::vector<u32> offsets;
-    const std::vector<char32_t> cps = decode_line(text, &offsets);
-    offsets.push_back(static_cast<u32>(text.size()));
-    byte_of_ = std::move(offsets);
+    // the scratch and byte_of_ are members: a field being edited rebuilds this every frame, so the buffers are
+    // grown once and then reused
+    visual_scratch& sc = scratch_;
+    decode_line_into(sc.cps, text, &byte_of_);
+    byte_of_.push_back(static_cast<u32>(text.size()));
 
-    shaped sh;
-    shape(cps, &atlas, font, sh);
-    std::vector<u32> order;
-    std::vector<u8>  level;
-    resolve(sh.cps, direction, order, level);
+    shape(sc.cps, &atlas, font, sc);
+    resolve(sc.shaped, direction, sc.order, sc.level);
 
-    const std::size_t m = sh.cps.size();
-    std::vector<u32> visual_pos(m);
-    for (std::size_t v = 0; v < m; ++v) { visual_pos[order[v]] = static_cast<u32>(v); }
+    const std::size_t m = sc.shaped.size();
+    visual_pos_.assign(m, 0);
+    for (std::size_t v = 0; v < m; ++v) { visual_pos_[sc.order[v]] = static_cast<u32>(v); }
 
     left_.resize(m);
     advance_.resize(m);
@@ -481,23 +482,23 @@ void bidi_layout::build(const font_atlas& atlas, font_id font, std::string_view 
     f32 x = 0.0f;
     char32_t prev = 0;
     for (std::size_t v = 0; v < m; ++v) {
-        char32_t c = sh.cps[order[v]];
-        if ((level[order[v]] & 1) != 0) { c = mirrored(c); }
+        char32_t c = sc.shaped[sc.order[v]];
+        if ((sc.level[sc.order[v]] & 1) != 0) { c = mirrored(c); }
         if (prev != 0) { x += atlas.kerning(font, prev, c); }
         left_[v]    = x;
         advance_[v] = atlas.advance(font, c);
-        level_[v]   = level[order[v]];
+        level_[v]   = sc.level[sc.order[v]];
         x += advance_[v];
         prev = c;
     }
     width_ = x;
 
-    glyph_of_.resize(cps.size());
-    second_.assign(cps.size(), 0);
+    glyph_of_.resize(sc.cps.size());
+    second_.assign(sc.cps.size(), 0);
     for (std::size_t s = 0; s < m; ++s) {
-        for (u32 k = 0; k < sh.span[s]; ++k) {
-            glyph_of_[sh.origin[s] + k] = visual_pos[s];
-            second_[sh.origin[s] + k]   = static_cast<u8>(k);
+        for (u32 k = 0; k < sc.span[s]; ++k) {
+            glyph_of_[sc.origin[s] + k] = visual_pos_[s];
+            second_[sc.origin[s] + k]   = static_cast<u8>(k);
         }
     }
 }

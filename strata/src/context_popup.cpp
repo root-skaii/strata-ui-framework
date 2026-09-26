@@ -24,7 +24,7 @@ drag_source_scope::~drag_source_scope()
 
 void context::open_popup(std::string_view label)
 {
-    popup_id_      = hash_id(label, current_seed());
+    popup_id_      = widget_id(label);
     popup_scroll_  = 0.0f;
     popup_hover_   = -1;
     gpopup_anchor_ = last_item_rect_.width() > 0.0f ? last_item_rect_ : rect{mouse_, mouse_};
@@ -54,7 +54,7 @@ bool context::popup_is_open(std::string_view label) const noexcept
 
 bool context::begin_popup(std::string_view label, f32 width)
 {
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     if (popup_id_ != key) {
         return false;
     }

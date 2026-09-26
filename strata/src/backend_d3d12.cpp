@@ -80,6 +80,10 @@ struct frame_buffers {
     UINT                   vb_capacity{};
     UINT                   ib_capacity{};
     UINT                   shape_capacity{};
+    // what this slot's buffers hold (draw_data::content_hash). per slot, not per renderer: with frames in flight an
+    // unchanged frame is written into a different slot than the one before it, so a slot may be several frames
+    // behind even when nothing changed. 0 = holds nothing (also what a reallocation resets it to).
+    u64                    uploaded_hash{};
 };
 
 } // namespace
@@ -839,23 +843,32 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     const auto vcount = static_cast<UINT>(data.vertices.size());
     const auto icount = static_cast<UINT>(data.indices.size());
     const auto scount = static_cast<UINT>(data.shapes.size());
+    const UINT was_vb = fb.vb_capacity, was_ib = fb.ib_capacity, was_sh = fb.shape_capacity;
     if (!s.ensure(fb.vb, fb.vb_capacity, vcount, sizeof(vertex)) ||
-        !s.ensure(fb.ib, fb.ib_capacity, icount, sizeof(u32)) ||
+        !s.ensure(fb.ib, fb.ib_capacity, icount, sizeof(index_t)) ||
         !s.ensure(fb.shapes, fb.shape_capacity, std::max(scount, 1u), sizeof(shape_record))) {
         return;
     }
+    if (was_vb != fb.vb_capacity || was_ib != fb.ib_capacity || was_sh != fb.shape_capacity) {
+        fb.uploaded_hash = 0; // a buffer was replaced: this slot holds nothing
+    }
 
-    void* mapped{};
-    if (FAILED(fb.vb->Map(0, nullptr, &mapped))) { return; }
-    std::memcpy(mapped, data.vertices.data(), data.vertices.size_bytes());
-    fb.vb->Unmap(0, nullptr);
-    if (FAILED(fb.ib->Map(0, nullptr, &mapped))) { return; }
-    std::memcpy(mapped, data.indices.data(), data.indices.size_bytes());
-    fb.ib->Unmap(0, nullptr);
-    if (scount != 0) {
-        if (FAILED(fb.shapes->Map(0, nullptr, &mapped))) { return; }
-        std::memcpy(mapped, data.shapes.data(), data.shapes.size_bytes());
-        fb.shapes->Unmap(0, nullptr);
+    // this slot may already hold exactly these bytes (an untouched ui, some frames ago): then there is nothing to
+    // upload. the gpu has long finished with it -- the host waited on this slot's fence before calling render.
+    if (data.content_hash == 0 || data.content_hash != fb.uploaded_hash) {
+        void* mapped{};
+        if (FAILED(fb.vb->Map(0, nullptr, &mapped))) { return; }
+        std::memcpy(mapped, data.vertices.data(), data.vertices.size_bytes());
+        fb.vb->Unmap(0, nullptr);
+        if (FAILED(fb.ib->Map(0, nullptr, &mapped))) { return; }
+        std::memcpy(mapped, data.indices.data(), data.indices.size_bytes());
+        fb.ib->Unmap(0, nullptr);
+        if (scount != 0) {
+            if (FAILED(fb.shapes->Map(0, nullptr, &mapped))) { return; }
+            std::memcpy(mapped, data.shapes.data(), data.shapes.size_bytes());
+            fb.shapes->Unmap(0, nullptr);
+        }
+        fb.uploaded_hash = data.content_hash;
     }
 
     const D3D12_VIEWPORT vp{0.0f, 0.0f, data.display_size.x, data.display_size.y, 0.0f, 1.0f};
@@ -874,7 +887,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         list->SetGraphicsRootShaderResourceView(2, fb.shapes->GetGPUVirtualAddress());
         list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         const D3D12_VERTEX_BUFFER_VIEW vbv{fb.vb->GetGPUVirtualAddress(), static_cast<UINT>(data.vertices.size_bytes()), sizeof(vertex)};
-        const D3D12_INDEX_BUFFER_VIEW  ibv{fb.ib->GetGPUVirtualAddress(), static_cast<UINT>(data.indices.size_bytes()), DXGI_FORMAT_R32_UINT};
+        const D3D12_INDEX_BUFFER_VIEW  ibv{fb.ib->GetGPUVirtualAddress(), static_cast<UINT>(data.indices.size_bytes()), DXGI_FORMAT_R16_UINT};
         list->IASetVertexBuffers(0, 1, &vbv);
         list->IASetIndexBuffer(&ibv);
         const float blend_factor[4] = {0, 0, 0, 0};
@@ -943,7 +956,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         const D3D12_RECT scissor{static_cast<LONG>(cmd.clip.min.x), static_cast<LONG>(cmd.clip.min.y),
                                  static_cast<LONG>(cmd.clip.max.x), static_cast<LONG>(cmd.clip.max.y)};
         list->RSSetScissorRects(1, &scissor);
-        list->DrawIndexedInstanced(cmd.idx_count, 1, cmd.idx_offset, 0, 0);
+        list->DrawIndexedInstanced(cmd.idx_count, 1, cmd.idx_offset, static_cast<INT>(cmd.vtx_offset), 0);
     }
 }
 

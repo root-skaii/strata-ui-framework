@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 #include "g_strata_ui_vs.h"
@@ -299,6 +300,10 @@ struct d3d11_renderer::impl {
     UINT                             vb_capacity{};
     UINT                             ib_capacity{};
     UINT                             shape_capacity{};
+    // what the dynamic buffers currently hold (draw_data::content_hash), so an untouched ui does not re-upload
+    // identical bytes every frame. 0 = unknown / nothing uploaded yet, which is also what a reallocation resets it to.
+    u64                              uploaded_hash{};
+    bool                             restore_state{true};
 
     // best effort: overwrite the dynamic buffers before they are released (the driver may still hold older renamed copies)
     void wipe() noexcept
@@ -334,8 +339,9 @@ struct d3d11_renderer::impl {
         if (FAILED(device->CreateBuffer(&desc, nullptr, &fresh))) {
             return false;
         }
-        buf      = std::move(fresh);
-        capacity = new_capacity;
+        buf           = std::move(fresh);
+        capacity      = new_capacity;
+        uploaded_hash = 0; // a fresh buffer holds nothing
         return true;
     }
 
@@ -369,6 +375,7 @@ struct d3d11_renderer::impl {
         shape_buf      = std::move(fresh);
         shape_srv      = std::move(fresh_srv);
         shape_capacity = new_capacity;
+        uploaded_hash  = 0;
         return true;
     }
 };
@@ -638,6 +645,16 @@ void d3d11_renderer::destroy() noexcept
     impl_.reset();
 }
 
+void d3d11_renderer::set_state_restore(bool on) noexcept
+{
+    if (impl_ != nullptr) { impl_->restore_state = on; }
+}
+
+bool d3d11_renderer::state_restore() const noexcept
+{
+    return impl_ != nullptr && impl_->restore_state;
+}
+
 void d3d11_renderer::render(const draw_data& data)
 {
     if (impl_ == nullptr || data.commands.empty() || data.display_size.x <= 0 || data.display_size.y <= 0) {
@@ -650,34 +667,46 @@ void d3d11_renderer::render(const draw_data& data)
     const auto icount = static_cast<UINT>(data.indices.size());
     const auto scount = static_cast<UINT>(data.shapes.size());
     if (!s.ensure_buffer(s.vb, s.vb_capacity, vcount, sizeof(vertex), D3D11_BIND_VERTEX_BUFFER) ||
-        !s.ensure_buffer(s.ib, s.ib_capacity, icount, sizeof(u32), D3D11_BIND_INDEX_BUFFER) ||
+        !s.ensure_buffer(s.ib, s.ib_capacity, icount, sizeof(index_t), D3D11_BIND_INDEX_BUFFER) ||
         !s.ensure_shapes(std::max(scount, 1u))) {
         return;
     }
 
     D3D11_MAPPED_SUBRESOURCE map{};
-    if (FAILED(ctx->Map(s.vb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
-    std::memcpy(map.pData, data.vertices.data(), data.vertices.size_bytes());
-    ctx->Unmap(s.vb.Get(), 0);
+    // an untouched ui produces the same bytes every frame. the buffers still hold last frame's copy, so when the
+    // hash says the contents match there is nothing to send: three Map(WRITE_DISCARD) + memcpy of the whole frame
+    // saved, which is most of what rendering a static panel costs on the cpu side. the draw calls still happen --
+    // the render target was cleared, or belongs to a game that redrew it.
+    const bool have_geometry = data.content_hash != 0 && data.content_hash == s.uploaded_hash;
+    if (!have_geometry) {
+        if (FAILED(ctx->Map(s.vb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
+        std::memcpy(map.pData, data.vertices.data(), data.vertices.size_bytes());
+        ctx->Unmap(s.vb.Get(), 0);
 
-    if (FAILED(ctx->Map(s.ib.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
-    std::memcpy(map.pData, data.indices.data(), data.indices.size_bytes());
-    ctx->Unmap(s.ib.Get(), 0);
+        if (FAILED(ctx->Map(s.ib.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
+        std::memcpy(map.pData, data.indices.data(), data.indices.size_bytes());
+        ctx->Unmap(s.ib.Get(), 0);
 
-    if (scount != 0) {
-        if (FAILED(ctx->Map(s.shape_buf.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
-        std::memcpy(map.pData, data.shapes.data(), data.shapes.size_bytes());
-        ctx->Unmap(s.shape_buf.Get(), 0);
+        if (scount != 0) {
+            if (FAILED(ctx->Map(s.shape_buf.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
+            std::memcpy(map.pData, data.shapes.data(), data.shapes.size_bytes());
+            ctx->Unmap(s.shape_buf.Get(), 0);
+        }
+
+        if (FAILED(ctx->Map(s.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
+        const float transform[4] = {2.0f / data.display_size.x, -2.0f / data.display_size.y, -1.0f, 1.0f};
+        // shader layout: scale.xy, translate.xy
+        std::memcpy(map.pData, transform, sizeof(transform));
+        ctx->Unmap(s.cb.Get(), 0);
+
+        s.uploaded_hash = data.content_hash;
     }
 
-    if (FAILED(ctx->Map(s.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
-    const float transform[4] = {2.0f / data.display_size.x, -2.0f / data.display_size.y, -1.0f, 1.0f};
-    // shader layout: scale.xy, translate.xy
-    const float packed[4] = {transform[0], transform[1], transform[2], transform[3]};
-    std::memcpy(map.pData, packed, sizeof(packed));
-    ctx->Unmap(s.cb.Get(), 0);
-
-    const state_guard guard{ctx};
+    // the state guard is what an overlay needs and an owner of the device does not; see set_state_restore
+    std::optional<state_guard> guard;
+    if (s.restore_state) {
+        guard.emplace(ctx);
+    }
 
     const D3D11_VIEWPORT vp{0.0f, 0.0f, data.display_size.x, data.display_size.y, 0.0f, 1.0f};
     ctx->RSSetViewports(1, &vp);
@@ -692,7 +721,7 @@ void d3d11_renderer::render(const draw_data& data)
     const UINT stride = sizeof(vertex);
     const UINT offset = 0;
     ctx->IASetVertexBuffers(0, 1, s.vb.GetAddressOf(), &stride, &offset);
-    ctx->IASetIndexBuffer(s.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+    ctx->IASetIndexBuffer(s.ib.Get(), DXGI_FORMAT_R16_UINT, 0);
 
     ctx->VSSetShader(s.vs.Get(), nullptr, 0);
     ctx->VSSetConstantBuffers(0, 1, s.cb.GetAddressOf());
@@ -772,7 +801,7 @@ void d3d11_renderer::render(const draw_data& data)
         const D3D11_RECT scissor{static_cast<LONG>(cmd.clip.min.x), static_cast<LONG>(cmd.clip.min.y),
                                  static_cast<LONG>(cmd.clip.max.x), static_cast<LONG>(cmd.clip.max.y)};
         ctx->RSSetScissorRects(1, &scissor);
-        ctx->DrawIndexed(cmd.idx_count, cmd.idx_offset, 0);
+        ctx->DrawIndexed(cmd.idx_count, cmd.idx_offset, static_cast<INT>(cmd.vtx_offset));
     }
 }
 

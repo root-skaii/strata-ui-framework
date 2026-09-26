@@ -377,7 +377,7 @@ bool context::menu_item(std::string_view label, const menu_item_options& o)
     }
     menu_frame& frame = menu_stack_[menu_depth_ - 1];
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const mnemonic_label m = parse_mnemonic(visible_label(label));
 
     const vec2 ts = label_size(f, m.text);
@@ -487,7 +487,7 @@ void context::menu_separator()
 bool context::begin_menu(std::string_view label, bool enabled)
 {
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const mnemonic_label m = parse_mnemonic(visible_label(label));
     const vec2 ts = label_size(f, m.text);
 
@@ -584,13 +584,13 @@ void context::end_menu()
 
 void context::open_popup_menu(std::string_view id_label, vec2 pos)
 {
-    const id key = hash_id("##popupmenu", hash_id(id_label, current_seed()));
+    const id key = hash_id("##popupmenu", widget_id(id_label));
     menu_open_root(key, pos, {}, false);
 }
 
 bool context::begin_popup_menu(std::string_view id_label)
 {
-    const id key = hash_id("##popupmenu", hash_id(id_label, current_seed()));
+    const id key = hash_id("##popupmenu", widget_id(id_label));
     if (menu_open_[0].key != key || !menu_begin_level(0, key)) {
         return false;
     }

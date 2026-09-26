@@ -45,6 +45,8 @@ struct options {
     double         golden_allowed   = 0.3;  // percent of the pixels that may be further off than that (other fonts move glyphs)
     strata::i32    shot_frames = 24;    // frames rendered (fixed 1/60 s steps) before the screenshot
     const wchar_t* log_path   = nullptr; // redirect stderr (debug layer output, frame report) to a file
+    bool           metrics    = false;  // strata's own inspector windows (frame stats, live draw commands)
+    bool           idle       = false;  // skip render + present while context::can_idle() says nothing changed
 
     // fonts: 0 = primary, 1 = mono, 2 = heading
     std::string    font_file;           // primary from a .ttf / .otf / .ttc
@@ -90,7 +92,10 @@ constexpr const wchar_t* usage_text =
     L"  --menu                   show only the sidebar settings-menu example\n"
     L"  --selftest               run the headless ui checks (text editing, docking, ...) and exit\n"
     L"  --features               start with the docked feature windows only (multi-line input, rich text, images, tables)\n"
-    L"  --log FILE               write stderr (debug layer, frame report) to FILE\n\n"
+    L"  --log FILE               write stderr (debug layer, frame report) to FILE\n"
+    L"  --metrics                show strata's own metrics and draw-list inspector windows\n"
+    L"  --idle                   skip rendering and presenting while the ui reports nothing changed\n"
+    L"                           (the frame report then says how many frames were skipped)\n\n"
     L"fonts\n"
     L"  --font FILE              primary font from a .ttf/.otf/.ttc\n"
     L"  --face NAME              primary font, installed family (default Segoe UI)\n"
@@ -180,6 +185,8 @@ struct app {
         else if (a == L"--selftest")       { opt.selftest = true; }
         else if (a == L"--features")       { opt.features = true; }
         else if (a == L"--log")            { opt.log_path = _wcsdup(value(i)); }
+        else if (a == L"--metrics")        { opt.metrics = true; }
+        else if (a == L"--idle")           { opt.idle = true; }
         else if (a == L"--font")           { opt.font_file = to_utf8(value(i)); }
         else if (a == L"--face")           { opt.face = to_utf8(value(i)); }
         else if (a == L"--size")           { opt.size = std::max(real(i), 6.0f); }
@@ -369,6 +376,10 @@ struct demo_state {
     bool        scene_only = false; // a scene that draws nothing but its own windows
     std::string theme_path   = (std::filesystem::temp_directory_path() / "strata_sandbox_theme.ini").string(); // not the working directory: that is the project
     std::string theme_status = "-";
+
+    // --metrics: strata's own inspector windows
+    bool show_metrics = true;
+    bool show_cmds    = true;
 
     // settings-menu example
     bool show_menu   = false;
@@ -1448,6 +1459,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     strata::draw_data last_data{};
 
     strata::i32 frame = 0;
+    strata::i32 frames_idled = 0; // --idle: frames where nothing changed, so nothing was rendered or presented
+    strata::u32 worst_collisions = 0; // debug builds: the most duplicate widget ids seen in one frame
+    std::string worst_collision_label;
     strata::i32 shot_counter = 0;
     demo2_sim   sim;
     int exit_code     = 0;
@@ -1548,7 +1562,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         }
         ui.begin_frame(std::move(input));
         build_ui(ui, state, *host, last_data);
+        if (opt.metrics) { // strata inspecting itself; submitted last so it sees the whole frame's commands
+            ui.debug_draw_list_window(state.show_cmds);
+            ui.debug_metrics_window(state.show_metrics);
+        }
         ui.end_frame();
+        // debug builds count widgets that share an id; report the worst frame once at the end rather than spamming
+        if (ui.stats().id_collisions > worst_collisions) {
+            worst_collisions = ui.stats().id_collisions;
+            worst_collision_label.assign(ui.id_collision_label());
+        }
         demo2_textures_update(*host, state.x); // (before the frame that shows it is rendered)
         self.wants_text = ui.want_text_input() || ui.popup_open();
         self.platform.set_ime(ui.ime_wanted(), ui.ime_position(), ui.ime_line_height());
@@ -1559,8 +1582,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         last_data = ui.render_data();
         const bool shot_frame = shot_mode && ++shot_counter >= opt.shot_frames;
         if (shot_frame) { host->request_capture(); }
-        host->render(last_data, {static_cast<strata::u8>(state.clear_r), static_cast<strata::u8>(state.clear_g),
-                                 static_cast<strata::u8>(state.clear_b), 255});
+        // --idle: an untouched ui produces the same geometry frame after frame, and this window belongs to us -- what
+        // is on the screen is already right, so there is nothing to draw and nothing to present. never while a
+        // screenshot is being taken, which needs the frame rendered.
+        const bool skip = opt.idle && !shot_mode && !shot_frame && ui.can_idle();
+        if (skip) {
+            ++frames_idled;
+        } else {
+            host->render(last_data, {static_cast<strata::u8>(state.clear_r), static_cast<strata::u8>(state.clear_g),
+                                     static_cast<strata::u8>(state.clear_b), 255});
+        }
         if (shot_frame) {
             exit_code = finish_shot(*host, opt);
             ::DestroyWindow(hwnd);
@@ -1569,6 +1600,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         if (opt.max_frames > 0 && ++frame >= opt.max_frames) {
             std::fprintf(stderr, "[sandbox] %d frames ok (%s), %.0f fps, ui %.3f ms, ui time %.2f s vs wall %.2f s\n", frame,
                          host->name(), state.fps, state.ui_ms, ui.time(), seconds_now() - loop_start);
+            if (opt.idle) {
+                const double pct = 100.0 * static_cast<double>(frames_idled) / static_cast<double>(frame > 0 ? frame : 1);
+                std::fprintf(stderr, "[sandbox] %d of %d frames idled (%.0f %%): nothing changed, nothing drawn\n",
+                             frames_idled, frame, pct);
+            }
+            if (worst_collisions > 0) { // debug builds only; release never checks
+                std::fprintf(stderr, "[sandbox] %u duplicate widget id(s) in one frame, first \"%s\"\n",
+                             worst_collisions, worst_collision_label.c_str());
+            }
             ::DestroyWindow(hwnd);
         }
 

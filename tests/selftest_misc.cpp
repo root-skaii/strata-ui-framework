@@ -123,11 +123,14 @@ void test_draw_list_extras()
     const std::array<vec2, 4> pts = {{{10, 10}, {50, 40}, {90, 10}, {130, 40}}};
     dl.polyline(pts, color{255, 255, 255, 255}, 3.0f);
     CHECK(dl.data().vertices.size() == 16 && dl.data().indices.size() == 3 * 18);
+    // closed: one more segment, and one more point's worth of vertices -- the strip is walked as segs + 1 positions
+    // (the last repeating the first) so that it can be split across draw commands, which costs the 4 vertices of the
+    // repeat instead of indexing back to position 0. same segments, same pixels.
     dl.polyline(pts, color{255, 255, 255, 255}, 3.0f, true);
-    CHECK(dl.data().vertices.size() == 32 && dl.data().indices.size() == 3 * 18 + 4 * 18); // closed: one more segment
+    CHECK(dl.data().vertices.size() == 16 + 20 && dl.data().indices.size() == 3 * 18 + 4 * 18);
     const std::array<vec2, 2> dup = {{{5, 5}, {5, 5}}};
     dl.polyline(dup, color{255, 255, 255, 255}, 2.0f); // no direction: nothing to draw, nothing broken
-    CHECK(dl.data().vertices.size() == 32);
+    CHECK(dl.data().vertices.size() == 16 + 20);
 
     const auto before = dl.data().vertices.size();
     dl.bezier_cubic({0, 0}, {100, 0}, {100, 100}, {200, 100}, color{255, 0, 0, 255}, 2.0f);

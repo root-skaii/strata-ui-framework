@@ -76,6 +76,18 @@ struct harness {
     void move(vec2 p) { in.mouse_pos = p; }
     void down() { in.mouse_down[0] = true; }
     void up() { in.mouse_down[0] = false; }
+    // the other two buttons, so right-click menus and middle-click paths can be scripted like the left one
+    void down(int button) { in.mouse_down[static_cast<std::size_t>(button)] = true; }
+    void up(int button) { in.mouse_down[static_cast<std::size_t>(button)] = false; }
+    // wheel notches for this frame (positive = away from the user / scroll up), and sideways for a tilt wheel
+    void wheel(f32 notches) { in.wheel = notches; }
+    void wheel_x(f32 notches) { in.wheel_x = notches; }
+    void modifiers(bool ctrl = false, bool shift = false, bool alt = false)
+    {
+        in.ctrl = ctrl;
+        in.shift = shift;
+        in.alt = alt;
+    }
     void key(strata::key k, bool ctrl = false, bool shift = false)
     {
         if (in.key_count < in.keys.size()) { in.keys[in.key_count++] = {k, ctrl, shift}; }
@@ -97,6 +109,44 @@ struct harness {
         down();
         frame(build);
         up();
+        frame(build);
+    }
+
+    // the same with the right button: what opens a context menu
+    template <class F>
+    void right_click(vec2 p, F&& build)
+    {
+        move(p);
+        frame(build);
+        frame(build);
+        down(1);
+        frame(build);
+        up(1);
+        frame(build);
+    }
+
+    // one wheel gesture over a point: hover first (scrollers test the pointer against last frame's rectangle),
+    // then the notches, then a frame without them so the scroll is not applied twice
+    template <class F>
+    void scroll(vec2 p, f32 notches, F&& build)
+    {
+        move(p);
+        frame(build);
+        frame(build);
+        wheel(notches);
+        frame(build);
+        frame(build);
+    }
+
+    // ... and sideways (a tilt wheel / trackpad swipe): positive is towards the right
+    template <class F>
+    void scroll_x(vec2 p, f32 notches, F&& build)
+    {
+        move(p);
+        frame(build);
+        frame(build);
+        wheel_x(notches);
+        frame(build);
         frame(build);
     }
 };

@@ -1,11 +1,13 @@
 #pragma once
 
+#include "strata/bidi.hpp"
 #include "strata/font.hpp"
 #include "strata/types.hpp"
 #include "strata/vmem.hpp"
 
 #include <array>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -40,10 +42,17 @@ struct shape_record {
 };
 static_assert(sizeof(shape_record) == 80);
 
+// indices are 16 bit and relative to the command's own `vtx_offset`, which halves index bandwidth. a command
+// therefore spans at most `max_command_vertices` vertices; the draw list splits one that would reach past that,
+// exactly as it does on a clip or texture change.
+using index_t = u16;
+inline constexpr u32 max_command_vertices = 1u << 16;
+
 struct draw_cmd {
     rect       clip;              // physical pixels
     u32        idx_offset{};
     u32        idx_count{};
+    u32        vtx_offset{};      // what this command's indices are relative to (BaseVertexLocation)
     texture_id texture{};         // 0: glyphs and shapes (font atlas); otherwise the image the whole command draws
     f32        blur{};            // > 0: a backdrop command: the quads show the frame so far, blurred by this many pixels
 };
@@ -51,10 +60,14 @@ struct draw_cmd {
 // what a renderer backend consumes. all spans are valid until the next begin().
 struct draw_data {
     std::span<const vertex>   vertices;
-    std::span<const u32>      indices;
+    std::span<const index_t>  indices;
     std::span<const draw_cmd> commands;
     std::span<const shape_record> shapes;
     vec2                      display_size; // physical pixels
+    // identifies these contents, so a renderer can tell that the buffer it already holds is still the right one and
+    // skip the upload (context::end_frame computes it; see context::frame_unchanged). 0 = unknown, always upload.
+    // it is a hash, so a renderer must treat it as a hint about equality and nothing more.
+    u64                       content_hash{};
 };
 
 enum class corners : u8 {
@@ -214,17 +227,26 @@ public:
     [[nodiscard]] draw_data data() const noexcept;
     // true if the vertex / index / command reservation ran out this frame
     [[nodiscard]] bool overflowed() const noexcept { return overflow_; }
+    // pushes that overran the clip / alpha stack this frame: a nesting deeper than the draw list can hold.
+    // the geometry is still correct, but the innermost levels were not clipped / faded.
+    [[nodiscard]] u32 clip_stack_overflows() const noexcept { return clip_overflows_; }
+    [[nodiscard]] u32 alpha_stack_overflows() const noexcept { return alpha_overflows_; }
 
 private:
     static constexpr u32 max_polygon_points = 64;
-    static constexpr u32 max_clip_depth     = 16;
+    static constexpr u32 max_clip_depth     = 32;
+    static constexpr u32 max_alpha_depth    = 16;
 
     struct prim {
-        vertex* v{};
-        u32*    i{};
-        u32     base{};
+        vertex*  v{};
+        index_t* i{};
+        u32      base{}; // this primitive's first vertex, relative to the command's vtx_offset
+        // an index for the primitive's vertex `offset`, narrowed to the 16-bit index type
+        [[nodiscard]] index_t idx(u32 offset) const noexcept { return static_cast<index_t>(base + offset); }
     };
 
+    // `vertex_count` must not exceed max_command_vertices: callers whose size is driven by their input
+    // (text, polyline, area_fill) emit in chunks that stay under it.
     [[nodiscard]] bool reserve(u32 vertex_count, u32 index_count, prim& out) noexcept;
     [[nodiscard]] color fade(color c) const noexcept { return alpha_ >= 0.999f ? c : c.scaled_alpha(alpha_); }
     void set_clip(const rect& logical) noexcept;
@@ -235,7 +257,7 @@ private:
     [[nodiscard]] bool emit_quad_for(const rect& bounds, u32 record_index, color vertex_color) noexcept;
 
     vmem_array<vertex>   vertices_;
-    vmem_array<u32>      indices_;
+    vmem_array<index_t>  indices_;
     vmem_array<draw_cmd> commands_;
     vmem_array<shape_record> shapes_;
     vmem_array<draw_cmd> reorder_scratch_;
@@ -252,14 +274,32 @@ private:
     f32               blur_{};    // the blur radius of the backdrop being reserved
     f32               scale_{1.0f};
     f32               alpha_{1.0f};
-    std::array<f32, 8> alpha_stack_{};
+    std::array<f32, max_alpha_depth> alpha_stack_{};
     u32               alpha_depth_{};
+    // pushes past the capacity of either stack are counted rather than stored, so the matching pop skips instead of
+    // restoring a value from the wrong level (which used to leave the clip or the alpha wrong for the rest of the
+    // frame). the *_dropped_ counters are the live depth a pop consumes; the *_overflows_ ones only ever grow, so a
+    // balanced frame still reports that it ran out (see frame_stats).
+    u32               alpha_dropped_{};
+    u32               clip_dropped_{};
+    u32               alpha_overflows_{};
+    u32               clip_overflows_{};
 
     std::array<rect, max_clip_depth> clip_stack_{};
     u32                              clip_depth_{};
 
-    std::vector<vec2> poly_pts_;  // scratch of polyline()
-    std::vector<vec2> poly_nrm_;
+    // one underline / strike-through bar: text() collects them while the glyph vertices are still the tail of the
+    // arrays and draws them after. a vector (not a fixed array) because a wrapped paragraph drawn in one call has a
+    // bar per line and quietly losing the ones past a fixed count is worse than reusing this capacity every frame.
+    struct span_line {
+        f32 x0{}, x1{}, base{};
+    };
+
+    std::vector<vec2>      poly_pts_;    // scratch of polyline()
+    std::vector<vec2>      poly_nrm_;
+    std::vector<span_line> text_spans_;  // scratch of text()
+    std::string            rtl_scratch_; // text(): the run reordered into visual order
+    visual_scratch         bidi_scratch_;
 };
 
 } // namespace strata

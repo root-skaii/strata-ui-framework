@@ -58,7 +58,7 @@ chip_result context::chip(std::string_view label, const chip_options& o)
         return res;
     }
     const font_id          f     = current_font();
-    const id               key   = hash_id(label, current_seed());
+    const id               key   = widget_id(label);
     const std::string_view shown = visible_label(label);
     const vec2             ts    = label_size(f, shown);
     const f32              h     = frame_height() - 6.0f;

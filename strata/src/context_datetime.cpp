@@ -210,7 +210,7 @@ bool context::date_picker(std::string_view label, date& value)
         return false;
     }
     if (!is_valid(value)) { value = clamp_date(value); }
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const interaction  in  = interact(key, fl.control);
     push_id(label);
@@ -238,7 +238,7 @@ bool context::time_picker(std::string_view label, time_of_day& value, bool secon
         return false;
     }
     if (!is_valid(value)) { value = clamp_time(value); }
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const interaction  in  = interact(key, fl.control);
     push_id(label);
@@ -267,7 +267,7 @@ bool context::datetime_picker(std::string_view label, date& d, time_of_day& t, b
     }
     if (!is_valid(d)) { d = clamp_date(d); }
     if (!is_valid(t)) { t = clamp_time(t); }
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const interaction  in  = interact(key, fl.control);
     push_id(label);

@@ -54,7 +54,7 @@ namespace {
 bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f32 speed, f32 lo, f32 hi, int decimals,
                        std::string_view suffix, bool integer)
 {
-    const id      wkey     = hash_id(id_label, current_seed());
+    const id      wkey     = widget_id(id_label);
     const font_id f        = current_font();
     const bool    bounded  = lo < hi;
     bool          changed  = false;
@@ -281,8 +281,8 @@ bool context::input_float(std::string_view label, f32& value, f32 step, int deci
         push_id(label);
         const rect minus = {{field.max.x + 4.0f, fl.control.min.y}, {field.max.x + 4.0f + bw, fl.control.max.y}};
         const rect plus  = {{minus.max.x + 4.0f, minus.min.y}, {minus.max.x + 4.0f + bw, minus.max.y}};
-        const interaction im = interact(hash_id("##minus", current_seed()), minus);
-        const interaction ip = interact(hash_id("##plus", current_seed()), plus);
+        const interaction im = interact(widget_id("##minus"), minus);
+        const interaction ip = interact(widget_id("##plus"), plus);
         step_button(*this, dl_, style_, "-", minus, false, im.hovered ? 1.0f : 0.0f, im.hovered, im.held);
         step_button(*this, dl_, style_, "+", plus, true, ip.hovered ? 1.0f : 0.0f, ip.hovered, ip.held);
         if (im.pressed) { value -= step; changed = true; }
@@ -322,8 +322,8 @@ bool context::input_int(std::string_view label, int& value, int step)
         push_id(label);
         const rect minus = {{field.max.x + 4.0f, fl.control.min.y}, {field.max.x + 4.0f + bw, fl.control.max.y}};
         const rect plus  = {{minus.max.x + 4.0f, minus.min.y}, {minus.max.x + 4.0f + bw, minus.max.y}};
-        const interaction im = interact(hash_id("##minus", current_seed()), minus);
-        const interaction ip = interact(hash_id("##plus", current_seed()), plus);
+        const interaction im = interact(widget_id("##minus"), minus);
+        const interaction ip = interact(widget_id("##plus"), plus);
         step_button(*this, dl_, style_, "-", minus, false, im.hovered ? 1.0f : 0.0f, im.hovered, im.held);
         step_button(*this, dl_, style_, "+", plus, true, ip.hovered ? 1.0f : 0.0f, ip.hovered, ip.held);
         if (im.pressed) { value -= step; changed = true; }

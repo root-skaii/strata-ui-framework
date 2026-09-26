@@ -54,6 +54,10 @@ strata_sandbox.exe [options]        (strata_sandbox.exe --help lists everything)
   --shot FILE              render --shot-frames (24) fixed 1/60 s steps, save the last frame as a png (read back from the gpu) and exit
   --golden FILE            the same, but compare with the png FILE; exit code 0 = match (--update-golden rewrites it)
   --log FILE               stderr (D3D debug layer messages in Debug builds, frame report) to a file
+  --metrics                strata's own inspector windows: frame cost, geometry, culling, idle state, and in red
+                           anything that went wrong quietly; plus the live draw commands, one row each
+  --idle                   skip rendering and presenting while the ui reports nothing changed; the frame report
+                           then says how many frames were skipped (try `--scene icons --idle --frames 300`)
 
   --font FILE | --face NAME --size PX          primary font (id 0)
   --mono FILE|NAME --mono-size PX              second font (id 1, default Consolas 13)
@@ -99,6 +103,12 @@ records into your open command list and expects the usual frames-in-flight fence
   renderers only ever see physical pixels (see *DPI and UI scale*).
 - **16-byte vertex** (`float2` pos, `unorm16x2` uv, `rgba8`), one atlas, one shader pair, draws merge per clip rect
   (an image takes a command of its own, since a command draws with one texture).
+- **16-bit indices**, relative to each command's `vtx_offset` (`BaseVertexLocation`), which halves index bandwidth.
+  A command therefore spans at most 65536 vertices; one that would reach past that is split, exactly as a clip or
+  texture change splits it. Text, polylines and area fills emit in chunks so no single primitive can exceed it.
+- **Nothing changed, nothing sent.** `end_frame` hashes the geometry; `ui.can_idle()` is true when this frame is
+  byte-identical to the last one and no animation is still moving, and the renderers skip the buffer upload on their
+  own when the hash says they already hold it (see *Idling*).
 - **Rounded shapes are analytic.** One quad per shape (an 80-byte record); the pixel shader evaluates a signed distance field with per-corner radii, an angled or radial gradient, inner border and soft drop shadow. Axis-aligned plain rects take a 4-vertex fast path.
 - **Animated widgets** (hover / press / toggle) via a small fixed hash table keyed by widget id.
 - **No exceptions, no RTTI**, static CRT, `/GL` + `/LTCG` in release, windows.h kept out of public headers.
@@ -490,6 +500,14 @@ if (ui.table_tree_node("src", tree_flags::default_open)) {
   window): `scroll_y()`, `scroll_max_y()`, `set_scroll_y()`, `scroll_to_top()` / `scroll_to_bottom()`, and
   `ensure_item_visible()` / `scroll_to_item()` for the row that was just submitted -- which is how "reveal the
   selection" works. The new offset shows on the next frame, so it is called every frame the selection holds.
+- **Sideways scrolling** is opt-in per child region:
+  `ui.begin_child("pane", size, strata::child_flags::horizontal)`. Content wider than the region then scrolls
+  instead of being cut off, with a bar along the bottom, the tilt wheel (`WM_MOUSEHWHEEL`, which `win32_platform`
+  now forwards as `input_state::wheel_x`) and Shift + wheel. `scroll_x()`, `scroll_max_x()` and `set_scroll_x()`
+  are the counterparts of the vertical three. Full-width widgets still size themselves to the *visible* width, so
+  what overflows is whatever asked to be wide: an image, a long unwrapped line, a table given fixed column widths.
+  Windows and tables have no horizontal scrolling of their own -- they lay out to the width they are given -- so
+  put one inside a horizontal child when it needs to be wider than its pane.
 - **Keyboard navigation** is opt-in per list: between `nav_begin()` and `nav_end()` (or `auto n = ui.navigation("id");`)
   Up / Down move a cursor over the rows, Home / End jump, PageUp / PageDown move by ten, Left closes a node or steps
   out to its parent, Right opens it or steps in, and Enter reports the row exactly like a click. Clicking a row moves
@@ -691,6 +709,10 @@ ui.log_view("console", log);                                 // toolbar + lines,
   a wrapped log of thousands of lines still draws only what is in view. **Clock times:** every line is stamped with the system clock when
   it is added (`log.add(level, text, ui_time, wall_ms)` to replay lines with the times they had); `show_time` + `clock` shows
   `HH:MM:SS.mmm` local time (`log_buffer::clock_text(wall_ms)`), otherwise the seconds of ui time as before.
+  The text of every line lives in one arena rather than a `std::string` per line -- a program logs at whatever rate
+  it produces events, and a string each meant an allocation each. `line.text()` is a `std::string_view` into that
+  arena, valid until the next `add()` / `clear()`; the arena is compacted as lines fall out of the ring and settles
+  at about the size of the lines the ring holds, after which logging allocates nothing.
 
 ## Modals, menus, toasts
 
@@ -800,6 +822,18 @@ ui.text_wrapped("plain text, wrapped");
 ```
 `<f=N>...</f>` switches to font id N, `<c=rrggbb>` / `<c=rrggbbaa>` ... `</c>` changes the color, `<b>` bold, `<i>` italic, `<u>` underline
 and `<s>` strike-through (each closed by `</b>` ...; they combine: `<b><i>both</i></b>`), `<<` is a literal `<`. Tags nest.
+
+**Links.** `<a=href>text</a>` draws `text` underlined in the accent color (a `<c=>` inside the link keeps its own
+color), shows the hand cursor over it, and reports the href for the frame it was clicked in:
+
+```cpp
+ui.rich_text("see <a=https://example.com>the manual</a>, or <a=cmd:reset>reset</a>");
+if (auto href = ui.rich_link_clicked(); !href.empty()) { open(href); }   // an event, not a state
+ui.rich_link_hovered();   // the href under the pointer right now, for a status bar
+```
+The href is whatever you put there -- a url, a file, a command name; strata does not open anything itself, because
+what a link should do is the application's business. Links in *widget captions* (under `rich_labels()`) are drawn
+but not clickable: the widget owns the click.
 The styles are synthesized, so they work with any font and change no advance (layout is the same as for plain text): bold is a
 second strike a pixel to the right, italic slants the glyph quads, the lines follow the text. They are also a `text_flags` argument of
 `draw_list::text(pos, color, text, font, text_flags::bold | text_flags::underline)`. For a real bold face pick another font id.
@@ -867,11 +901,142 @@ never grows past the bottom of the display: when the content is taller it stops 
 unreachable. Windows can also be created with a fixed height and no resizing. The plain `ui.window("title", pos, width)`
 form is unchanged.
 
-**Pointer shape:** `ui.cursor()` reports what the pointer should look like (arrow, text I-beam, resize arrows). With
-`win32_platform`: `platform.set_cursor(ui.cursor())` after `end_frame()` and, in your window procedure,
+**Pointer shape:** `ui.cursor()` reports what the pointer should look like: `arrow`, `text` (I-beam), `hand` (over a
+rich-text link), `not_allowed` (over a disabled item, so "this does nothing" is distinguishable from "this is
+broken"), and the resize arrows `resize_ew`, `resize_ns`, `resize_nwse`, `resize_nesw`. With `win32_platform`:
+`platform.set_cursor(ui.cursor())` after `end_frame()` and, in your window procedure,
 `case WM_SETCURSOR: if (LOWORD(lparam) == HTCLIENT && platform.apply_cursor()) return TRUE;`.
 
+## Idling
+
+A UI nobody is touching draws the same thing every frame. `end_frame` hashes the vertices, indices, commands and
+shapes, so it can say whether this frame differs from the last one at all:
+
+```cpp
+ui.end_frame();
+if (ui.can_idle()) {
+    // nothing to draw that is not already on the screen
+} else {
+    renderer.render(ui.render_data());
+    present();
+}
+```
+
+- `frame_unchanged()` -- the geometry is byte-identical to the previous frame.
+- `animations_settling()` -- something will look different next frame even if nobody touches anything: an animation
+  still short of its target, a toast counting down, the pause before a tooltip appears. Without this the hash alone
+  would idle a fading animation one frame short and freeze a toast on the screen forever.
+- `can_idle()` is both: unchanged and not settling.
+- `invalidate()` forces the next frame to count as changed (a texture was replaced, the host rebuilt its back
+  buffers, the theme was edited between frames).
+
+**An overlay cannot skip drawing** -- the game cleared the target and redrew its own frame, so the UI has to go back
+on top. What it can skip is the upload, and the renderers do that themselves: `render_data()` carries a
+`content_hash`, each renderer remembers what its buffers hold (per frame slot on D3D12, where frames are in flight)
+and skips the `Map` + `memcpy` of the vertex, index and shape buffers when they already hold this frame. For a
+static panel that is most of what rendering costs on the CPU side.
+
+`d3d11_renderer::set_state_restore(false)` turns off the save-and-restore of the eighteen pipeline stages `render()`
+touches -- about forty driver calls per frame spent putting back state nobody will read. An in-game overlay needs it
+on (the default); an application that owns its device does not, and then has to set what it needs before whatever it
+draws next.
+
+In the sandbox, `--idle` does the skip and reports it: `--scene icons --idle --frames 300` idles 299 of 300 frames.
+The busier scenes idle none of them, because a progress bar, a spinner or an fps readout really does change the
+geometry every frame.
+
+## Diagnostics
+
+```cpp
+ui.debug_metrics_window(show_metrics);    // frame cost, geometry, culling, idle state, and what went wrong
+ui.debug_draw_list_window(show_commands); // the live commands: clip, index count, base vertex, texture
+```
+
+`ui.stats()` is the same numbers as a struct: items submitted and how many the clip rectangle culled, vertices /
+indices / draw calls, the measurement cache hit rate, animation table occupancy, and `begin_frame_ms` /
+`end_frame_ms`. Four of its fields are things that used to fail silently and now do not:
+
+- `draw_overflow` -- a vertex / index / command / shape reservation ran out and geometry was dropped. Raise
+  `draw_list_limits`.
+- `clip_overflows` / `alpha_overflows` -- nesting deeper than the clip (32) or alpha (16) stack holds. The push is
+  counted instead of stored and the matching pop skips it, so the levels that did fit stay correct; the innermost
+  ones are simply not clipped or faded. (Before, the push was applied without being saved, and every later pop
+  restored the wrong level -- the rest of the frame was clipped one level too shallow.)
+- `id_collisions` -- **debug builds only.** Two widgets whose labels hash to the same id in the same scope share
+  their hover, press and focus state: the second one steals the first one's click, and nothing on screen looks
+  wrong. `id_collision()` and `id_collision_label()` name the first one of the frame, which is almost always a
+  repeated label. Give one a `"label##suffix"`, or wrap them in `push_id()`. Release builds do not check.
+
 ## Footprint
+
+### Binary size
+
+What strata adds to a program, measured by linking a probe that uses it (window, text, button, checkbox, slider,
+text field, rich text, a table) against an empty program with the same flags: x64 release, `/O2 /GL /LTCG /MT`,
+`/OPT:REF /OPT:ICF`, no exceptions, no RTTI. Subtracting the empty program removes the static CRT baseline
+(105 KiB) but *not* the parts of the CRT that strata itself drags in, which is the honest way round -- those bytes
+are in your binary because strata is.
+
+| what | adds | running total |
+|---|---:|---:|
+| empty program, static CRT | -- | 106 KiB |
+| \+ strata core (context, widgets, draw list, fonts, bidi, themes) | 583 KiB | 689 KiB |
+| \+ `d3d11_renderer` | 37 KiB | 725 KiB |
+| \+ `d3d12_renderer` | 36 KiB | 761 KiB |
+| \+ the two diagnostic windows | 17 KiB | 778 KiB |
+
+Roughly 420 KiB of that is strata's own code; the rest is the CRT it pulls in, most of it the `charconv` /
+`std::format` float tables (~110 KiB) that any use of `textf` or a number field reaches. By translation unit, the
+largest are `context.cpp` (93 KiB), `context_text.cpp` (39 KiB), `font.cpp` (26 KiB), `context_dock.cpp` (25 KiB),
+`context_data.cpp` (tables, 23 KiB) and `bidi.cpp` (19 KiB). `/OPT:REF` drops what a program does not call, so a UI
+that never opens a code editor, a plot or a date picker does not pay for them -- the diagnostic windows in the
+table above are only 17 KiB *because they are called*.
+
+The shipped artifacts, for comparison: `strata_overlay_demo.dll` 820 KiB (strata + both renderers + the overlay
+hook + a demo UI), `strata_sandbox.exe` 1.9 MiB (all of it, plus a large demo application and the self-tests).
+`strata.lib` itself is ~111 MiB on disk, which is `/GL` intermediate code, not machine code -- nothing of that size
+reaches a binary.
+
+### Memory
+
+| object | size |
+|---|---:|
+| `context` | 26,528 bytes |
+| `draw_list` | 1,080 bytes |
+| `font_atlas` | 72 bytes (plus the pixels below) |
+| `input_state` | 456 bytes |
+| `style` | 116 bytes |
+| `vertex` | 16 bytes |
+| index | 2 bytes |
+| `draw_cmd` | 36 bytes |
+| `shape_record` | 80 bytes |
+
+**Address space** the draw list reserves up front, committed 64 KiB at a time as it is used and never moved (the
+defaults in `draw_list_limits`; all four are configurable):
+
+| array | capacity | reserved |
+|---|---:|---:|
+| vertices | 1,048,576 | 16 MiB |
+| indices | 4,194,304 | 8 MiB |
+| commands | 16,384 | 576 KiB |
+| shapes | 131,072 | 10 MiB |
+
+About 34 MiB of reservation, of which a real frame touches a fraction of one percent. Reservation is not memory: it
+costs address space (of 128 TiB) and no pages until written.
+
+**Actually committed.** A context with one 14 px font, after 240 frames of two windows holding 60 rows and a 40-row
+four-column table: **816 KiB** of private working set, of which 256 KiB is the CPU-side atlas bitmap
+(`release_font_pixels()` gives that back once every renderer has its copy). The atlas is 8 bits per pixel and sized
+to the glyphs you bake: 512x512 for the default Latin / Greek / Cyrillic set with one font, 2048x1024 (2 MiB) for
+the sandbox's four fonts with icons, up to `max_atlas_size` (4096, so 16 MiB) for CJK.
+
+**Per frame**, that same UI produced 2,452 vertices, 3,702 indices, 134 commands and 21 shapes -- 38 KiB + 7 KiB +
+2 KiB to upload. The sandbox's busiest scene runs about 6,600 vertices / 10,500 indices / 31 draw calls, roughly
+124 KiB per frame, and the UI costs ~0.13 ms of CPU to build. Steady state allocates nothing: the geometry arrays,
+the animation table, the measurement cache, the rich-text runs, the bidi scratch and the log's text arena are all
+grown once and reused.
+
+### Traces
 
 What the library leaves behind, measured on the running sandbox (handle / module / file / registry checks, and a scan of
 the process memory for text typed into a field):
@@ -1014,6 +1179,8 @@ The known limitations, as a work list.
 **Input and windows**
 - [ ] Keyboard navigation of widgets and menus (Tab / arrows; today only text fields, combos and hotkeys take the keyboard)
 - [ ] Multi-viewport (windows outside the application window)
+- [ ] Horizontal scrolling for windows and tables themselves (today only a `child_flags::horizontal` child scrolls
+      sideways, which is enough to put a wide table in but does not give the table its own bar)
 
 ## Ideas
 

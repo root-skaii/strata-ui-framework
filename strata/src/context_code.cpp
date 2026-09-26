@@ -191,12 +191,12 @@ context::code_state& context::code_state_for(id key)
 
 void context::code_goto_line(std::string_view label, int line)
 {
-    code_state_for(hash_id(label, current_seed())).want_line = std::max(line, 1);
+    code_state_for(widget_id(label)).want_line = std::max(line, 1);
 }
 
 void context::code_find(std::string_view label, std::string_view text, bool with_replace)
 {
-    code_state& cs = code_state_for(hash_id(label, current_seed()));
+    code_state& cs = code_state_for(widget_id(label));
     cs.find_open    = true;
     cs.replace_open = with_replace;
     cs.open_request = true;
@@ -267,7 +267,7 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
         return false;
     }
     const auto has = [&](code_flags f) { return (static_cast<u8>(flags) & static_cast<u8>(f)) != 0; };
-    const id   key           = hash_id(label, current_seed());
+    const id   key           = widget_id(label);
     const bool focused_here  = focus_id_ == key;
     const bool find_shortcut = has(code_flags::find_replace) && focused_here;
     const std::size_t caret  = focused_here ? std::min(edit_cursor_, edit_anchor_) : 0;
@@ -282,7 +282,7 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
 
     if (has(code_flags::find_replace)) {
         push_id(label);
-        const id find_key = hash_id("##find", current_seed());
+        const id find_key = widget_id("##find");
         bool fresh_search = false; // code_find(): start at the first match after the caret
         if (cs.open_request) {
             cs.open_request = false;

@@ -51,6 +51,7 @@ private:
     std::array<bool, 3> release_pending_{};
     std::array<bool, 3> press_seen_{};
     f32                 wheel_{};
+    f32                 wheel_x_{};
     std::int64_t        last_ticks_{};
     bool                tracking_leave_{};
 

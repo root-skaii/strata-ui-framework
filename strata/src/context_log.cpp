@@ -103,7 +103,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
                 const log_buffer::line& l = log[i];
                 if (any_selected && (l.seq < lo || l.seq > hi)) { continue; }
                 if (l.level < v.min_level) { continue; }
-                all += l.text;
+                all += l.text();
                 all += '\n';
             }
             clipboard_.set(clipboard_.user, all);
@@ -117,7 +117,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
         log.visible_.clear();
         for (std::size_t i = 0; i < log.lines_.size(); ++i) {
             const log_buffer::line& l = log.lines_[i];
-            if (l.level >= v.min_level && contains_ci(l.text, needle)) {
+            if (l.level >= v.min_level && contains_ci(l.text(), needle)) {
                 log.visible_.push_back(static_cast<u32>(i));
             }
         }
@@ -148,7 +148,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             for (std::size_t i = 0; i < count; ++i) {
                 log_buffer::line& l = log.lines_[log.visible_[i]];
                 if (l.wrap_w != wrap_w) {
-                    l.wrap_h = l.text.empty() ? font_.line_height(f) : rich_layout(l.text, f, style_.text, wrap_w, false).y;
+                    l.wrap_h = l.text().empty() ? font_.line_height(f) : rich_layout(l.text(), f, style_.text, wrap_w, false).y;
                     l.wrap_w = wrap_w;
                 }
                 log.row_top_[i] = y;
@@ -182,7 +182,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
 
         const bool overflowing = total > view_h;
         const rect hit = {cf.bounds.min, {cf.bounds.max.x - (overflowing ? 12.0f : 0.0f), cf.bounds.max.y}};
-        const interaction in = interact(hash_id("##rows", current_seed()), hit);
+        const interaction in = interact(widget_id("##rows"), hit);
         if (in.held && count > 0) {
             const std::size_t idx = row_at(mouse_.y - layout_.origin.y);
             const u64 seq = log.lines_[log.visible_[idx]].seq;
@@ -207,7 +207,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
                     std::string text;
                     for (const u32 vi : log.visible_) {
                         const log_buffer::line& l = log.lines_[vi];
-                        if (l.seq >= lo && l.seq <= hi) { text += l.text; text += '\n'; }
+                        if (l.seq >= lo && l.seq <= hi) { text += l.text(); text += '\n'; }
                     }
                     clipboard_.set(clipboard_.user, text);
                 }
@@ -249,10 +249,10 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             const color c = level_color(l.level, style_);
             dl_.text({tx, y + 1.5f}, c, level_tag(l.level), f);
             if (wrap) {
-                rich_layout(l.text, f, c, wrap_w, false);
+                rich_layout(l.text(), f, c, wrap_w, false);
                 rich_draw({tx + tag_w, y + 1.5f});
             } else {
-                dl_.text({tx + tag_w, y + 1.5f}, c, l.text, f);
+                dl_.text({tx + tag_w, y + 1.5f}, c, l.text(), f);
             }
         }
         end_child();

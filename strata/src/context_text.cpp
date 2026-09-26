@@ -419,7 +419,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     f32           asc      = font_.ascent(fnt);
     const bool    readonly = has_flag(flags, input_flags::read_only);
     const bool    wrap     = !has_flag(flags, input_flags::no_wrap);
-    const id      key      = hash_id(label, current_seed());
+    const id      key      = widget_id(label);
     ed_prepare_spans(focus_id_ == key ? edit_buf_.size() : current.size(), fnt, lh, asc, false);
 
     // what input_code asks of this field (it applies to this call only)

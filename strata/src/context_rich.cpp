@@ -48,6 +48,11 @@ static void parse_rich_runs(std::string_view s, font_id base_font, color base_co
     colors[0] = base_col;
     std::array<u32, 4> style_depth{}; // b, i, u, s
     constexpr std::array<text_flags, 4> style_bits{text_flags::bold, text_flags::italic, text_flags::underline, text_flags::strike};
+    // the enclosing <a=href> tags. a link inside a link is not a thing, but the stack keeps the nesting honest when
+    // markup is generated rather than written by hand.
+    std::array<std::string_view, 4> links{};
+    u32 ld = 0;
+    u32 link_colors = 0; // how deep the colour stack was when the innermost link opened
 
     std::size_t start = 0;
     const auto flush = [&](std::size_t end) {
@@ -56,7 +61,9 @@ static void parse_rich_runs(std::string_view s, font_id base_font, color base_co
             for (std::size_t k = 0; k < style_bits.size(); ++k) {
                 if (style_depth[k] > 0) { style = style | style_bits[k]; }
             }
-            runs.push_back({s.substr(start, end - start), fonts[fd], colors[cd], style});
+            const bool in_link = ld > 0;
+            runs.push_back({s.substr(start, end - start), fonts[fd], colors[cd], style,
+                            in_link ? links[ld] : std::string_view{}, in_link && cd > link_colors});
         }
     };
 
@@ -97,6 +104,17 @@ static void parse_rich_runs(std::string_view s, font_id base_font, color base_co
             flush(i);
             if (cd > 0) { --cd; }
             handled = true;
+        } else if (tag.starts_with("a=")) {
+            if (const std::string_view href = tag.substr(2); !href.empty() && ld + 1 < links.size()) {
+                flush(i);
+                links[++ld] = href;
+                link_colors = cd;
+                handled = true;
+            }
+        } else if (tag == "/a") {
+            flush(i);
+            if (ld > 0) { --ld; }
+            handled = true;
         } else if (tag.size() >= 1 && tag.size() <= 2) {
             const bool closing = tag[0] == '/';
             const char letter  = tag.size() == 2 ? (closing ? tag[1] : '\0') : (closing ? '\0' : tag[0]);
@@ -127,7 +145,7 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
     if (markup) {
         parse_rich_runs(text, base, base_col, font_.font_count(), rich_runs_);
     } else if (!text.empty()) {
-        rich_runs_.push_back({text, base, base_col, text_flags::none});
+        rich_runs_.push_back({text, base, base_col, text_flags::none, {}, false});
     }
 
     f32 x = 0.0f;                 // pen position on the current line (approximate while wrapping, exact once a line is closed)
@@ -173,14 +191,15 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
         const std::string_view piece = run.text.substr(a, b - a);
         if (rich_segs_.size() > line_first) {
             rich_seg& last = rich_segs_.back();
-            if (last.font == run.font && last.col == run.col && last.style == run.style && last.text.data() + last.text.size() == piece.data()) {
+            if (last.font == run.font && last.col == run.col && last.style == run.style && last.link == run.link &&
+                last.text.data() + last.text.size() == piece.data()) {
                 last.text = std::string_view{last.text.data(), last.text.size() + piece.size()};
                 x += w;
                 note_font(run.font);
                 return;
             }
         }
-        rich_segs_.push_back({piece, run.font, run.col, run.style, 0.0f});
+        rich_segs_.push_back({piece, run.font, run.col, run.style, 0.0f, run.link, run.own_col});
         x += w;
         note_font(run.font);
     };
@@ -231,7 +250,31 @@ void context::rich_draw(vec2 pos)
     for (const rich_line& line : rich_lines_) {
         for (u32 k = line.first; k < line.first + line.count; ++k) {
             const rich_seg& seg = rich_segs_[k];
-            dl_.text({pos.x + seg.x, pos.y + line.y + line.asc - font_.ascent(seg.font)}, seg.col, seg.text, seg.font, seg.style);
+            const vec2 at{pos.x + seg.x, pos.y + line.y + line.asc - font_.ascent(seg.font)};
+            color      col   = seg.col;
+            text_flags style = seg.style;
+
+            if (!seg.link.empty()) {
+                // the accent colour unless the markup picked one, and always underlined: a link has to be
+                // recognisable without hovering it
+                if (!seg.own_col) { col = style_.accent; }
+                style = style | text_flags::underline;
+                if (rich_links_live_) {
+                    // measured only for links; every other segment gets its width from the next one's x
+                    const f32  w = font_.measure(seg.font, seg.text).x;
+                    const rect box{at, {at.x + w, at.y + font_.line_height(seg.font)}};
+                    if (pointer_over(box)) {
+                        cursor_        = cursor_kind::hand;
+                        rich_hovered_.assign(seg.link);
+                        if (!seg.own_col) { col = style_.accent_hover; }
+                        if (mouse_pressed_) {
+                            rich_clicked_.assign(seg.link);
+                            press_claimed_ = true; // the click belongs to the link, not to the window behind it
+                        }
+                    }
+                }
+            }
+            dl_.text(at, col, seg.text, seg.font, style);
         }
     }
 }
@@ -266,7 +309,9 @@ void context::rich_text(std::string_view markup)
     }
     const rect r  = layout_place(size);
     const f32  dy = std::max(0.0f, (layout_.line_h - size.y) * 0.5f); // centered on a line shared with taller widgets
+    rich_links_live_ = true;
     rich_draw({r.min.x, r.min.y + dy});
+    rich_links_live_ = false;
 }
 
 void context::rich_text_wrapped(std::string_view markup)
@@ -281,7 +326,9 @@ void context::rich_text_wrapped(std::string_view markup)
         return;
     }
     const rect r = layout_place(size);
+    rich_links_live_ = true;
     rich_draw(r.min);
+    rich_links_live_ = false;
 }
 
 void context::text_wrapped_colored(color c, std::string_view s)

@@ -3,6 +3,7 @@
 #include "strata/bidi.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <numbers>
 
@@ -53,8 +54,12 @@ void draw_list::begin(vec2 display_size, const font_atlas& atlas, f32 scale)
     white_u_      = atlas.white_uv()[0];
     white_v_      = atlas.white_uv()[1];
     clip_depth_   = 0;
+    clip_dropped_ = 0;
+    clip_overflows_ = 0;
     alpha_        = 1.0f;
     alpha_depth_  = 0;
+    alpha_dropped_ = 0;
+    alpha_overflows_ = 0;
     set_clip({{0, 0}, display_size * (1.0f / scale_)});
 }
 
@@ -71,37 +76,61 @@ void draw_list::set_clip(const rect& logical) noexcept
 
 void draw_list::push_alpha(f32 a) noexcept
 {
-    if (alpha_depth_ < alpha_stack_.size()) {
-        alpha_stack_[alpha_depth_++] = alpha_;
+    // past the capacity the push is counted, not stored, and the new alpha is not applied either: the matching
+    // pop then skips, so the levels that did fit keep their own values. (storing nothing but still multiplying
+    // made a later pop restore the alpha of a shallower level, and everything after it was drawn too opaque.)
+    if (alpha_depth_ >= alpha_stack_.size()) {
+        ++alpha_dropped_;
+        ++alpha_overflows_;
+        return;
     }
+    alpha_stack_[alpha_depth_++] = alpha_;
     alpha_ *= std::clamp(a, 0.0f, 1.0f);
 }
 
 void draw_list::pop_alpha() noexcept
 {
+    if (alpha_dropped_ > 0) {
+        --alpha_dropped_;
+        return;
+    }
     if (alpha_depth_ > 0) {
         alpha_ = alpha_stack_[--alpha_depth_];
     }
 }
 
+// a push past the capacity is counted rather than stored and leaves the clip alone, so the matching pop skips
+// instead of restoring the rect of a shallower level -- which used to leave every later primitive clipped by the
+// wrong rectangle for the rest of the frame, one level too shallow (content that should have been cut showed).
+// keeping the outer clip is the safe direction to fail: the innermost level is not cut, nothing bleeds outward.
 void draw_list::push_clip(const rect& r) noexcept
 {
-    if (clip_depth_ < max_clip_depth) {
-        clip_stack_[clip_depth_++] = clip_;
+    if (clip_depth_ >= max_clip_depth) {
+        ++clip_dropped_;
+        ++clip_overflows_;
+        return;
     }
+    clip_stack_[clip_depth_++] = clip_;
     set_clip(clip_.intersect(r));
 }
 
 void draw_list::push_clip_absolute(const rect& r) noexcept
 {
-    if (clip_depth_ < max_clip_depth) {
-        clip_stack_[clip_depth_++] = clip_;
+    if (clip_depth_ >= max_clip_depth) {
+        ++clip_dropped_;
+        ++clip_overflows_;
+        return;
     }
+    clip_stack_[clip_depth_++] = clip_;
     set_clip(r);
 }
 
 void draw_list::pop_clip() noexcept
 {
+    if (clip_dropped_ > 0) {
+        --clip_dropped_;
+        return;
+    }
     if (clip_depth_ > 0) {
         set_clip(clip_stack_[--clip_depth_]);
     }
@@ -114,18 +143,29 @@ draw_data draw_list::data() const noexcept
 
 bool draw_list::reserve(u32 vertex_count, u32 index_count, prim& out) noexcept
 {
-    if (commands_.empty() || force_new_command_ || commands_.back().clip != phys_clip_ ||
+    // a single primitive that cannot be addressed by one command's 16-bit indices at all. the callers whose size
+    // follows their input chunk themselves, so reaching this means a new one forgot to.
+    assert(vertex_count <= max_command_vertices && "primitive larger than one draw command can index");
+    if (vertex_count > max_command_vertices) {
+        overflow_ = true;
+        return false;
+    }
+    // ... and a primitive that does not fit in what is left of the current command's 16-bit index space starts a
+    // new one, the same way a clip or texture change does. splitting costs one more draw call, never correctness.
+    const bool full = !commands_.empty() &&
+                      static_cast<u32>(vertices_.size()) - commands_.back().vtx_offset + vertex_count > max_command_vertices;
+    if (commands_.empty() || force_new_command_ || full || commands_.back().clip != phys_clip_ ||
         commands_.back().texture != texture_ || commands_.back().blur != blur_) {
         draw_cmd* cmd = commands_.grow(1);
         if (cmd == nullptr) {
             overflow_ = true;
             return false;
         }
-        *cmd = {phys_clip_, static_cast<u32>(indices_.size()), 0, texture_, blur_};
+        *cmd = {phys_clip_, static_cast<u32>(indices_.size()), 0, static_cast<u32>(vertices_.size()), texture_, blur_};
         force_new_command_ = false;
     }
 
-    u32* i = indices_.grow(index_count);
+    index_t* i = indices_.grow(index_count);
     if (i == nullptr) {
         overflow_ = true;
         return false;
@@ -137,7 +177,7 @@ bool draw_list::reserve(u32 vertex_count, u32 index_count, prim& out) noexcept
         return false;
     }
 
-    out = {v, i, static_cast<u32>(vertices_.size()) - vertex_count};
+    out = {v, i, static_cast<u32>(vertices_.size()) - vertex_count - commands_.back().vtx_offset};
     commands_.back().idx_count += index_count;
     return true;
 }
@@ -163,7 +203,7 @@ void draw_list::add_quad(const rect& r, color tl, color tr, color br, color bl) 
 
     constexpr u32 quad[6] = {0, 1, 2, 0, 2, 3};
     for (u32 k = 0; k < 6; ++k) {
-        p.i[k] = p.base + quad[k];
+        p.i[k] = p.idx(quad[k]);
     }
 }
 
@@ -185,7 +225,7 @@ bool draw_list::emit_quad_for(const rect& bounds, u32 index, color vertex_color)
 
     constexpr u32 quad[6] = {0, 1, 2, 0, 2, 3};
     for (u32 k = 0; k < 6; ++k) {
-        p.i[k] = p.base + quad[k];
+        p.i[k] = p.idx(quad[k]);
     }
     return true;
 }
@@ -398,18 +438,18 @@ void draw_list::fill_convex_aa(std::span<const vec2> logical_pts, color c) noexc
 
     u32 k = 0;
     for (u32 i = 2; i < n; ++i) {
-        p.i[k++] = p.base;
-        p.i[k++] = p.base + 2 * (i - 1);
-        p.i[k++] = p.base + 2 * i;
+        p.i[k++] = p.idx(0);
+        p.i[k++] = p.idx(2 * (i - 1));
+        p.i[k++] = p.idx(2 * i);
     }
     for (u32 i = 0; i < n; ++i) {
         const u32 j = (i + 1) % n;
-        p.i[k++] = p.base + 2 * i + 1; // outer i
-        p.i[k++] = p.base + 2 * j + 1; // outer j
-        p.i[k++] = p.base + 2 * j;     // inner j
-        p.i[k++] = p.base + 2 * i + 1;
-        p.i[k++] = p.base + 2 * j;
-        p.i[k++] = p.base + 2 * i;     // inner i
+        p.i[k++] = p.idx(2 * i + 1); // outer i
+        p.i[k++] = p.idx(2 * j + 1); // outer j
+        p.i[k++] = p.idx(2 * j);     // inner j
+        p.i[k++] = p.idx(2 * i + 1);
+        p.i[k++] = p.idx(2 * j);
+        p.i[k++] = p.idx(2 * i);     // inner i
     }
 }
 
@@ -517,24 +557,36 @@ void draw_list::area_fill(std::span<const vec2> top, f32 base_y, color top_col, 
     if (top.size() < 2 || (top_col.a == 0 && base_col.a == 0)) {
         return;
     }
-    const u32 n = static_cast<u32>(top.size());
-    prim p;
-    if (!reserve(2 * n, 6 * (n - 1), p)) {
-        return;
-    }
     const f32 by = base_y * scale_;
     const color ct = fade(top_col);
     const color cb = fade(base_col);
-    for (u32 i = 0; i < n; ++i) {
-        const vec2 q = top[i] * scale_;
-        p.v[2 * i]     = {q, white_u_, white_v_, ct};
-        p.v[2 * i + 1] = {{q.x, by}, white_u_, white_v_, cb};
-    }
-    for (u32 i = 0; i + 1 < n; ++i) {
-        const u32 a = p.base + 2 * i;
-        u32* idx = p.i + 6 * i;
-        idx[0] = a;     idx[1] = a + 2; idx[2] = a + 1;
-        idx[3] = a + 1; idx[4] = a + 2; idx[5] = a + 3;
+
+    // 2 vertices per column, emitted in runs that fit one command's 16-bit indices. consecutive runs repeat the
+    // column where they meet, so the strip has no gap at a seam (the duplicated vertices sit on the same x).
+    constexpr u32 run_columns = max_command_vertices / 2;
+    u32 first = 0;
+    while (first + 1 < static_cast<u32>(top.size())) {
+        const u32 n = std::min(static_cast<u32>(top.size()) - first, run_columns);
+        prim p;
+        if (!reserve(2 * n, 6 * (n - 1), p)) {
+            return;
+        }
+        for (u32 i = 0; i < n; ++i) {
+            const vec2 q = top[first + i] * scale_;
+            p.v[2 * i]     = {q, white_u_, white_v_, ct};
+            p.v[2 * i + 1] = {{q.x, by}, white_u_, white_v_, cb};
+        }
+        for (u32 i = 0; i + 1 < n; ++i) {
+            const u32 a = p.base + 2 * i;
+            index_t* idx = p.i + 6 * i;
+            idx[0] = static_cast<index_t>(a);
+            idx[1] = static_cast<index_t>(a + 2);
+            idx[2] = static_cast<index_t>(a + 1);
+            idx[3] = static_cast<index_t>(a + 1);
+            idx[4] = static_cast<index_t>(a + 2);
+            idx[5] = static_cast<index_t>(a + 3);
+        }
+        first += n - 1; // the last column of this run is the first of the next
     }
 }
 
@@ -587,42 +639,59 @@ void draw_list::polyline(std::span<const vec2> points, color col, f32 thickness,
         poly_nrm_[s] = normalized_or(vec2{d.y, -d.x}, {0.0f, 1.0f});
     }
 
-    prim p;
-    if (!reserve(4 * n, 18 * segs, p)) {
-        return;
-    }
     const color solid = fade(col);
     const color clear = solid.scaled_alpha(0.0f);
     const f32   inner = std::max(half - 0.5f, 0.0f);
     const f32   outer = half + 0.5f;
 
-    for (u32 i = 0; i < n; ++i) {
+    // the mitre at point i, which depends only on the two segments meeting there: a point emitted by two runs gets
+    // the same four vertices from both, so a seam between runs is invisible.
+    const auto mitre = [&](u32 i) noexcept {
         const vec2 n_prev = (i > 0 || closed) ? poly_nrm_[(i + segs - 1) % segs] : poly_nrm_[0];
         const vec2 n_next = i < segs ? poly_nrm_[i] : poly_nrm_[segs - 1];
         vec2 m = normalized_or(n_prev + n_next, n_next); // the mitre direction
         const f32 k = 1.0f / std::max(dot(m, n_next), 0.25f); // its length, limited so sharp corners do not spike
-        m = m * k;
+        return m * k;
+    };
 
-        const vec2 pos = poly_pts_[i];
-        vertex* v = p.v + 4 * i;
-        v[0] = {pos - m * outer, white_u_, white_v_, clear};
-        v[1] = {pos - m * inner, white_u_, white_v_, solid};
-        v[2] = {pos + m * inner, white_u_, white_v_, solid};
-        v[3] = {pos + m * outer, white_u_, white_v_, clear};
-    }
-
-    u32 k = 0;
-    for (u32 s = 0; s < segs; ++s) {
-        const u32 a = p.base + 4 * s;
-        const u32 b = p.base + 4 * ((s + 1) % n);
-        for (u32 band = 0; band < 3; ++band) {
-            p.i[k++] = a + band;
-            p.i[k++] = a + band + 1;
-            p.i[k++] = b + band + 1;
-            p.i[k++] = a + band;
-            p.i[k++] = b + band + 1;
-            p.i[k++] = b + band;
+    // 4 vertices per point, in runs that fit one command's 16-bit indices. the strip is walked as segs + 1
+    // positions where position j is point j % n, so a closed line's wrap-around is just its last step and every run
+    // is a plain open strip. a run ends on the position the next one starts from: that point's four vertices are
+    // written twice (its mitre depends only on its two segments, so both copies are identical) and no segment is
+    // lost or doubled. one duplicated point is also what a closed line costs over the old modulo indexing.
+    constexpr u32 run_points  = max_command_vertices / 4;
+    const u32     positions   = segs + 1;
+    u32           first       = 0;
+    while (first + 1 < positions) {
+        const u32 count = std::min(positions - first, run_points);
+        prim p;
+        if (!reserve(4 * count, 18 * (count - 1), p)) {
+            return;
         }
+        for (u32 i = 0; i < count; ++i) {
+            const u32  at  = (first + i) % n;
+            const vec2 m   = mitre(at);
+            const vec2 pos = poly_pts_[at];
+            vertex* v = p.v + 4 * i;
+            v[0] = {pos - m * outer, white_u_, white_v_, clear};
+            v[1] = {pos - m * inner, white_u_, white_v_, solid};
+            v[2] = {pos + m * inner, white_u_, white_v_, solid};
+            v[3] = {pos + m * outer, white_u_, white_v_, clear};
+        }
+        u32 k = 0;
+        for (u32 s = 0; s + 1 < count; ++s) {
+            const u32 a = p.base + 4 * s;
+            const u32 b = p.base + 4 * (s + 1);
+            for (u32 band = 0; band < 3; ++band) {
+                p.i[k++] = static_cast<index_t>(a + band);
+                p.i[k++] = static_cast<index_t>(a + band + 1);
+                p.i[k++] = static_cast<index_t>(b + band + 1);
+                p.i[k++] = static_cast<index_t>(a + band);
+                p.i[k++] = static_cast<index_t>(b + band + 1);
+                p.i[k++] = static_cast<index_t>(b + band);
+            }
+        }
+        first += count - 1;
     }
 }
 
@@ -724,10 +793,11 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
         return;
     }
 
-    std::string visual; // right-to-left text is drawn in visual order, letters joined
+    // right-to-left text is drawn in visual order, letters joined. into the reused scratch: this used to be a local
+    // std::string, so every label with a Hebrew or Arabic character allocated (several times, inside to_visual).
     if (has_rtl_text(s)) {
-        visual = to_visual(s, atlas_, font);
-        s      = visual;
+        to_visual_into(rtl_scratch_, bidi_scratch_, s, atlas_, font);
+        s = rtl_scratch_;
     }
     const color plain = c; // (rect_filled fades by itself)
     c = fade(c);
@@ -755,22 +825,38 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
     const f32  smear     = bold ? std::max(1.0f, std::round(lh * 0.05f)) : 0.0f; // the second strike, in physical pixels
     const f32  asc       = atlas_->ascent_px(font);
 
-    const u32 quads      = bold ? 2u : 1u;
-    const u32 max_glyphs = static_cast<u32>(s.size()); // utf-8 bytes >= code points
-    prim p;
-    if (!reserve(4 * quads * max_glyphs, 6 * quads * max_glyphs, p)) {
-        return;
-    }
+    const u32 quads = bold ? 2u : 1u;
 
-    u32 nv = 0;
-    u32 ni = 0;
+    // glyphs are emitted in chunks, each its own reservation: one command indexes at most max_command_vertices with
+    // its 16-bit indices, and a single string (a whole wrapped paragraph, a log line) can ask for more than that.
+    // a chunk of 4096 glyphs is 32768 vertices at worst (bold draws two quads), comfortably inside one command, and
+    // long enough that ordinary labels still take exactly one.
+    constexpr u32 glyph_chunk = 4096;
+    prim p;
+    u32  cap_v = 0; // vertices this reservation holds ...
+    u32  cap_i = 0; // ... and indices
+    u32  nv    = 0; // ... and what has been written into it
+    u32  ni    = 0;
+
+    // hand back what culling and whitespace did not use. valid because this reservation is the tail of the arrays:
+    // nothing else reserves between open and close.
+    const auto close_chunk = [&]() noexcept {
+        vertices_.shrink(cap_v - nv);
+        indices_.shrink(cap_i - ni);
+        commands_.back().idx_count -= cap_i - ni;
+    };
+    const auto open_chunk = [&](u32 want_glyphs) noexcept {
+        const u32 n = std::min(want_glyphs, glyph_chunk);
+        cap_v = 4 * quads * n;
+        cap_i = 6 * quads * n;
+        nv = ni = 0;
+        return reserve(cap_v, cap_i, p);
+    };
 
     // the lines underline / strike-through are drawn along (physical pixels), collected while the vertices are the tail
-    struct span_line { f32 x0, x1, base; };
-    std::array<span_line, 16> spans{};
-    u32 span_count = 0;
+    text_spans_.clear();
     const auto close_line = [&](f32 x0, f32 x1, f32 base) {
-        if ((underline || strike) && x1 > x0 && span_count < spans.size()) { spans[span_count++] = {x0, x1, base}; }
+        if ((underline || strike) && x1 > x0) { text_spans_.push_back({x0, x1, base}); }
     };
 
     const rect& clip = phys_clip_;
@@ -779,6 +865,13 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
     char32_t  prev = 0;
 
     while (!s.empty()) {
+        if (nv + 4 * quads > cap_v) { // this glyph's quads may not fit what is reserved
+            if (cap_v != 0) { close_chunk(); }
+            if (!open_chunk(static_cast<u32>(s.size()))) { // utf-8 bytes >= code points left
+                cap_v = 0;
+                break;
+            }
+        }
         const char32_t cp = decode_utf8(s);
         if (cp == U'\n') {
             close_line(origin_x, pen.x, pen.y + asc);
@@ -812,10 +905,14 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
                     v[2] = {{x1 + bottom_shift + dx, y1}, g.u1, g.v1, c};
                     v[3] = {{x0 + bottom_shift + dx, y1}, g.u0, g.v1, c};
 
-                    const u32 base_index = p.base + nv;
-                    u32* idx = p.i + ni;
-                    idx[0] = base_index; idx[1] = base_index + 1; idx[2] = base_index + 2;
-                    idx[3] = base_index; idx[4] = base_index + 2; idx[5] = base_index + 3;
+                    const index_t b0 = p.idx(nv);
+                    index_t* idx = p.i + ni;
+                    idx[0] = b0;
+                    idx[1] = static_cast<index_t>(b0 + 1);
+                    idx[2] = static_cast<index_t>(b0 + 2);
+                    idx[3] = b0;
+                    idx[4] = static_cast<index_t>(b0 + 2);
+                    idx[5] = static_cast<index_t>(b0 + 3);
 
                     nv += 4;
                     ni += 6;
@@ -825,15 +922,10 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
         pen.x += g.advance;
     }
     close_line(origin_x, pen.x + smear, pen.y + asc);
-
-    // give back what culling / whitespace didn't use (this reservation is the tail)
-    vertices_.shrink(4 * quads * max_glyphs - nv);
-    indices_.shrink(6 * quads * max_glyphs - ni);
-    commands_.back().idx_count -= 6 * quads * max_glyphs - ni;
+    if (cap_v != 0) { close_chunk(); }
 
     const f32 thick = std::max(1.0f, std::round(lh * 0.055f));
-    for (u32 k = 0; k < span_count; ++k) {
-        const span_line& l = spans[k];
+    for (const span_line& l : text_spans_) {
         const auto bar = [&](f32 y) {
             rect_filled({{l.x0 / scale_, y / scale_}, {l.x1 / scale_, (y + thick) / scale_}}, plain);
         };

@@ -358,7 +358,7 @@ bool context::color_picker(std::string_view label, color& c, color_flags flags)
     if (cur_ == nullptr) {
         return false;
     }
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const std::string_view shown = visible_label(label);
     if (!shown.empty()) {
         text_dim(shown);
@@ -375,7 +375,7 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const bool with_alpha = !has_flag(flags, color_flags::no_alpha);
 
     const field_layout fl  = layout_field(visible_label(label), frame_height());
@@ -604,7 +604,7 @@ bool context::selectable(std::string_view label, std::string_view id_extra, bool
     const font_id f = current_font();
     const std::string_view shown = visible_label(label);
     const f32 lh  = rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f);
-    const id  key = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
+    const id  key = id_extra.empty() ? widget_id(label) : hash_id(id_extra, widget_id(label));
     return row_item(key, shown, selected, 8.0f, table_.active ? lh : lh + 8.0f);
 }
 
@@ -621,7 +621,7 @@ bool context::tree_leaf(std::string_view label, std::string_view id_extra, bool 
     const font_id f = current_font();
     const std::string_view shown = visible_label(label);
     const f32 h   = (rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f)) + 8.0f;
-    const id  key = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
+    const id  key = id_extra.empty() ? widget_id(label) : hash_id(id_extra, widget_id(label));
     return row_item(key, shown, selected, 22.0f, h);
 }
 
@@ -639,7 +639,7 @@ bool context::tree_node(std::string_view label, std::string_view id_extra, tree_
         return false;
     }
     const font_id f = current_font();
-    const id key    = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
+    const id key    = id_extra.empty() ? widget_id(label) : hash_id(id_extra, widget_id(label));
     const std::string_view shown = visible_label(label);
     const f32 h     = (rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f)) + 8.0f;
 
@@ -818,7 +818,7 @@ bool context::begin_table(std::string_view id_label, u32 columns, table_flags fl
     if (cur_ == nullptr || columns == 0 || columns > max_table_columns || (table_.active && table_depth_ >= max_table_depth)) {
         return false;
     }
-    const id key = hash_id(id_label, current_seed());
+    const id key = widget_id(id_label);
 
     if (table_.active) {
         table_stack_[table_depth_++] = table_;
@@ -1335,7 +1335,7 @@ void context::end_table()
             const f32  thumb_h = std::max(20.0f, track_h * table_.body_h / st.content_h);
             const f32  x1      = table_.origin.x + table_.width - 3.0f;
             f32 thumb_y = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
-            const interaction in = interact(hash_id("##tscroll", current_seed()), rect{{x1 - 7.0f, thumb_y}, {x1 + 2.0f, thumb_y + thumb_h}});
+            const interaction in = interact(widget_id("##tscroll"), rect{{x1 - 7.0f, thumb_y}, {x1 + 2.0f, thumb_y + thumb_h}});
             st.scroll = thumb_drag(in, st.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, st.scroll);
             thumb_y   = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
             const rect thumb = {{x1 - 5.0f, thumb_y}, {x1, thumb_y + thumb_h}};
@@ -1391,7 +1391,7 @@ void context::table_skip_rows(int count)
 
 std::string context::table_save_layout(std::string_view id_label) const
 {
-    const id key = hash_id(id_label, current_seed());
+    const id key = hash_id(id_label, current_seed()); // a query, not a submission: nothing to record
     for (const table_state& t : tables_) {
         if (t.key != key || !t.inited) { continue; }
         std::string out = "order=";
@@ -1410,7 +1410,7 @@ std::string context::table_save_layout(std::string_view id_label) const
 
 void context::table_load_layout(std::string_view id_label, std::string_view text)
 {
-    const id key = hash_id(id_label, current_seed());
+    const id key = widget_id(id_label);
     for (auto& p : table_pending_) {
         if (p.first == key) {
             p.second.assign(text);
@@ -1428,7 +1428,7 @@ bool context::table_tree_node(std::string_view label, tree_flags flags)
         return false;
     }
     const font_id f = current_font();
-    const id key    = hash_id(label, current_seed());
+    const id key    = widget_id(label);
     const std::string_view shown = visible_label(label);
     const f32 h     = rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f);
 
@@ -1488,7 +1488,7 @@ bool context::table_tree_leaf(std::string_view label, bool selected)
         return false;
     }
     const font_id f = current_font();
-    const id key    = hash_id(label, current_seed());
+    const id key    = widget_id(label);
     const std::string_view shown = visible_label(label);
     const f32 h     = rich_depth_ > 0 ? label_size(f, shown).y : font_.line_height(f);
 

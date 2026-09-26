@@ -26,7 +26,7 @@ void context::push_id_value(id key) noexcept
 
 void context::nav_begin(std::string_view id_label)
 {
-    const id key = hash_id(id_label, current_seed());
+    const id key = widget_id(id_label);
     if (nav_.scope != 0) {
         internal::limit_reached("nav_begin inside another nav scope (only one at a time)", 1);
         return;
@@ -201,6 +201,46 @@ void context::set_scroll_y(f32 y) noexcept
     rect view;
     if (f32* scroll = scroll_slot(view); scroll != nullptr) {
         *scroll = std::max(0.0f, y); // the owner clamps against this frame's content height
+    }
+}
+
+// horizontal scrolling only exists inside a child region that asked for it, so there is no slot to look up: the
+// innermost such child is the one that owns an x offset
+context::child_state* context::horizontal_child() const noexcept
+{
+    for (u32 d = child_depth_; d-- > 0;) {
+        if (has_flag(child_stack_[d].flags, child_flags::horizontal)) {
+            return child_stack_[d].state;
+        }
+    }
+    return nullptr;
+}
+
+f32 context::scroll_x() const noexcept
+{
+    const child_state* st = horizontal_child();
+    return st != nullptr ? st->scroll_x : 0.0f;
+}
+
+f32 context::scroll_max_x() const noexcept
+{
+    const child_state* st = horizontal_child();
+    if (st == nullptr) {
+        return 0.0f;
+    }
+    // what the region reported last frame, like scroll_max_y: this frame's content is not laid out yet
+    for (u32 d = child_depth_; d-- > 0;) {
+        if (child_stack_[d].state == st) {
+            return std::max(0.0f, st->content_w - child_stack_[d].inner.width());
+        }
+    }
+    return 0.0f;
+}
+
+void context::set_scroll_x(f32 x) noexcept
+{
+    if (child_state* st = horizontal_child(); st != nullptr) {
+        st->scroll_x = std::max(0.0f, x); // end_child clamps against this frame's content width
     }
 }
 

@@ -147,7 +147,7 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
     if (cur_ == nullptr || child_depth_ >= max_child_depth) {
         return false;
     }
-    const id key = hash_id(id_label, current_seed());
+    const id key = widget_id(id_label);
     child_state* st = state_for(children_, key, frame_);
 
     // width: the rest of the line (right of the previous item after same_line), height: down to the window bottom
@@ -188,15 +188,26 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
     const f32 max_scroll = std::max(0.0f, st->content_h - inner.height());
     st->scroll = std::clamp(st->scroll, 0.0f, max_scroll);
 
+    const bool horiz = has_flag(flags, child_flags::horizontal);
+    const bool bars  = !has_flag(flags, child_flags::no_scrollbar);
+    // the horizontal bar takes a strip off the bottom, so the vertical one is shortened by it and the content is
+    // laid out above it (both only while there is something to scroll)
+    const f32 hbar = horiz && st->overflow_x && bars ? 10.0f : 0.0f;
+    if (!horiz) {
+        st->scroll_x = 0.0f;
+    } else {
+        st->scroll_x = std::clamp(st->scroll_x, 0.0f, std::max(0.0f, st->content_w - inner.width()));
+    }
+
     dl_.push_clip({{r.min.x + 1.0f, r.min.y + 1.0f}, {r.max.x - 1.0f, r.max.y - 1.0f}});
 
     child_stack_[child_depth_++] = {st, r, inner, layout_, flags};
     push_id(id_label);
 
     layout_              = {};
-    layout_.origin       = {inner.min.x, inner.min.y - st->scroll};
-    layout_.width        = std::max(inner.width() - (st->overflow && !has_flag(flags, child_flags::no_scrollbar) ? 10.0f : 0.0f), 1.0f);
-    layout_.bound_bottom = inner.max.y;
+    layout_.origin       = {inner.min.x - st->scroll_x, inner.min.y - st->scroll};
+    layout_.width        = std::max(inner.width() - (st->overflow && bars ? 10.0f : 0.0f), 1.0f);
+    layout_.bound_bottom = inner.max.y - hbar;
     return true;
 }
 
@@ -208,9 +219,53 @@ void context::end_child()
     const child_frame f = child_stack_[--child_depth_];
     child_state& st     = *f.state;
 
+    const bool horiz = has_flag(f.flags, child_flags::horizontal);
+    const bool bars  = !has_flag(f.flags, child_flags::no_scrollbar);
+
+    // how wide the content turned out: layout_.right is the furthest right edge anything reached, and origin.x is
+    // already shifted left by the scroll offset, so the difference is the content width regardless of where it sits
+    if (horiz) {
+        st.content_w  = layout_.first ? 0.0f : layout_.right - layout_.origin.x;
+        st.overflow_x = st.content_w > f.inner.width() + 0.5f;
+    } else {
+        st.content_w  = 0.0f;
+        st.overflow_x = false;
+    }
+    const f32 hbar = st.overflow_x && bars ? 10.0f : 0.0f;
+
     st.content_h = layout_.first ? 0.0f : layout_.bottom - layout_.origin.y;
-    const f32 view_h = f.inner.height();
+    const f32 view_h = f.inner.height() - hbar;
     st.overflow = st.content_h > view_h + 0.5f;
+
+    if (st.overflow_x) {
+        const f32 max_x = st.content_w - f.inner.width();
+        // the tilt wheel, and Shift + the ordinary wheel: the convention every list and table on Windows follows
+        const bool over = pointer_over(f.bounds);
+        if (wheel_x_ != 0.0f && !wheel_x_consumed_ && over) {
+            st.scroll_x = std::clamp(st.scroll_x + wheel_x_ * 48.0f, 0.0f, max_x);
+            wheel_x_consumed_ = true;
+        } else if (mod_shift_ && wheel_ != 0.0f && !wheel_consumed_ && over) {
+            st.scroll_x = std::clamp(st.scroll_x - wheel_ * 48.0f, 0.0f, max_x);
+            wheel_consumed_ = true;
+        }
+        if (bars) {
+            const f32 track_x0 = f.bounds.min.x + 5.0f;
+            const f32 track_w  = f.bounds.width() - 10.0f - (st.overflow ? 10.0f : 0.0f);
+            const f32 thumb_w  = std::max(20.0f, track_w * f.inner.width() / st.content_w);
+            const f32 y0       = f.bounds.max.y - 9.0f;
+            f32 thumb_x = track_x0 + (track_w - thumb_w) * (st.scroll_x / max_x);
+            const interaction in = interact(widget_id("##cscroll_x"), {{track_x0, y0 - 3.0f}, {track_x0 + track_w, y0 + 8.0f}});
+            st.scroll_x = thumb_drag_x(in, st.grab_x, thumb_x, thumb_w, track_x0, track_w - thumb_w, max_x, st.scroll_x);
+            thumb_x     = track_x0 + (track_w - thumb_w) * (st.scroll_x / max_x);
+            shape_style bar;
+            bar.radius      = radii(2.5f);
+            bar.fill_top    = style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.4f);
+            bar.fill_bottom = bar.fill_top;
+            dl_.shape({{thumb_x, y0}, {thumb_x + thumb_w, f.bounds.max.y - 4.0f}}, bar);
+        }
+    } else {
+        st.scroll_x = 0.0f;
+    }
 
     if (st.overflow) {
         const f32 max_scroll = st.content_h - view_h;
@@ -218,14 +273,14 @@ void context::end_child()
             st.scroll = std::clamp(st.scroll - wheel_ * 48.0f, 0.0f, max_scroll);
             wheel_consumed_ = true;
         }
-        if (!has_flag(f.flags, child_flags::no_scrollbar)) {
+        if (bars) {
             const f32  track_top = f.bounds.min.y + 5.0f;
-            const f32  track_h = f.bounds.height() - 10.0f;
+            const f32  track_h = f.bounds.height() - 10.0f - hbar; // room for the horizontal bar, when there is one
             const f32  thumb_h = std::max(20.0f, track_h * view_h / st.content_h);
             const f32  x0      = f.bounds.max.x - 9.0f;
             // the whole track takes the press: a click beside the thumb moves it there, and it can be dragged from anywhere
             f32 thumb_y = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
-            const interaction in = interact(hash_id("##cscroll", current_seed()), {{x0 - 3.0f, track_top}, {x0 + 8.0f, track_top + track_h}});
+            const interaction in = interact(widget_id("##cscroll"), {{x0 - 3.0f, track_top}, {x0 + 8.0f, track_top + track_h}});
             st.scroll = thumb_drag(in, st.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, st.scroll);
             thumb_y   = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
             const rect thumb = {{x0, thumb_y}, {f.bounds.max.x - 4.0f, thumb_y + thumb_h}};
@@ -255,7 +310,7 @@ bool context::begin_card(std::string_view title, std::string_view icon, font_id 
         return false;
     }
     const font_id f = current_font();
-    const id key    = hash_id(title, current_seed());
+    const id key    = widget_id(title);
     card_state* st  = state_for(cards_, key, frame_);
 
     const std::string_view shown = visible_label(title);
@@ -370,7 +425,7 @@ bool context::tab_strip(std::string_view id_label, const tab_desc* tabs, std::si
     bool changed = false;
     std::array<f32, 16> emphasis{};
     for (std::size_t i = 0; i < n; ++i) {
-        const id key = hash_id(tabs[i].label, current_seed());
+        const id key = widget_id(tabs[i].label);
         const interaction in = interact(key, cells[i]);
         if (in.pressed && static_cast<int>(i) != selected) {
             selected = static_cast<int>(i);
@@ -499,7 +554,7 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
 
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const rect         box = fl.control;
@@ -587,7 +642,7 @@ bool context::hotkey_field(std::string_view label, u32& key_code, key_chord* cho
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
 
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const rect         box = fl.control;
@@ -654,7 +709,7 @@ bool context::hotkey_field(std::string_view label, u32& key_code, key_chord* cho
 
 transition_scope context::page_transition(std::string_view key, int page, f32 slide)
 {
-    anim_slot& a = anim_for(hash_id(key, current_seed()));
+    anim_slot& a = anim_for(widget_id(key));
     const f32 pf = static_cast<f32>(page);
     if (!a.custom_init) {
         a.custom_init = true;

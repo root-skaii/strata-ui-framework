@@ -12,6 +12,7 @@ add_library(strata STATIC
     src/context_data.cpp
     src/context_nav.cpp
     src/context_datetime.cpp
+    src/context_debug.cpp
     src/context_dock.cpp
     src/context_extra.cpp
     src/context_image.cpp

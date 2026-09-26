@@ -127,7 +127,7 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
     const field_layout fl = layout_field(compact ? std::string_view{} : visible_label(label), h);
     const rect box = fl.control;
 
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const interaction in = compact ? interaction{} : interact(key, box);
 
     rect inner = box;
@@ -286,7 +286,7 @@ vec2 context::plot_x_range(std::string_view label) const
 
 void context::plot_reset_view(std::string_view label)
 {
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     for (chart_view& v : chart_views_) {
         if (v.key == key) { v.x_set = v.y_set = false; }
     }
@@ -314,7 +314,7 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
     if (o.size.x > 0.0f) { layout_.next_width = o.size.x; }
     const field_layout fl = layout_field(visible_label(label), h);
     const rect box = fl.control;
-    const id   key = hash_id(label, current_seed());
+    const id   key = widget_id(label);
     const interaction in = interact(key, box);
     chart_view& view = chart_view_for(key);
 

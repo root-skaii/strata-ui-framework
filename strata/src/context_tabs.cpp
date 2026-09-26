@@ -54,7 +54,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     const f32  max_scroll = overflow ? std::max(0.0f, content_w - view_w) : 0.0f;
 
     // scroll: `active` is where it wants to be, `toggle` what is shown, `custom` the tab that was in view last
-    anim_slot& sc = anim_for(hash_id("##tscroll", current_seed()));
+    anim_slot& sc = anim_for(widget_id("##tscroll"));
     if (!sc.custom_init) {
         sc.custom_init = true;
         sc.custom      = -1.0f;
@@ -153,7 +153,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     f32 pill_x = ix;
     if (drag_index >= 0 && drag_index == selected) { // glued to the pointer while dragging
         pill_x = sel.min.x;
-        anim_for(hash_id("tab_x", current_seed())).custom = sel.min.x - shift - row.min.x;
+        anim_for(widget_id("tab_x")).custom = sel.min.x - shift - row.min.x;
     }
     shape_style pill;
     pill.radius      = radii(style_.rounding * 0.7f);
@@ -201,9 +201,9 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     if (add_tab) {
         const f32  ax = overflow ? region.max.x + 2.0f : x + 2.0f;
         const rect ar = {{ax, row.min.y + 1.0f}, {ax + add_w - 2.0f, row.max.y - 3.0f}};
-        const interaction in = interact(hash_id("##add", current_seed()), ar);
+        const interaction in = interact(widget_id("##add"), ar);
         ev.add = in.pressed;
-        anim_slot& a = anim_for(hash_id("##add", current_seed()));
+        anim_slot& a = anim_for(widget_id("##add"));
         a.hover = approach(a.hover, in.hovered ? 1.0f : 0.0f);
         if (a.hover > 0.01f) {
             shape_style hover;
@@ -221,9 +221,9 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     // a list of every tab: the way to a tab that has scrolled out of view
     if (overflow) {
         const rect lr = {{row.max.x - list_w, row.min.y + 1.0f}, {row.max.x, row.max.y - 3.0f}};
-        const interaction in = interact(hash_id("##list", current_seed()), lr);
+        const interaction in = interact(widget_id("##list"), lr);
         if (in.pressed) { toggle_popup("##tablist"); }
-        anim_slot& a = anim_for(hash_id("##list", current_seed()));
+        anim_slot& a = anim_for(widget_id("##list"));
         a.hover  = approach(a.hover, in.hovered || popup_is_open("##tablist") ? 1.0f : 0.0f);
         if (a.hover > 0.01f) {
             shape_style hover;

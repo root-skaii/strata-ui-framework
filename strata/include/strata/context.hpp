@@ -46,6 +46,9 @@ struct input_state {
     vec2                mouse_pos{};
     std::array<bool, 3> mouse_down{};
     f32                 wheel{};
+    // horizontal wheel: a tilt wheel, a trackpad sideways gesture (WM_MOUSEHWHEEL). positive = towards the right,
+    // which is the opposite sign convention to `wheel` because that is what the message reports.
+    f32                 wheel_x{};
     f32                 delta_time = 1.0f / 60.0f;
     vec2                display_size{};
 
@@ -232,6 +235,17 @@ struct frame_stats {
     u32 measure_hits{};     // ... and the ones the measurement cache answered
     u32 anim_slots_used{};  // occupied slots of the animation table (live and stale)
     u32 anim_slots_total{}; // its capacity
+    // things that went wrong quietly. all of them mean the ui drew something other than what was asked for, and all
+    // of them used to be invisible: geometry dropped because a reservation ran out (raise draw_list_limits), a
+    // nesting deeper than the clip / alpha stacks hold, and widget ids that collided (see id_collisions).
+    u32 draw_overflow{};       // 1 if the vertex / index / command / shape arrays ran out
+    u32 clip_overflows{};
+    u32 alpha_overflows{};
+    u32 id_collisions{};    // ids submitted more than once this frame (debug builds only; see id_collision())
+    // whether anything the renderer sees changed since the previous frame, and whether animations are still moving.
+    // a host that owns its window can skip the present when both say no; see context::frame_unchanged().
+    bool unchanged{};
+    bool animating{};
     f64 begin_frame_ms{};
     f64 end_frame_ms{};
 };
@@ -295,8 +309,11 @@ enum class window_flags : u8 {
     return static_cast<window_flags>(static_cast<u8>(a) | static_cast<u8>(b));
 }
 
-// what the pointer should look like, for hosts that can change it (win32_platform::set_cursor)
-enum class cursor_kind : u8 { arrow, text, resize_ew, resize_ns, resize_nwse };
+// what the pointer should look like, for hosts that can change it (win32_platform::set_cursor).
+// `hand` marks something that will act on a click (a rich-text link); `not_allowed` a disabled item under the
+// pointer, which is the difference between "this does nothing" and "this is broken"; `resize_nesw` is the other
+// diagonal, so a window's bottom-left grip does not show the bottom-right arrow.
+enum class cursor_kind : u8 { arrow, text, hand, not_allowed, resize_ew, resize_ns, resize_nwse, resize_nesw };
 
 enum class child_flags : u8 {
     none         = 0,
@@ -304,6 +321,11 @@ enum class child_flags : u8 {
     no_padding   = 2,
     no_scrollbar = 4, // still clips and scrolls with the wheel, without the scrollbar
     acrylic      = 8, // frosted glass background (see window_flags::acrylic)
+    // content wider than the region scrolls sideways instead of being cut off: a horizontal scrollbar along the
+    // bottom, the tilt wheel (input_state::wheel_x) and Shift + wheel. full-width widgets still size themselves to
+    // the visible width, so what overflows is what asked to be wide -- a table with fixed columns, an image, a long
+    // unwrapped line. see scroll_x() / set_scroll_x().
+    horizontal   = 16,
 };
 
 [[nodiscard]] constexpr child_flags operator|(child_flags a, child_flags b) noexcept
@@ -875,7 +897,12 @@ public:
     // zeroes the typed-text bytes of the temporary once read: begin_frame(platform.new_frame())
     void begin_frame(input_state&& input);
     void end_frame();
-    [[nodiscard]] draw_data render_data() const noexcept { return dl_.data(); }
+    [[nodiscard]] draw_data render_data() const noexcept
+    {
+        draw_data d = dl_.data();
+        d.content_hash = geometry_hash_; // lets the renderers skip an upload of geometry they already hold
+        return d;
+    }
 
     // true while the pointer is over a window / open popup or a widget is dragged: the host should not use mouse input
     [[nodiscard]] bool want_capture_mouse() const noexcept
@@ -1189,6 +1216,11 @@ public:
     [[nodiscard]] f32 scroll_y() const noexcept;
     [[nodiscard]] f32 scroll_max_y() const noexcept;
     void set_scroll_y(f32 y) noexcept;
+    // the same for the sideways offset of the innermost child region opened with child_flags::horizontal.
+    // 0 everywhere else: windows and tables lay out to the width they are given and never overflow sideways.
+    [[nodiscard]] f32 scroll_x() const noexcept;
+    [[nodiscard]] f32 scroll_max_x() const noexcept;
+    void set_scroll_x(f32 x) noexcept;
     void scroll_to_top() noexcept { set_scroll_y(0.0f); }
     void scroll_to_bottom() noexcept { set_scroll_y(scroll_max_y()); }
     // scrolls the least it has to for the last submitted item to be fully in view (nothing if it already is). the new
@@ -1271,6 +1303,19 @@ public:
     // rich text ------------------------------------------------------------
     // text with inline markup: <f=N>..</f> switches to font id N, <c=rrggbb[aa]>..</c> colors. tags nest, "<<" is a
     // literal '<':   ui.rich_text("normal <f=2>heading</f> <c=ff8800>orange</c> 1 << 2");
+    // links: `<a=href>text</a>` inside rich_text / rich_text_wrapped draws `text` underlined in the accent colour
+    // (a `<c=>` inside the link keeps its own colour), shows the hand cursor over it, and reports the href for the
+    // frame it was clicked in. `href` is whatever you put there -- a url, a file, a command name; strata does not
+    // open anything itself, since what a link should do is the application's business:
+    //
+    //   ui.rich_text("see <a=https://example.com>the manual</a> or <a=cmd:reset>reset</a>");
+    //   if (auto href = ui.rich_link_clicked(); !href.empty()) { open(href); }
+    //
+    // links in widget captions (under rich_labels()) are drawn but not clickable: the widget owns the click.
+    [[nodiscard]] std::string_view rich_link_clicked() const noexcept { return rich_clicked_; }
+    // the href under the pointer right now, for a status bar or a tooltip
+    [[nodiscard]] std::string_view rich_link_hovered() const noexcept { return rich_hovered_; }
+
     void rich_text(std::string_view markup);
     // the same, wrapped at word boundaries to the width of the layout (or set_next_item_width)
     void rich_text_wrapped(std::string_view markup);
@@ -1669,6 +1714,53 @@ public:
     // culled, the geometry that came out, and how long begin_frame / end_frame took
     [[nodiscard]] const frame_stats& stats() const noexcept { return stats_prev_; }
 
+    // idling ------------------------------------------------------------------
+    // a ui that nobody is touching produces byte-identical geometry every frame. these two say so, from end_frame:
+    //
+    //   ui.end_frame();
+    //   if (ui.can_idle()) { /* skip render + present, sleep until the next message */ }
+    //   else { renderer.render(ui.render_data()); present(); }
+    //
+    // `frame_unchanged()` compares this frame's vertices, indices, commands and shapes with the previous frame's
+    // (a hash, so it costs a pass over the geometry, ~10 us for a busy frame); `animations_settling()` is true while
+    // any hover / press / toggle / custom animation is still moving toward its target, which is the case the hash
+    // cannot see coming -- an animation that has one more frame to run produces the same geometry twice in a row
+    // near the end, and stopping there would freeze it a pixel short.
+    //
+    // an overlay drawing into someone else's frame must still re-record and re-render (the game cleared the target);
+    // what it can skip is the buffer upload, which the renderers do for it when nothing changed.
+    [[nodiscard]] bool frame_unchanged() const noexcept { return frame_unchanged_; }
+    [[nodiscard]] bool animations_settling() const noexcept { return anim_settling_; }
+    // the two together: nothing to draw that is not already on the screen
+    [[nodiscard]] bool can_idle() const noexcept { return frame_unchanged_ && !anim_settling_; }
+    // force the next frame to count as changed (a texture was replaced, the theme was edited, the window was resized
+    // under a host that keeps its own back buffers)
+    void invalidate() noexcept { geometry_hash_ = 0; }
+
+    // widget ids --------------------------------------------------------------
+    // two widgets that hash to the same id in the same scope share their animation, active and focus state: the
+    // second one steals the first one's press, and neither is obviously wrong on screen. debug builds count them
+    // (`stats().id_collisions`) and remember the first, which is almost always a repeated label -- give one of them
+    // a "label##suffix" or wrap it in push_id(). release builds do not check, and this returns 0 / an empty view.
+    [[nodiscard]] id   id_collision() const noexcept { return collision_id_; }
+    [[nodiscard]] std::string_view id_collision_label() const noexcept
+    {
+        return {collision_label_.data(), collision_label_len_};
+    }
+
+    // everything stats() reports, drawn: frame cost, the geometry that came out, how much culling and measure
+    // caching saved, the idle state, and -- in red, because they are silent otherwise -- overflows and id
+    // collisions. keep `open` and call it every frame; it draws nothing while that is false:
+    //
+    //   ui.debug_metrics_window(show_metrics);
+    //
+    // it is an ordinary window, so it is movable, collapsible and themed like the rest. it submits ids of its own
+    // under a "##strata_metrics" scope, so it never collides with the application's.
+    void debug_metrics_window(bool& open);
+    // the live draw commands, one row each (clip rectangle, index count, texture, blur): what merged and what did
+    // not, which is the first thing to look at when draw_calls is higher than expected. also keyed off `open`.
+    void debug_draw_list_window(bool& open);
+
     // smooth per-key value chasing `target` at the theme's animation speed (or `speed`, in 1/seconds). starts at `target`
     [[nodiscard]] f32 animate(std::string_view key, f32 target, f32 speed = 0.0f);
 
@@ -1888,6 +1980,11 @@ private:
     };
 
     struct child_state { // persists across frames
+        // horizontal counterparts of scroll / grab / content_h / overflow, used by child_flags::horizontal
+        f32  scroll_x{};
+        f32  grab_x{};
+        f32  content_w{};
+        bool overflow_x{};
         id   key{};
         u64  last_frame{};
         f32  scroll{};
@@ -1943,6 +2040,8 @@ private:
         font_id          font{};
         color            col;
         text_flags       style{};
+        std::string_view link;      // the href of the enclosing <a=...>, empty when this run is not a link
+        bool             own_col{}; // a <c=> inside the link set the colour: do not repaint it with the accent
     };
     struct rich_seg {
         std::string_view text;
@@ -1950,6 +2049,8 @@ private:
         color            col;
         text_flags       style{};
         f32              x{};
+        std::string_view link;
+        bool             own_col{};
     };
     struct rich_line {
         u32 first{};
@@ -2014,6 +2115,12 @@ private:
     static constexpr u32 run_backdrop  = 0xfffffff0u; // + modal level - 1: the dimmed area behind a modal window
 
     [[nodiscard]] id       current_seed() const noexcept { return id_stack_[id_depth_]; }
+    // the id of a widget from its label, in the current id scope: hash_id(label, current_seed()) plus, in debug
+    // builds, remembering the label so a collision on this id can name it. every widget that keys itself off a
+    // label goes through here.
+    [[nodiscard]] id       widget_id(std::string_view label) noexcept;
+    // debug builds only: records that `key` was submitted this frame and counts it if it was already seen
+    void                   check_id(id key) noexcept;
     [[nodiscard]] anim_slot& anim_for(id key) noexcept;            // finds or creates (and keeps alive)
     [[nodiscard]] anim_slot* anim_find(id key) noexcept;           // finds only
     void                     anim_rehash() noexcept;
@@ -2077,6 +2184,12 @@ private:
     // thumb can move along the track
     [[nodiscard]] f32 thumb_drag(const interaction& in, f32& grab, f32 thumb_y, f32 thumb_h, f32 track_top, f32 travel,
                                  f32 max_scroll, f32 scroll) const noexcept;
+    [[nodiscard]] f32 thumb_drag_x(const interaction& in, f32& grab, f32 thumb_x, f32 thumb_w, f32 track_left,
+                                   f32 travel, f32 max_scroll, f32 scroll) const noexcept;
+    [[nodiscard]] f32 thumb_drag_along(f32 along, const interaction& in, f32& grab, f32 thumb_lo, f32 thumb_len,
+                                       f32 track_lo, f32 travel, f32 max_scroll, f32 scroll) const noexcept;
+    // the innermost open child region with child_flags::horizontal, which owns the x scroll offset
+    [[nodiscard]] child_state* horizontal_child() const noexcept;
     void apply_input_mask();
     bool edit_indent_lines(bool unindent, int tab_size);
     void picker_field(id key, const rect& box, const interaction& in, bool open, std::string_view text, int icon);
@@ -2178,6 +2291,7 @@ private:
     vec2 mouse_{};
     vec2 mouse_delta_{};
     f32  wheel_{};
+    f32  wheel_x_{};   // horizontal wheel this frame (see input_state::wheel_x)
     bool mouse_down_{};
     bool mouse_pressed_{};
     bool mouse_released_{};
@@ -2192,6 +2306,7 @@ private:
     id active_{};
     cursor_kind cursor_{};
     bool        wheel_consumed_{}; // an inner scroller (table, popup list) used this frame's wheel
+    bool        wheel_x_consumed_{};
     id hovered_window_prev_{};
     id hovered_window_cur_{};
     u32 hovered_z_{no_z};
@@ -2464,6 +2579,40 @@ private:
     frame_stats stats_prev_{};
     f64         begin_frame_ms_{};   // how long the last begin_frame took
     f64         frame_clock_{};      // when it started
+
+    // idling: a hash of everything the renderer sees, so an untouched ui can be recognised and skipped.
+    // 0 is "no previous frame", which invalidate() writes to force the next one to count as changed.
+    u64  geometry_hash_{};
+    bool frame_unchanged_{};
+    bool anim_settling_{};
+    // set by approach() whenever it returned something short of its target: the frame after this one will look
+    // different even if nothing is touched. mutable because approach() is const.
+    mutable bool anim_moved_{};
+
+    // rich-text links. the hrefs are views into the caller's markup, so what is reported is copied out: the strings
+    // are reused every frame and never reallocate in steady state. `rich_links_live_` is set only by rich_text /
+    // rich_text_wrapped -- a link inside a button's caption is drawn but must not steal the button's click.
+    std::string rich_clicked_;
+    std::string rich_hovered_;
+    bool        rich_links_live_{};
+
+    // debug-only duplicate-id detection. a direct-mapped table of the ids submitted this frame: a hit whose id
+    // matches is a collision. direct-mapped (not a set) so it cannot allocate or grow mid-frame; a collision between
+    // two ids that land in different slots is missed, which is the usual trade for a fixed table -- the common case
+    // (the very same label twice) always lands in the same slot and is always caught.
+    static constexpr u32 id_seen_size = 2048; // power of two
+    std::vector<id>       id_seen_;
+    id                    collision_id_{};
+    std::array<char, 64>  collision_label_{};
+    u32                   collision_label_len_{};
+    // ... and the label each id came from, so the report can name it. same direct-mapped shape.
+    struct id_label_slot {
+        id                   key{};
+        std::array<char, 48> text{};
+        u8                   len{};
+    };
+    static constexpr u32       id_label_size = 1024; // power of two
+    std::vector<id_label_slot> id_labels_;
 
     // label_size() cache: a direct-mapped table of (font, string) -> size, thrown away when the atlas changes.
     // rich (markup) labels are never cached: their size depends on the style stack.

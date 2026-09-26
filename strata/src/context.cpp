@@ -10,6 +10,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <ranges>
 #include <utility>
 #include <vector>
 
@@ -202,7 +203,9 @@ void context::begin_frame(const input_state& in)
     // nothing is visible while minimized anyway, so flooring here is free.
     display_ = {std::max(in.display_size.x * inv_scale, 200.0f), std::max(in.display_size.y * inv_scale, 200.0f)};
     wheel_   = in.wheel;
+    wheel_x_ = in.wheel_x;
     wheel_consumed_ = false;
+    wheel_x_consumed_ = false;
     cursor_  = cursor_kind::arrow;
 
     const vec2 mouse_logical = in.mouse_pos * inv_scale;
@@ -241,6 +244,18 @@ void context::begin_frame(const input_state& in)
     key_count_ = std::min(in.key_count, max_key_events);
     typed_     = in.typed;
     typed_len_ = std::min(in.typed_len, max_typed_bytes);
+
+    anim_moved_   = false;
+    collision_id_ = 0;
+    collision_label_len_ = 0;
+    rich_clicked_.clear();
+    rich_hovered_.clear();
+#ifndef NDEBUG
+    // the ids submitted last frame are not the ones submitted this frame
+    if (!id_seen_.empty()) {
+        std::ranges::fill(id_seen_, id{});
+    }
+#endif
 
     hovered_window_prev_ = hovered_window_cur_;
     hovered_window_cur_  = 0;
@@ -411,11 +426,45 @@ void context::end_frame()
     }
 
     const draw_data dd = dl_.data();
+
+    // has anything the renderer sees changed? a hash of the four arrays, which is the only honest test: the ui is
+    // rebuilt from scratch every frame, so "nothing was touched" is not something the widget code can report.
+    // fnv-1a over the raw bytes -- they are trivially copyable and packed, and a frame that differs anywhere
+    // (a colour, a caret, one pixel of a scrollbar) differs here.
+    const auto mix = [](u64 h, const void* p, std::size_t bytes) noexcept {
+        const auto* b = static_cast<const u8*>(p);
+        for (std::size_t i = 0; i < bytes; ++i) {
+            h = (h ^ b[i]) * 0x100000001b3ull;
+        }
+        return h;
+    };
+    u64 hash = 0xcbf29ce484222325ull;
+    hash = mix(hash, dd.vertices.data(), dd.vertices.size_bytes());
+    hash = mix(hash, dd.indices.data(), dd.indices.size_bytes());
+    hash = mix(hash, dd.commands.data(), dd.commands.size_bytes());
+    hash = mix(hash, dd.shapes.data(), dd.shapes.size_bytes());
+    hash = mix(hash, &dd.display_size, sizeof(dd.display_size));
+    if (hash == 0) { hash = 1; } // 0 is reserved for "no previous frame" (invalidate)
+    frame_unchanged_ = geometry_hash_ != 0 && geometry_hash_ == hash;
+    geometry_hash_   = hash;
+
+    // ... and is a later frame going to look different even if nothing is touched? an animation still short of its
+    // target, plus the two things driven by a clock rather than by a value: a toast waiting to expire or fade, and
+    // the pause before a tooltip appears. without those two a host that idles on can_idle() would freeze a toast on
+    // screen forever and never show a tooltip, because the frames that would have advanced them never run.
+    const bool tooltip_pending = hover_key_cur_ != 0 && hover_time_ < style_.tooltip_delay_s;
+    anim_settling_ = anim_moved_ || !toasts_.empty() || tooltip_pending;
+
     stats_cur_.vertices         = static_cast<u32>(dd.vertices.size());
     stats_cur_.indices          = static_cast<u32>(dd.indices.size());
     stats_cur_.draw_calls       = static_cast<u32>(dd.commands.size());
     stats_cur_.anim_slots_used  = anim_used_;
     stats_cur_.anim_slots_total = static_cast<u32>(anims_.size());
+    stats_cur_.draw_overflow    = dl_.overflowed() ? 1u : 0u;
+    stats_cur_.clip_overflows   = dl_.clip_stack_overflows();
+    stats_cur_.alpha_overflows  = dl_.alpha_stack_overflows();
+    stats_cur_.unchanged        = frame_unchanged_;
+    stats_cur_.animating        = anim_settling_;
     stats_cur_.begin_frame_ms   = begin_frame_ms_;
     stats_cur_.end_frame_ms     = now_ms() - end_start;
     stats_prev_                 = stats_cur_;
@@ -511,12 +560,16 @@ f32 context::approach(f32 current, f32 target, f32 speed) const noexcept
 {
     const f32 k = 1.0f - std::exp(-(speed > 0.0f ? speed : style_.anim_speed) * dt_);
     const f32 v = current + (target - current) * k;
-    return std::abs(target - v) < 0.002f ? target : v;
+    if (std::abs(target - v) < 0.002f) {
+        return target; // close enough: snap, so a settled animation stops producing new geometry
+    }
+    anim_moved_ = true; // still moving: this frame's geometry is not the last word (see animations_settling)
+    return v;
 }
 
 f32 context::animate(std::string_view key, f32 target, f32 speed)
 {
-    anim_slot& a = anim_for(hash_id(key, current_seed()));
+    anim_slot& a = anim_for(widget_id(key));
     if (!a.custom_init) {
         a.custom      = target;
         a.custom_init = true;
@@ -961,6 +1014,59 @@ context::field_layout context::layout_field(std::string_view shown, f32 control_
     return out;
 }
 
+// widget ids ---------------------------------------------------------------
+
+id context::widget_id(std::string_view label) noexcept
+{
+    const id key = hash_id(label, current_seed());
+#ifndef NDEBUG
+    // remember which label produced this id, so a collision on it can be named. the visible part only: "a##b" and
+    // "a##c" are deliberately different ids and both report as "a", which is the wrong thing to blame, so the raw
+    // string is what is kept.
+    if (id_labels_.size() != id_label_size) {
+        id_labels_.assign(id_label_size, id_label_slot{});
+    }
+    id_label_slot& slot = id_labels_[key & (id_label_size - 1)];
+    if (slot.key != key) {
+        slot.key = key;
+        const std::size_t n = std::min(label.size(), slot.text.size());
+        std::copy_n(label.data(), n, slot.text.data());
+        slot.len = static_cast<u8>(n);
+    }
+#endif
+    return key;
+}
+
+void context::check_id([[maybe_unused]] id key) noexcept
+{
+#ifndef NDEBUG
+    if (key == 0) {
+        return;
+    }
+    if (id_seen_.size() != id_seen_size) {
+        id_seen_.assign(id_seen_size, id{});
+    }
+    id& slot = id_seen_[key & (id_seen_size - 1)];
+    if (slot == key) {
+        ++stats_cur_.id_collisions;
+        if (collision_id_ == 0) { // the first one of the frame is the one worth naming
+            collision_id_ = key;
+            collision_label_len_ = 0;
+            if (id_labels_.size() == id_label_size) {
+                const id_label_slot& ls = id_labels_[key & (id_label_size - 1)];
+                if (ls.key == key) {
+                    const std::size_t n = std::min<std::size_t>(ls.len, collision_label_.size());
+                    std::copy_n(ls.text.data(), n, collision_label_.data());
+                    collision_label_len_ = static_cast<u32>(n);
+                }
+            }
+        }
+        return;
+    }
+    slot = key;
+#endif
+}
+
 context::interaction context::interact(id key, const rect& r) noexcept
 {
     // popup content ignores window hover (it extends past the window)
@@ -970,6 +1076,7 @@ context::interaction context::interact(id key, const rect& r) noexcept
 context::interaction context::interact_impl(id key, const rect& r, bool in_window) noexcept
 {
     interaction out;
+    check_id(key); // before the early-out: a widget hidden behind a transition still owns its id
     if (dl_.alpha() < 0.1f) {
         return out; // (nearly) invisible content, e.g. mid page transition
     }
@@ -997,6 +1104,8 @@ context::interaction context::interact_impl(id key, const rect& r, bool in_windo
         last_item_pressed_   = false;
         last_item_double_    = false;
         last_item_focused_   = false;
+        // the pointer says so too: a disabled item that only fails to react is indistinguishable from a broken one
+        if (over) { cursor_ = cursor_kind::not_allowed; }
         if (over) { hover_key_cur_ = key; }
         return out;
     }
@@ -1355,7 +1464,7 @@ item_result context::custom_item(std::string_view label, std::string_view id_ext
     if (size.x <= 0.0f) {
         size.x = layout_.width;
     }
-    const id   key = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
+    const id   key = id_extra.empty() ? widget_id(label) : hash_id(id_extra, widget_id(label));
     const rect r   = layout_place(size);
     if (item_culled(r)) {
         note_culled_item(key, r);
@@ -1416,17 +1525,31 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, f32 width)
     return begin_window(title, initial_pos, vec2{width, 0.0f}, window_flags::none);
 }
 
-f32 context::thumb_drag(const interaction& in, f32& grab, f32 thumb_y, f32 thumb_h, f32 track_top, f32 travel,
-                        f32 max_scroll, f32 scroll) const noexcept
+// one axis of a scrollbar thumb: `along` is the pointer on the track's axis, everything else measured along it too.
+// the two wrappers below are the only difference between a vertical and a horizontal bar.
+f32 context::thumb_drag_along(f32 along, const interaction& in, f32& grab, f32 thumb_lo, f32 thumb_len, f32 track_lo,
+                              f32 travel, f32 max_scroll, f32 scroll) const noexcept
 {
     if (!in.held || travel <= 0.0f) {
         return scroll;
     }
     if (mouse_pressed_) {
-        const bool on_thumb = mouse_.y >= thumb_y && mouse_.y <= thumb_y + thumb_h;
-        grab = on_thumb ? mouse_.y - thumb_y : thumb_h * 0.5f;
+        const bool on_thumb = along >= thumb_lo && along <= thumb_lo + thumb_len;
+        grab = on_thumb ? along - thumb_lo : thumb_len * 0.5f;
     }
-    return std::clamp((mouse_.y - grab - track_top) / travel, 0.0f, 1.0f) * max_scroll;
+    return std::clamp((along - grab - track_lo) / travel, 0.0f, 1.0f) * max_scroll;
+}
+
+f32 context::thumb_drag(const interaction& in, f32& grab, f32 thumb_y, f32 thumb_h, f32 track_top, f32 travel,
+                        f32 max_scroll, f32 scroll) const noexcept
+{
+    return thumb_drag_along(mouse_.y, in, grab, thumb_y, thumb_h, track_top, travel, max_scroll, scroll);
+}
+
+f32 context::thumb_drag_x(const interaction& in, f32& grab, f32 thumb_x, f32 thumb_w, f32 track_left, f32 travel,
+                          f32 max_scroll, f32 scroll) const noexcept
+{
+    return thumb_drag_along(mouse_.x, in, grab, thumb_x, thumb_w, track_left, travel, max_scroll, scroll);
 }
 
 bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, window_flags flags)
@@ -1806,7 +1929,7 @@ void context::text_colored(color c, std::string_view s)
     label_draw({r.min.x, r.min.y + dy}, c, s, f);
     // plain text is an item too, so item_hovered(), item_rect(), tooltip() and context_menu() work after it. It
     // takes no press, so nothing about clicking changes: it only becomes the thing those questions are about.
-    note_passive_item(hash_id(s, current_seed()), r);
+    note_passive_item(widget_id(s), r);
 }
 
 // registers a rectangle as "the last item" for the questions that follow it, without taking the press
@@ -1837,7 +1960,7 @@ bool context::button(std::string_view label, std::string_view id_extra)
         return false;
     }
     const font_id f = current_font();
-    const id key = id_extra.empty() ? hash_id(label, current_seed()) : hash_id(id_extra, hash_id(label, current_seed()));
+    const id key = id_extra.empty() ? widget_id(label) : hash_id(id_extra, widget_id(label));
     const std::string_view shown = visible_label(label);
 
     const vec2 tsize = label_size(f, shown);
@@ -1866,7 +1989,7 @@ bool context::icon_button(font_id icon_font, std::string_view icon, std::string_
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(icon, hash_id(label, current_seed()));
+    const id key = hash_id(icon, widget_id(label));
     const std::string_view shown = visible_label(label);
 
     const vec2 isize = font_.measure(icon_font, icon);
@@ -1918,7 +2041,7 @@ bool context::checkbox(std::string_view label, bool& value)
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const std::string_view shown = visible_label(label);
 
     const f32  box  = frame_height() - 6.0f;
@@ -1963,7 +2086,7 @@ bool context::toggle(std::string_view label, bool& value)
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const std::string_view shown = visible_label(label);
 
     const f32  track_h = frame_height() - 6.0f;
@@ -2014,7 +2137,7 @@ bool context::slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     const std::string_view shown = visible_label(label);
 
     constexpr f32 knob_r = 8.0f;
@@ -2198,7 +2321,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     const bool    password = has_flag(flags, input_flags::password);
     const bool    reveal_btn = password && has_flag(flags, input_flags::reveal);
     const bool    readonly = has_flag(flags, input_flags::read_only);
-    const id      key      = hash_id(label, current_seed());
+    const id      key      = widget_id(label);
     ed_prepare_spans(focus_id_ == key ? edit_buf_.size() : current.size(), fnt, lh, asc, password);
 
     field_layout fl;
@@ -2577,7 +2700,7 @@ bool context::combo(std::string_view label, int& current, const std::string_view
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     current = std::clamp(current, 0, static_cast<int>(count) - 1);
 
     const field_layout fl  = layout_field(visible_label(label), frame_height());

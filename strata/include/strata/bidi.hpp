@@ -30,6 +30,24 @@ enum class text_direction : u8 {
 [[nodiscard]] std::string to_visual(std::string_view utf8, const font_atlas* atlas = nullptr, font_id font = 0,
                                     text_direction direction = text_direction::automatic);
 
+// the working buffers of the reordering, so a caller that does it every frame can keep them: decoding, joining and
+// resolving all need a vector each, and returning a fresh std::string on top made drawing one right-to-left label
+// cost half a dozen allocations. one of these per call site and the steady state is allocation-free.
+struct visual_scratch {
+    std::vector<char32_t> cps;    // the line, decoded
+    std::vector<char32_t> shaped; // after joining: the presentation forms that are actually drawn
+    std::vector<u32>      origin; // logical code point each shaped one came from (a ligature: its first)
+    std::vector<u8>       span;   // how many logical code points it stands for
+    std::vector<u32>      order;  // visual position -> index into `shaped`
+    std::vector<u8>       level;  // bidi embedding level of each shaped code point
+};
+
+// to_visual() into a string the caller owns, reusing `scratch`. `out` is cleared first. Same result, no allocation
+// once the buffers have grown.
+void to_visual_into(std::string& out, visual_scratch& scratch, std::string_view utf8,
+                    const font_atlas* atlas = nullptr, font_id font = 0,
+                    text_direction direction = text_direction::automatic);
+
 // one line laid out for editing: maps byte offsets of the logical text to caret positions and back
 class bidi_layout {
 public:
@@ -52,6 +70,8 @@ private:
     std::vector<f32>    left_;        // per visual glyph: its left edge, and its width
     std::vector<f32>    advance_;
     std::vector<u8>     level_;       // per visual glyph: odd = right to left
+    std::vector<u32>    visual_pos_;  // per shaped code point: where it ended up (inverse of scratch_.order)
+    visual_scratch      scratch_;     // build() runs every frame while a field is edited: keep its buffers
 };
 
 } // namespace strata

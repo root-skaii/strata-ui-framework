@@ -105,9 +105,12 @@ bool win32_platform::apply_cursor() noexcept
     LPCWSTR shape = IDC_ARROW;
     switch (cursor_) {
     case cursor_kind::text:        shape = IDC_IBEAM; break;
+    case cursor_kind::hand:        shape = IDC_HAND; break;
+    case cursor_kind::not_allowed: shape = IDC_NO; break;
     case cursor_kind::resize_ew:   shape = IDC_SIZEWE; break;
     case cursor_kind::resize_ns:   shape = IDC_SIZENS; break;
     case cursor_kind::resize_nwse: shape = IDC_SIZENWSE; break;
+    case cursor_kind::resize_nesw: shape = IDC_SIZENESW; break;
     default:                       break;
     }
     ::SetCursor(::LoadCursorW(nullptr, shape));
@@ -197,6 +200,9 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         return true;
     case WM_MOUSEWHEEL:
         wheel_ += static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<f32>(WHEEL_DELTA);
+        return true;
+    case WM_MOUSEHWHEEL: // a tilt wheel or a trackpad swipe: positive is towards the right
+        wheel_x_ += static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<f32>(WHEEL_DELTA);
         return true;
     case WM_KILLFOCUS:
         down_            = {};
@@ -373,6 +379,7 @@ input_state win32_platform::new_frame() noexcept
     in.mouse_pos  = mouse_;
     in.mouse_down = down_;
     in.wheel      = std::exchange(wheel_, 0.0f);
+    in.wheel_x    = std::exchange(wheel_x_, 0.0f);
 
     in.keys      = keys_;
     in.key_count = std::exchange(key_count_, 0);

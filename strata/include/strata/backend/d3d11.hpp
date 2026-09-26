@@ -34,6 +34,13 @@ public:
 
     void render(const draw_data& data);
 
+    // render() snapshots and restores roughly eighteen pipeline stages, which an in-game overlay has to do and an
+    // application that owns its device does not -- it is about forty driver calls per frame spent putting back state
+    // nobody is going to read. turn it off when strata's own state is a fine thing to leave behind; the next thing
+    // you draw then has to set what it needs (shaders, input layout, buffers, blend, scissor, viewport).
+    void set_state_restore(bool on) noexcept;
+    [[nodiscard]] bool state_restore() const noexcept;
+
     // uploads a straight-alpha rgba8 image (width * height * 4 bytes, rows tightly packed) and returns the id that
     // ui.image() / draw_list::image() take; 0 if it failed. the texture lives until destroy_texture() or destroy().
     [[nodiscard]] texture_id create_texture(u32 width, u32 height, std::span<const u8> rgba);

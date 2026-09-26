@@ -491,7 +491,30 @@ void test_log_view()
     log_buffer log{100};
     for (int i = 0; i < 300; ++i) { log.addf(i % 7 == 0 ? log_level::warn : log_level::info, "message number {}", i); }
     CHECK(log.size() == 100); // a ring: the oldest lines fall out
-    CHECK(log[0].text == "message number 200");
+    CHECK(log[0].text() == "message number 200");
+    CHECK(log[99].text() == "message number 299");
+    // the text arena is compacted as lines fall out of the ring, so the offsets of the lines that stayed have to be
+    // shifted with it: reading the oldest and the newest after 200 evictions is what catches a botched compaction
+    {
+        log_buffer moved = std::move(log); // the lines point at the arena, so a move has to reseat them
+        CHECK(moved.size() == 100);
+        CHECK(moved[0].text() == "message number 200");
+        CHECK(moved[99].text() == "message number 299");
+        log_buffer copy = moved;
+        copy.add(log_level::info, "after the copy");       // full ring: this pushes "200" out of the copy
+        CHECK(copy.size() == 100);
+        CHECK(copy[0].text() == "message number 201");     // the copy's own arena, not the original's
+        CHECK(copy[99].text() == "after the copy");
+        CHECK(moved[0].text() == "message number 200");    // ... and the original is untouched
+        CHECK(moved[99].text() == "message number 299");
+        log = std::move(moved);
+        log_buffer cleared = log;
+        cleared.clear();
+        CHECK(cleared.size() == 0);
+        cleared.add(log_level::info, "fresh");
+        CHECK(cleared[0].text() == "fresh"); // clear() resets the arena too
+    }
+    CHECK(log.size() == 100 && log[0].text() == "message number 200"); // untouched by all of the above
 
     log_buffer big{20000};
     for (int i = 0; i < 12000; ++i) { big.addf(log_level::debug, "line {}", i); }

@@ -36,7 +36,7 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
     current = std::clamp(current, 0, static_cast<int>(count) - 1);
 
     const field_layout fl  = layout_field(visible_label(label), frame_height());
@@ -167,7 +167,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(label, current_seed());
+    const id key = widget_id(label);
 
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const rect         box = fl.control;
