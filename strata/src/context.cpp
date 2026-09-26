@@ -192,6 +192,15 @@ void context::begin_frame(const input_state& in)
     mod_shift_ = in.shift;
     mod_alt_   = in.alt;
 
+    // a key_sequence's pending prefix is cleared here, one frame after a key failed to advance any sequence sharing
+    // it: every sequence_pressed() call for that key had its turn first (that is why this happens at the *next*
+    // begin_frame, not inside sequence_pressed itself), so a prefix shared by several sequences is not torn down by
+    // the first one that happens not to match, before a later one gets to check the same key
+    if (seq_pending_count_ > 0 && pressed_key_ != 0 && !seq_pending_touched_) {
+        seq_pending_count_ = 0;
+    }
+    seq_pending_touched_ = false;
+
     pressed_key_ = in.pressed_key;
     ime_text_    = in.ime;
     ime_len_     = std::min<u32>(in.ime_len, static_cast<u32>(in.ime.size()));

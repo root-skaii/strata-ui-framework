@@ -333,6 +333,7 @@ The sandbox has a "theme file" field with save / load buttons and takes `--theme
 strata::keybinds binds;
 binds.add("save", "Ctrl+S", "write the document");      // name, default chord, tooltip
 binds.add("quick_open", "Ctrl+P");
+binds.add("goto_symbol", "Ctrl+K, Ctrl+O");              // a short sequence: Ctrl+K, then Ctrl+O
 
 if (binds.pressed(ui, "save")) { save(); }               // true on the frame the chord is pressed
 (void)ui.menu_item("Save", binds.text("save"));          // "Ctrl+S" as the shortcut hint
@@ -351,6 +352,15 @@ binds.load(cfg);  strata::themes::from_config(cfg, ui.theme());  volume = cfg.ge
   modifiers. `chord_to_string` / `chord_from_string` use the `accelerator()` syntax (`"Ctrl+Shift+S"`, `"Alt+F4"`, `"Page Up"`,
   `"Mouse 4"`); `ui.chord_pressed(chord)` is what `accelerator()` uses. Plain keys are ignored while a text field has the keyboard,
   and nothing fires while a hotkey field waits for a key.
+- **Multi-key chords:** a `key_sequence` is up to `key_sequence::max_steps` (3) chords pressed one after another ("Ctrl+K, Ctrl+S"),
+  each within `key_sequence_timeout` (1.5 s) of the one before; a plain `key_chord` converts to a one-step sequence, so this is a
+  drop-in everywhere a chord was accepted (`keybinds::action::chord` is a `key_sequence`). `sequence_to_string` / `sequence_from_string`
+  join / split the steps with `", "`. `ui.sequence_pressed(seq)` is true on the frame the last step lands; a key that does not
+  continue any sequence sharing the prefix so far leaves it pending for one more frame (so two sequences sharing a prefix, like
+  "Ctrl+K, Ctrl+S" and "Ctrl+K, Ctrl+O", both get a fair look at the next key) before it is dropped. `ui.hotkey_sequence("Label", seq)`
+  is the rebinding field: the first key commits immediately, pressing another within the timeout extends it (each extension commits
+  too); a bare Esc as the very first key leaves it as it was, a bare Backspace / Delete as the very first key unbinds it (with a
+  modifier, or once a step is already captured, they are just steps of the chord).
 - **keybinds:** `bind` / `reset` / `reset_all`, `conflict(name)` (another action on the same chord), `find`, `actions()`. `keybind_editor`
   shows a reset button where a binding differs from its default and a mark where two actions collide; unbinding is Backspace / Delete.
 - **config:** case-insensitive sections and keys, order kept, values are one line of text; typed getters take a fallback for a missing or
@@ -609,6 +619,9 @@ if (auto w = ui.window("settings", {260, 90}, {740, 480}, flags)) {
 - **Hotkeys:** `ui.hotkey("Label", key_code)`: click, press a key or a side mouse button; Esc cancels, Backspace / Delete
   unbinds. `key_code` is a virtual-key code (`strata::key_name(code)` gives its name). `input_state::pressed_key` carries the
   key; `win32_platform` fills it. `ui.hotkey_chord("Label", chord)` does the same for a key with modifiers (see below).
+  `ui.hotkey_sequence("Label", seq)` captures a short sequence of chords pressed one after another (a `key_sequence`, see
+  "Key bindings and config files"): each step commits right away, and the field keeps listening for `key_sequence_timeout`
+  longer in case another key extends it into a longer chord.
 - **Docking animation:** `ui.set_dock_animation(true)` makes panes slide to their new place when a window docks, undocks or a pane closes
   (a new pane grows out of the edge it was dropped at); dragging a splitter always follows the pointer. On by default; `set_dock_animation(false)` snaps panes into place.
 - **Alpha and transitions:** `ui.push_alpha(a)` / `pop_alpha()` scale everything drawn (nearly invisible content is inert);
@@ -831,7 +844,6 @@ Things that would fit, not promised. Not on the TODO list.
 **Input**
 - Files dropped on the window from the OS (`WM_DROPFILES`) as `input_state::dropped_files`
 - Gamepad input, together with keyboard navigation
-- Multi-key chords (`Ctrl+K, Ctrl+S`) in keybinds
 
 **Platform and rendering**
 - A Vulkan or OpenGL backend (the in-game overlay's README lists the missing one as a limit)

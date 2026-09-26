@@ -246,6 +246,135 @@ void test_chords()
     }
 }
 
+void test_key_sequences()
+{
+    std::fprintf(stderr, "[key sequences: Ctrl+K, Ctrl+S - style multi-key chords]\n");
+
+    // text round trip
+    key_sequence seq;
+    CHECK((sequence_from_string("Ctrl+K, Ctrl+S", seq) && seq.count == 2));
+    CHECK((seq.steps[0] == key_chord{'K', true, false, false} && seq.steps[1] == key_chord{'S', true, false, false}));
+    CHECK(sequence_to_string(seq) == "Ctrl+K, Ctrl+S");
+    CHECK((sequence_from_string("F5", seq) && seq.count == 1 && seq.steps[0] == key_chord{0x74, false, false, false}));
+    CHECK(sequence_to_string(seq) == "F5");
+    CHECK((sequence_from_string("", seq) && !seq.bound() && sequence_to_string(seq).empty()));
+    CHECK(sequence_from_string("Ctrl+K,   Ctrl+O  ,Alt+F4", seq) && seq.count == 3); // extra spaces around the commas
+    key_sequence keep = seq;
+    CHECK(!sequence_from_string("Ctrl+K, Ctrl+O, Alt+F4, Ctrl+X", seq) && seq == keep); // too many steps: untouched
+    CHECK(!sequence_from_string("Ctrl+K, Nonsense", seq) && seq == keep);              // a bad step: untouched
+    CHECK(!sequence_from_string("Ctrl+K, ", seq));                                     // a trailing comma with nothing after it
+    // a plain key_chord is a one-step sequence
+    const key_chord single{'A', true, false, false};
+    CHECK((key_sequence{single}.count == 1 && key_sequence{single}.steps[0] == single));
+    CHECK(key_sequence{}.count == 0 && !key_sequence{}.bound());
+
+    // sequence_pressed: needs every step, each within key_sequence_timeout of the one before
+    {
+        harness h;
+        key_sequence save;
+        CHECK(sequence_from_string("Ctrl+K, Ctrl+S", save));
+        int hits = 0;
+        const auto build = [&] { if (h.ui.sequence_pressed(save)) { ++hits; } };
+
+        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build); // step 1
+        CHECK(hits == 0);
+        h.in.pressed_key = 'S'; h.frame(build); // step 2, right away
+        h.in.ctrl = false;
+        CHECK(hits == 1);
+
+        // a wrong second key breaks the chord: the correct one right after does not fire on its own
+        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
+        h.in.pressed_key = 'X'; h.frame(build); // not Ctrl+S: breaks it
+        h.in.pressed_key = 'S'; h.frame(build);
+        h.in.ctrl = false;
+        CHECK(hits == 1);
+        // ... but starts a fresh attempt that does complete
+        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
+        h.in.pressed_key = 'S'; h.frame(build);
+        h.in.ctrl = false;
+        CHECK(hits == 2);
+
+        // waiting too long between the steps also breaks it
+        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
+        h.in.ctrl = false;
+        h.frames(build, 16, 0.1f); // 1.6 s of nothing: past key_sequence_timeout
+        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build);
+        h.in.ctrl = false;
+        CHECK(hits == 2);
+
+        // two sequences sharing a prefix: the one whose second step is pressed is the one that fires
+        key_sequence open;
+        CHECK(sequence_from_string("Ctrl+K, Ctrl+O", open));
+        int open_hits = 0;
+        const auto build2 = [&] {
+            if (h.ui.sequence_pressed(save)) { ++hits; }
+            if (h.ui.sequence_pressed(open)) { ++open_hits; }
+        };
+        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build2);
+        h.in.pressed_key = 'O'; h.frame(build2);
+        h.in.ctrl = false;
+        CHECK(hits == 2 && open_hits == 1);
+
+        // a one-step sequence behaves exactly like chord_pressed
+        key_sequence one{key_chord{'Q', true, false, false}};
+        int q = 0;
+        const auto build3 = [&] { if (h.ui.sequence_pressed(one)) { ++q; } };
+        h.in.ctrl = true; h.in.pressed_key = 'Q'; h.frame(build3); h.in.ctrl = false;
+        CHECK(q == 1);
+        CHECK(!h.ui.sequence_pressed({})); // unbound
+    }
+
+    // hotkey_sequence: click the field, then press one chord after another. each step commits right away (like
+    // hotkey_chord for a single step), but the field keeps listening a little longer in case of an extension
+    {
+        harness h;
+        key_sequence chord;
+        bool changed = false;
+        const auto build = [&] {
+            if (auto w = h.ui.window("k", {100, 100}, {300, 0}, plain_window)) { changed = h.ui.hotkey_sequence("##k", chord) || changed; }
+        };
+        const vec2 field{130.0f, 124.0f};
+        h.frames(build, 2);
+        h.click(field, build);
+        CHECK(h.ui.want_text_input());
+
+        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build); h.in.ctrl = false;
+        CHECK((changed && chord == key_sequence{key_chord{'K', true, false, false}} && h.ui.want_text_input()));
+
+        changed = false;
+        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build); h.in.ctrl = false;
+        key_sequence expect;
+        CHECK(sequence_from_string("Ctrl+K, Ctrl+S", expect));
+        CHECK((changed && chord == expect && h.ui.want_text_input())); // still listening: room for a third step
+
+        changed = false;
+        h.frames(build, 16, 0.1f); // 1.6 s of nothing: past key_sequence_timeout, stops listening
+        CHECK((!changed && !h.ui.want_text_input() && chord == expect)); // what was captured already stands
+
+        // a bare Esc as the very first key leaves it as it was
+        changed = false;
+        h.click(field, build);
+        h.in.pressed_key = 0x1b; h.frame(build);
+        CHECK((!changed && chord == expect && !h.ui.want_text_input()));
+
+        // a bare Backspace / Delete as the very first key unbinds
+        changed = false;
+        h.click(field, build);
+        h.in.pressed_key = 0x08; h.frame(build);
+        CHECK((changed && !chord.bound() && !h.ui.want_text_input()));
+
+        // reaching key_sequence::max_steps commits right away and stops listening, no pause needed
+        changed = false;
+        h.click(field, build);
+        h.in.ctrl = true;
+        h.in.pressed_key = 'A'; h.frame(build);
+        h.in.pressed_key = 'B'; h.frame(build);
+        h.in.pressed_key = 'C'; h.frame(build); // the third step: max_steps reached
+        h.in.ctrl = false;
+        CHECK((changed && !h.ui.want_text_input() && chord.count == key_sequence::max_steps));
+    }
+}
+
 void test_keybinds()
 {
     std::fprintf(stderr, "[keybinds]\n");
@@ -258,7 +387,7 @@ void test_keybinds()
     CHECK(binds.text("open") == "Ctrl+O" && binds.text("nope").empty() && binds.text("broken").empty());
     CHECK(binds.conflict("save") == nullptr && binds.conflict("broken") == nullptr);
 
-    CHECK(binds.bind("open", {'S', true, false, false}));
+    CHECK(binds.bind("open", key_chord{'S', true, false, false}));
     CHECK(!binds.bind("nope", {}));
     CHECK(binds.conflict("save") != nullptr && binds.conflict("save")->name == "open");
     CHECK(binds.reset("open") && binds.conflict("save") == nullptr && !binds.reset("nope"));
@@ -275,7 +404,7 @@ void test_keybinds()
         h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build);
         h.in.pressed_key = 'O'; h.frame(build);
         CHECK(saves == 1 && opens == 1);
-        CHECK(binds.bind("save", {0x74, false, false, false})); // F5 now
+        CHECK(binds.bind("save", key_chord{0x74, false, false, false})); // F5 now
         h.in.pressed_key = 'S'; h.frame(build);
         h.in.ctrl = false; h.in.pressed_key = 0x74; h.frame(build);
         CHECK(saves == 2 && opens == 1);
@@ -283,7 +412,7 @@ void test_keybinds()
 
     // config round trip: an unbound action is written as an empty value and stays unbound
     binds.reset_all();
-    CHECK(binds.bind("open", {0x74, false, false, true}) && binds.bind("save", {})); // Alt+F5, unbound
+    CHECK(binds.bind("open", key_chord{0x74, false, false, true}) && binds.bind("save", {})); // Alt+F5, unbound
     config cfg;
     binds.store(cfg);
     CHECK(cfg.get("keybinds", "open") == "Alt+F5" && cfg.has("keybinds", "save") && cfg.get("keybinds", "save").empty());
@@ -294,18 +423,43 @@ void test_keybinds()
     other.add("extra", "F9"); // not in the file: keeps its default
     CHECK(other.load(cfg) == 2);
     CHECK((!other.find("save")->chord.bound() && other.find("open")->chord == key_chord{0x74, false, false, true}));
-    CHECK(other.find("extra")->chord.key == 0x78);
+    CHECK(other.find("extra")->chord.steps[0].key == 0x78);
 
     cfg.set("keybinds", "open", "Ctrl+Nonsense"); // an unreadable value is skipped
-    CHECK(other.load(cfg) == 0 && other.find("open")->chord.alt);
+    CHECK(other.load(cfg) == 0 && other.find("open")->chord.steps[0].alt);
     other.reset_all();
     CHECK((other.find("open")->chord == key_chord{'O', true, false, false}));
+
+    // a multi-key chord as an action's default, and firing it, round trip through pressed() and a config file just
+    // like a single-key one
+    {
+        keybinds seq_binds;
+        CHECK(seq_binds.add("quick_open", "Ctrl+K, Ctrl+O") == 0);
+        CHECK(seq_binds.text("quick_open") == "Ctrl+K, Ctrl+O");
+        CHECK(seq_binds.find("quick_open")->chord.count == 2);
+
+        harness h;
+        int hits = 0;
+        const auto build = [&] { if (seq_binds.pressed(h.ui, "quick_open")) { ++hits; } };
+        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
+        h.in.pressed_key = 'O'; h.frame(build);
+        h.in.ctrl = false;
+        CHECK(hits == 1);
+
+        config seq_cfg;
+        seq_binds.store(seq_cfg);
+        CHECK(seq_cfg.get("keybinds", "quick_open") == "Ctrl+K, Ctrl+O");
+        keybinds reloaded;
+        reloaded.add("quick_open"); // unbound until load()
+        CHECK(reloaded.load(seq_cfg) == 1);
+        CHECK(reloaded.find("quick_open")->chord == seq_binds.find("quick_open")->chord);
+    }
 
     // the editor draws a row per action
     {
         harness h;
         binds.reset_all();
-        CHECK(binds.bind("open", {'S', true, false, false})); // a conflict, so the warning mark shows too
+        CHECK(binds.bind("open", key_chord{'S', true, false, false})); // a conflict, so the warning mark shows too
         bool changed = false;
         const auto build = [&] {
             if (auto w = h.ui.window("keys", {20, 20}, {420, 0}, plain_window)) { changed = keybind_editor(h.ui, binds); }
@@ -596,6 +750,7 @@ void run_misc_tests()
     test_themes();
     test_draw_list_extras();
     test_chords();
+    test_key_sequences();
     test_keybinds();
     test_config();
     test_contexts_palette_and_config_file();

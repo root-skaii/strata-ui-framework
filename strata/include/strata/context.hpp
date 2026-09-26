@@ -87,6 +87,31 @@ struct key_chord {
 // untouched) if a part is not known
 [[nodiscard]] bool chord_from_string(std::string_view text, key_chord& out) noexcept;
 
+// seconds allowed between the steps of a key_sequence, both pressing one (sequence_pressed) and capturing one (hotkey_sequence)
+inline constexpr f64 key_sequence_timeout = 1.5;
+
+// a chord, or the first few of a short sequence of chords pressed one after another ("Ctrl+K" then "Ctrl+S"), each
+// within key_sequence_timeout of the one before. a plain key_chord converts to a one-step sequence, so code and
+// config that only ever used single chords keeps working
+struct key_sequence {
+    static constexpr u32 max_steps = 3;
+
+    std::array<key_chord, max_steps> steps{};
+    u8                                count{};
+
+    constexpr key_sequence() noexcept = default;
+    constexpr key_sequence(const key_chord& c) noexcept : steps{c}, count{c.bound() ? u8{1} : u8{0}} {}
+
+    [[nodiscard]] constexpr bool bound() const noexcept { return count > 0 && steps[0].bound(); }
+    friend constexpr bool operator==(const key_sequence&, const key_sequence&) noexcept = default;
+};
+
+// "Ctrl+K, Ctrl+S": chord_to_string() of each step, joined with ", ". empty for an unbound sequence
+[[nodiscard]] std::string sequence_to_string(const key_sequence& seq);
+// the inverse: comma-separated chords, each in the chord_from_string() syntax. "" gives an unbound sequence; false
+// (and `out` untouched) if a step does not parse or there are more than key_sequence::max_steps of them
+[[nodiscard]] bool sequence_from_string(std::string_view text, key_sequence& out) noexcept;
+
 // text fields copy / paste through these; win32_platform::clipboard() provides them
 struct clipboard_hooks {
     void (*set)(void* user, std::string_view text) noexcept = nullptr;
@@ -1061,6 +1086,11 @@ public:
     // the same for a key with modifiers: hold Ctrl / Shift / Alt while pressing the key (a bare Esc cancels, a bare
     // Backspace / Delete unbinds)
     bool hotkey_chord(std::string_view label, key_chord& chord);
+    // the same for a short sequence of chords ("Ctrl+K, Ctrl+S"): the first key held with modifiers commits right away
+    // (as fast as hotkey_chord for the common one-step case), but the field keeps listening for key_sequence_timeout
+    // longer, and a further key extends the sequence, again committing right away, up to key_sequence::max_steps. a
+    // bare Esc as the very first key leaves it as it was, a bare Backspace / Delete as the very first key unbinds it
+    bool hotkey_sequence(std::string_view label, key_sequence& seq);
 
     void push_id(std::string_view s) noexcept;
     void pop_id() noexcept;
@@ -1224,6 +1254,9 @@ public:
     [[nodiscard]] bool accelerator(std::string_view combo) const;
     // the same for a chord you keep (see keybinds). never true while a hotkey field is waiting for a key
     [[nodiscard]] bool chord_pressed(const key_chord& chord) const;
+    // true on the frame the last step of the sequence is pressed, each step within sequence_timeout of the one before
+    // (Esc, or pausing longer than that, drops what was pressed so far). a one-step sequence behaves like chord_pressed
+    [[nodiscard]] bool sequence_pressed(const key_sequence& seq) const;
     void menu_separator();
     // a popup menu that opens where you right-click the last widget, or the given area:
     //   if (auto m = ui.context_menu("row")) { if (ui.menu_item("Delete")) ...; }
@@ -2031,6 +2064,16 @@ private:
     u32  pressed_key_{};
     id   hotkey_capture_{};
     bool hotkey_seen_{};
+    // hotkey_sequence(): the steps captured so far of the field currently capturing (hotkey_capture_ ensures only one)
+    std::array<key_chord, key_sequence::max_steps> seq_edit_capture_{};
+    u8   seq_edit_count_{};
+    f64  seq_edit_deadline_{};
+    // sequence_pressed(): the prefix of steps matched so far, across whichever sequences are asked about each frame;
+    // mutable so the method that only reads a chord you keep can stay const, like chord_pressed
+    mutable std::array<key_chord, key_sequence::max_steps - 1> seq_pending_{};
+    mutable u8   seq_pending_count_{};
+    mutable f64  seq_pending_time_{};
+    mutable bool seq_pending_touched_{}; // some call advanced or completed the pending prefix this frame (see begin_frame)
 
     std::array<window_state, max_windows> windows_{};
     std::vector<anim_slot>                anims_;     // open addressing, power-of-two size, grows on demand

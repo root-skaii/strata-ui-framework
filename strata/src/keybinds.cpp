@@ -10,8 +10,8 @@ u32 keybinds::add(std::string_view name, std::string_view default_chord, std::st
     for (std::size_t i = 0; i < actions_.size(); ++i) {
         if (actions_[i].name == name) { return static_cast<u32>(i); }
     }
-    key_chord chord;
-    if (!chord_from_string(default_chord, chord)) { chord = {}; }
+    key_sequence chord;
+    if (!sequence_from_string(default_chord, chord)) { chord = {}; }
     actions_.push_back({std::string{name}, std::string{description}, std::string{context}, chord, chord});
     return static_cast<u32>(actions_.size() - 1);
 }
@@ -24,7 +24,7 @@ const keybinds::action* keybinds::find(std::string_view name) const noexcept
     return nullptr;
 }
 
-bool keybinds::bind(std::string_view name, const key_chord& chord)
+bool keybinds::bind(std::string_view name, const key_sequence& chord)
 {
     for (action& a : actions_) {
         if (a.name == name) {
@@ -86,18 +86,18 @@ bool keybinds::pressed(const context& ui, std::string_view name) const
             if (!o.context.empty() && available(o) && o.chord == a->chord) { return false; }
         }
     }
-    return ui.chord_pressed(a->chord);
+    return ui.sequence_pressed(a->chord);
 }
 
 std::string keybinds::text(std::string_view name) const
 {
     const action* a = find(name);
-    return a != nullptr ? chord_to_string(a->chord) : std::string{};
+    return a != nullptr ? sequence_to_string(a->chord) : std::string{};
 }
 
 void keybinds::store(config& cfg, std::string_view section) const
 {
-    for (const action& a : actions_) { cfg.set(section, a.name, chord_to_string(a.chord)); }
+    for (const action& a : actions_) { cfg.set(section, a.name, sequence_to_string(a.chord)); }
 }
 
 std::size_t keybinds::load(const config& cfg, std::string_view section)
@@ -105,8 +105,8 @@ std::size_t keybinds::load(const config& cfg, std::string_view section)
     std::size_t changed = 0;
     for (action& a : actions_) {
         if (!cfg.has(section, a.name)) { continue; }
-        key_chord chord;
-        if (!chord_from_string(cfg.get(section, a.name), chord)) { continue; }
+        key_sequence chord;
+        if (!sequence_from_string(cfg.get(section, a.name), chord)) { continue; }
         if (chord != a.chord) { ++changed; }
         a.chord = chord;
     }
@@ -120,7 +120,7 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
         return false;
     }
     ui.table_setup_column("Action");
-    ui.table_setup_column("Key", 150.0f);
+    ui.table_setup_column("Key", 190.0f);
     ui.table_setup_column("", 64.0f);
     (void)ui.table_headers_row();
     for (const keybinds::action& a : binds.actions()) {
@@ -140,8 +140,8 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
             }
 
             ui.table_next_column();
-            key_chord chord = a.chord;
-            if (ui.hotkey_chord("##chord", chord)) {
+            key_sequence chord = a.chord;
+            if (ui.hotkey_sequence("##chord", chord)) {
                 (void)binds.bind(a.name, chord);
                 changed = true;
             }
@@ -276,7 +276,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         const f32     text_y = row.bounds.min.y + (row_h - ui.font().line_height(f)) * 0.5f;
         const std::string name = action_title(a.name);
         dl.text({row.bounds.min.x + 10.0f, text_y}, i == selected_ ? theme.accent_hover : theme.text, name, f);
-        const std::string chord = chord_to_string(a.chord);
+        const std::string chord = sequence_to_string(a.chord);
         const f32 chord_w = chord.empty() ? 0.0f : ui.font().measure(f, chord).x;
         if (!chord.empty()) { dl.text({row.bounds.max.x - 10.0f - chord_w, text_y}, theme.text_dim, chord, f); }
         if (!a.description.empty()) { // as much of the description as fits between the name and the shortcut

@@ -137,6 +137,38 @@ bool chord_from_string(std::string_view text, key_chord& out) noexcept
     return true;
 }
 
+std::string sequence_to_string(const key_sequence& seq)
+{
+    std::string s;
+    for (u32 i = 0; i < seq.count; ++i) {
+        if (i > 0) { s += ", "; }
+        s += chord_to_string(seq.steps[i]);
+    }
+    return s;
+}
+
+bool sequence_from_string(std::string_view text, key_sequence& out) noexcept
+{
+    key_sequence seq;
+    std::string_view rest = trim_spaces(text);
+    if (rest.empty()) {
+        out = seq;
+        return true;
+    }
+    for (;;) {
+        if (seq.count >= key_sequence::max_steps) { return false; } // too many steps
+        const std::size_t comma = rest.find(',');
+        const std::string_view part = trim_spaces(comma == std::string_view::npos ? rest : rest.substr(0, comma));
+        key_chord chord;
+        if (!chord_from_string(part, chord) || !chord.bound()) { return false; } // a step must be a real chord
+        seq.steps[seq.count++] = chord;
+        if (comma == std::string_view::npos) { break; }
+        rest = trim_spaces(rest.substr(comma + 1));
+    }
+    out = seq;
+    return true;
+}
+
 bool context::accelerator(std::string_view combo) const
 {
     key_chord c;
@@ -160,6 +192,33 @@ bool context::chord_pressed(const key_chord& c) const
         if (ctrl && !alt && !shift && (vk == 'A' || vk == 'C' || vk == 'V' || vk == 'X' || vk == 'Z' || vk == 'Y')) { return false; }
     }
     return true;
+}
+
+bool context::sequence_pressed(const key_sequence& seq) const
+{
+    if (seq.count == 0) {
+        return false;
+    }
+    // does this frame continue the prefix that is already pending? (a different sequence sharing that same prefix
+    // asked about first is fine: only the steps matter, not which action they belong to. two sequences can also share
+    // a prefix and diverge at this very step - the one this frame's key does not complete just returns false below;
+    // begin_frame() is what clears a prefix that nothing continued, once every candidate has had a chance to)
+    const bool continues = seq_pending_count_ > 0 && seq_pending_count_ <= seq.count &&
+                            std::equal(seq_pending_.begin(), seq_pending_.begin() + seq_pending_count_, seq.steps.begin()) &&
+                            time_ - seq_pending_time_ <= key_sequence_timeout;
+    const u32 at = continues ? seq_pending_count_ : 0u;
+    if (!chord_pressed(seq.steps[at])) {
+        return false;
+    }
+    seq_pending_touched_ = true; // this frame's key correctly advanced (or completed) a sequence sharing this prefix
+    if (at + 1 == seq.count) {   // that was the last step
+        seq_pending_count_ = 0;
+        return true;
+    }
+    seq_pending_[at]    = seq.steps[at]; // one step matched, more to come: remember it and wait for the next
+    seq_pending_count_  = static_cast<u8>(at + 1);
+    seq_pending_time_   = time_;
+    return false;
 }
 
 void context::draw_mnemonic(vec2 pos, color c, std::string_view text, std::size_t at, std::size_t len, bool underline, font_id f)

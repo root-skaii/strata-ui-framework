@@ -706,6 +706,7 @@ demo2_state::demo2_state()
     binds.add("mute", "F3", "toggle the volume");
     binds.add("greet", "F2", "show a toast with the name");
     binds.add("toggle_sidebar", "Ctrl+B", "show or hide the sidebar");
+    binds.add("quick_open", "Ctrl+K, Ctrl+O", "a multi-key chord: press Ctrl+K, then Ctrl+O within a moment or two");
     binds.add("format_document", "Alt+Shift+F", "format the whole document", "editor");
     binds.add("run_script", "F5", "run the script", "editor");
     binds.add("reset_camera", "F5", "back to the default view", "viewport"); // the same key, another context
@@ -747,6 +748,7 @@ void do_action(context& ui, demo2_state& s, std::string_view name)
     else if (name == "mute")            { s.muted = !s.muted; settings_changed(ui, s); }
     else if (name == "greet")           { ui.toast("Hello", s.user_name, toast_kind::info, 2.5f); }
     else if (name == "toggle_sidebar")  { s.sidebar = !s.sidebar; }
+    else if (name == "quick_open")      { ui.toast("Quick open", "the multi-key chord fired", toast_kind::success, 2.0f); }
     else if (name == "run_script")      { ui.toast("Run", "the script started", toast_kind::success, 2.0f); }
     else if (name == "format_document") { ui.toast("Format", "the document was formatted", toast_kind::info, 2.0f); }
     else if (name == "reset_camera")    { ui.toast("Camera", "the view was reset", toast_kind::info, 2.0f); }
@@ -858,7 +860,7 @@ void demo2_update(context& ui, demo2_state& s, float dt)
     demo3_update(ui, s.d3);
     config_actions(ui, s);
     if (s.scene == "config" && s.frame == 1) { // a customised binding: the reset button and the conflict mark show up
-        (void)s.binds.bind("greet", {0x75, false, false, false});
+        (void)s.binds.bind("greet", key_chord{0x75, false, false, false});
         s.ctx_editor = true;
     }
     if (s.scene == "palette" && s.frame == 4) { s.palette.open(); }

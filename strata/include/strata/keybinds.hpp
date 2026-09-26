@@ -5,6 +5,7 @@
 //     strata::keybinds binds;
 //     binds.add("save", "Ctrl+S", "write the document");
 //     binds.add("format", "Ctrl+Shift+F", "format the selection", "editor");     // only while the "editor" context is on
+//     binds.add("goto_symbol", "Ctrl+K, Ctrl+O", "jump to a symbol");            // a short sequence, pressed one chord after another
 //     ...
 //     binds.set_context("editor", editor_has_focus);
 //     if (binds.pressed(ui, "save")) { save(); }
@@ -30,16 +31,16 @@ namespace strata {
 class keybinds {
 public:
     struct action {
-        std::string name;
-        std::string description; // shown as a tooltip by keybind_editor and beside the name in the command palette
-        std::string context;     // empty: always available
-        key_chord   chord;
-        key_chord   default_chord;
+        std::string  name;
+        std::string  description; // shown as a tooltip by keybind_editor and beside the name in the command palette
+        std::string  context;     // empty: always available
+        key_sequence chord;
+        key_sequence default_chord;
     };
 
-    // registers an action with its default chord in the chord_to_string() syntax ("Ctrl+S", "F5", "" = unbound).
-    // an action with a `context` only works (and shows in the palette) while that context is on. returns its index; an
-    // action that is already there is left as it is
+    // registers an action with its default chord in the sequence_to_string() syntax ("Ctrl+S", "F5", "Ctrl+K, Ctrl+S",
+    // "" = unbound). an action with a `context` only works (and shows in the palette) while that context is on.
+    // returns its index; an action that is already there is left as it is
     u32 add(std::string_view name, std::string_view default_chord = {}, std::string_view description = {},
             std::string_view context = {});
 
@@ -47,7 +48,7 @@ public:
     [[nodiscard]] const action*           find(std::string_view name) const noexcept;
 
     // false if there is no such action
-    bool bind(std::string_view name, const key_chord& chord);
+    bool bind(std::string_view name, const key_sequence& chord);
     bool reset(std::string_view name);
     void reset_all() noexcept;
 
@@ -62,9 +63,9 @@ public:
     // different contexts do not conflict with each other
     [[nodiscard]] const action* conflict(std::string_view name) const noexcept;
 
-    // true on the frame the action's chord is pressed (same rules as context::accelerator) while its context is on
+    // true on the frame the action's chord (or the last step of its sequence) is pressed, while its context is on
     [[nodiscard]] bool pressed(const context& ui, std::string_view name) const;
-    // the chord as text ("Ctrl+S"), empty if unbound or unknown
+    // the chord as text ("Ctrl+S", "Ctrl+K, Ctrl+S"), empty if unbound or unknown
     [[nodiscard]] std::string text(std::string_view name) const;
 
     // one `name = Ctrl+S` line per action, an unbound action is written as an empty value

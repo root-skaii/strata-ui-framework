@@ -493,6 +493,93 @@ bool context::hotkey_chord(std::string_view label, key_chord& chord)
     return hotkey_field(label, chord.key, &chord);
 }
 
+bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
+{
+    if (cur_ == nullptr) {
+        return false;
+    }
+    const font_id f = current_font();
+    const id key = hash_id(label, current_seed());
+
+    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const rect         box = fl.control;
+    const interaction  in  = interact(key, box);
+
+    bool capturing = hotkey_capture_ == key;
+    if (in.pressed) {
+        capturing       = !capturing;
+        hotkey_capture_ = capturing ? key : 0;
+        seq_edit_count_ = 0;
+    } else if (capturing && mouse_pressed_ && !box.contains(mouse_)) {
+        capturing       = false;
+        hotkey_capture_ = 0;
+    }
+
+    // each step commits right away (no latency for the common single-chord case), but capturing continues a little
+    // longer so a further key extends it into a sequence, replacing what was just committed with the longer one
+    bool changed = false;
+    if (capturing && pressed_key_ != 0) {
+        const bool bare = !(mod_ctrl_ || mod_shift_ || mod_alt_);
+        if (seq_edit_count_ == 0 && pressed_key_ == 0x1b && bare) {                                   // Esc: leave it as it was
+            capturing       = false;
+            hotkey_capture_ = 0;
+        } else if (seq_edit_count_ == 0 && (pressed_key_ == 0x08 || pressed_key_ == 0x2e) && bare) {  // Backspace / Delete: unbind
+            changed         = seq.bound();
+            seq             = {};
+            capturing       = false;
+            hotkey_capture_ = 0;
+        } else {
+            seq_edit_capture_[seq_edit_count_++] = {pressed_key_, mod_ctrl_, mod_shift_, mod_alt_};
+            seq_edit_deadline_                   = time_ + key_sequence_timeout;
+            key_sequence next;
+            for (u8 i = 0; i < seq_edit_count_; ++i) { next.steps[next.count++] = seq_edit_capture_[i]; }
+            changed = next != seq;
+            seq     = next;
+            if (seq_edit_count_ >= key_sequence::max_steps) { // no room for another step: definitely done
+                capturing       = false;
+                hotkey_capture_ = 0;
+            }
+        }
+        pressed_key_ = 0; // this key is spent either way, so it is not also read as some unrelated accelerator
+        key_count_   = 0;
+    } else if (capturing && seq_edit_count_ > 0 && time_ >= seq_edit_deadline_) {
+        // paused without a further key: what was captured already stands, just stop listening for more
+        capturing       = false;
+        hotkey_capture_ = 0;
+    }
+    if (capturing) {
+        hotkey_seen_ = true;
+    }
+
+    anim_slot& a = anim_for(key);
+    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(a.toggle, capturing ? 1.0f : 0.0f);
+
+    shape_style field = widget_shape(lerp(style_.widget_bg, style_.widget_hover, a.hover), style_.rounding * 0.8f);
+    field.border = lerp(lerp(style_.widget_border, style_.accent_hover, a.hover * 0.45f), style_.accent, a.toggle);
+    field.shadow      = style_.accent.scaled_alpha(0.3f * a.toggle);
+    field.shadow_blur = 8.0f * a.toggle;
+    dl_.shape(box, field);
+
+    std::string shown_text;
+    if (capturing && seq_edit_count_ > 0) {
+        shown_text = sequence_to_string(seq) + ", ..."; // committed so far; a further key would extend it
+    } else if (!capturing) {
+        shown_text = sequence_to_string(seq);
+    }
+    const std::string_view shown = capturing && seq_edit_count_ == 0 ? std::string_view{"press a key..."}
+                                  : !capturing && shown_text.empty() ? std::string_view{"None"}
+                                                                     : std::string_view{shown_text};
+    color tc = !capturing && !seq.bound() ? style_.text_dim : style_.text;
+    if (capturing) {
+        const f32 pulse = 0.65f + 0.35f * std::sin(static_cast<f32>(time_) * 7.0f);
+        tc = style_.accent_hover.scaled_alpha(pulse);
+    }
+    const vec2 tsize = font_.measure(f, shown);
+    dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, tc, shown, f);
+    return changed;
+}
+
 // `chord` is null for a plain key; otherwise key_code is chord->key and the modifiers held with the key are stored too
 bool context::hotkey_field(std::string_view label, u32& key_code, key_chord* chord)
 {
