@@ -1,8 +1,7 @@
 #pragma once
 
-// the newer sandbox demos: visuals (gradients, curves, acrylic), drag / number inputs, plots, text selection,
-// modals, menus, toasts, the log view, key bindings and config files. kept apart from main.cpp; the state lives in
-// demo2_state.
+// newer sandbox demos: visuals (gradients, curves, acrylic), drag / number inputs, plots, text selection, modals,
+// menus, toasts, log view, key bindings and config files. state lives in demo2_state.
 
 #include "demo3.hpp"
 #include "demo4.hpp"
@@ -81,11 +80,11 @@ struct demo2_state {
     float modal_volume   = 0.5f;
     bool  modal_flag     = true;
 
-    // key bindings and a config file: the bindings, a few settings and the theme are saved to / loaded from one ini file
+    // key bindings, settings and theme saved to / loaded from one ini file
     bool               show_config   = false;
     strata::keybinds   binds;
     strata::command_palette palette;
-    strata::config_file file;                    // in the temp folder; auto-save and hot reload are switched on from the window
+    strata::config_file file;                    // in the temp folder; auto-save / hot reload toggled in the window
     std::string        user_name     = "player one";
     float              volume        = 0.6f;
     bool               muted         = false;

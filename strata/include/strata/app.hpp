@@ -1,9 +1,7 @@
 #pragma once
 
-// a ready-made host: the window, the direct3d 11 device and swap chain, the message loop and everything an application
-// otherwise writes around strata itself -- dpi changes, resizing, sleeping while nothing changes, a lost device, the
-// system theme, remembering what the user arranged. link strata::app (it is a separate library: strata itself never
-// creates a window or a device, so it can live inside someone else's, as in an overlay).
+// a ready-made host: window, d3d11 device and swap chain, message loop, dpi changes, resizing, idling, device loss,
+// system theme and saved layout. a separate library (strata itself never creates a window or device).
 //
 //     int main()
 //     {
@@ -32,22 +30,20 @@ enum class app_error : u8 {
     window,     // the window could not be created
     device,     // no direct3d 11 device (not even WARP)
     swap_chain,
-    fonts,      // the font atlas could not be built (see context_config::font)
+    fonts,      // font atlas could not be built
     renderer,
 };
 
 struct app_config {
     std::string_view title = "strata";        // utf-8
-    int              width = 1280;            // client size in logical pixels (the monitor's dpi scale is applied)
+    int              width = 1280;            // client size, logical pixels
     int              height = 720;
-    bool             vsync = true;            // off: as fast as it goes (with tearing where the display allows it)
-    // sleep while nothing changes (context::next_wake_seconds): a tool that is not being touched uses no cpu or gpu
+    bool             vsync = true;            // off: uncapped (tearing where allowed)
+    // sleep while nothing changes (context::next_wake_seconds): an idle tool uses no cpu or gpu
     bool             idle = true;
-    // follow the system's dark / light mode, accent colour and high contrast (themes::for_appearance), also when they
-    // change while the program runs. off: ui.theme is what it is
+    // follow the system dark / light mode, accent and high contrast (themes::for_appearance), live. off: ui.theme as is
     bool             follow_system_theme = false;
-    // utf-8 path: what the user arranged (windows, docking, tables, open tree nodes, scroll) is restored from it at start
-    // and written back when the app ends (context::save_state). empty: nothing is remembered
+    // utf-8 path for the saved layout (context::save_state), restored at start, written at exit. empty: none
     std::string_view state_file{};
     color            clear{14, 16, 22, 255};  // behind the ui
     context_config   ui{};                    // fonts, theme, limits, diagnostics
@@ -63,16 +59,14 @@ public:
     app(const app&)            = delete;
     app& operator=(const app&) = delete;
 
-    // shows the window and runs until it closes (or quit()); `frame` builds the ui, between begin_frame and end_frame.
-    // returns the exit code given to quit() (0 when the window was closed)
+    // shows the window and runs until closed or quit(); `frame` builds the ui between begin_frame and end_frame.
+    // returns quit()'s code (0 when closed)
     int run(const std::function<void(app&, context&)>& frame);
     void quit(int exit_code = 0) noexcept;
 
-    // the window's close button / Alt+F4 asks this first: false keeps the window open (a "save changes?" dialog can then
-    // call quit() itself). unset: it closes
+    // asked on close / Alt+F4: false keeps the window open (e.g. a "save changes?" dialog that later calls quit())
     std::function<bool(app&)> on_close_request;
-    // the device was lost (or reset_device() was called) and a new one is in place: textures created before are gone --
-    // make them again here. the ui, its fonts and the renderer are already back
+    // a new device replaced a lost one (or reset_device()): recreate your textures here; ui, fonts and renderer are back
     std::function<void(app&)> on_device_reset;
 
     [[nodiscard]] context&        ui() noexcept;
@@ -80,12 +74,11 @@ public:
     [[nodiscard]] ID3D11Device*        device() const noexcept;
     [[nodiscard]] ID3D11DeviceContext* device_context() const noexcept;
     [[nodiscard]] void*                window() const noexcept; // HWND
-    // frames built so far, and the ones actually drawn (the rest found nothing changed)
+    // frames built, and frames actually drawn
     [[nodiscard]] u64 frames() const noexcept;
     [[nodiscard]] u64 frames_drawn() const noexcept;
 
-    // replaces the device, swap chain and renderer with new ones, as after a lost device (on_device_reset follows). for a
-    // switch of adapter, or to exercise the recovery path; false if a new device could not be made
+    // replaces device, swap chain and renderer as after device loss (on_device_reset follows). false on failure
     bool reset_device();
 
 private:

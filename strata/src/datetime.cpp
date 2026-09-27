@@ -57,7 +57,7 @@ std::string to_string(const time_of_day& t, bool seconds)
 
 namespace {
 
-// the numbers of `text` separated by one of `seps`; false unless there are exactly `count` of them, all digits
+// the numbers in `text` separated by `seps`; false unless exactly `count`, all digits
 [[nodiscard]] bool split_numbers(std::string_view text, std::string_view seps, std::array<i32, 3>& out, std::size_t count) noexcept
 {
     std::size_t found = 0;

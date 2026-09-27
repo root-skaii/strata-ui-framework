@@ -587,8 +587,8 @@ f32 font_atlas::kerning_slow(const font_data& fd, u32 key) noexcept
     return it != fd.kern.end() && it->key == key ? it->amount : 0.0f;
 }
 
-// code points that shape text without being seen: zero-width joiners and spaces, direction marks, variation selectors,
-// emoji skin-tone modifiers (a single-color glyph cannot show them)
+// invisible shaping code points: zero-width joiners / spaces, direction marks, variation selectors, skin-tone
+// modifiers (single-color glyphs cannot show them)
 [[nodiscard]] static bool is_ignorable(char32_t cp) noexcept
 {
     return (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2060 && cp <= 0x206f) ||
@@ -623,7 +623,7 @@ bool font_atlas::has_glyph(font_id f, char32_t cp) const noexcept
 
 vec2 font_atlas::measure_px(font_id f, std::string_view text) const noexcept
 {
-    std::string visual; // right-to-left text is measured as it is drawn (joined letters can have other widths)
+    std::string visual; // rtl text is measured as drawn (joined forms differ in width)
     if (has_rtl_text(text)) {
         visual = to_visual(text, this, f);
         text   = visual;

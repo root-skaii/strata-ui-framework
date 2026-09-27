@@ -1,9 +1,7 @@
 #pragma once
 
-// internal (not installed): a fast 64-bit hash of a byte range, for "is this frame's geometry the same as the last one".
-// it is XXH64: four independent lanes of multiply-rotate rounds over 32-byte stripes, so the cpu is never waiting on one
-// long chain of multiplies. fnv-1a, which this replaces, costs about 4 cycles per byte (each byte waits for the previous
-// multiply): a megabyte of vertices took a millisecond of end_frame.
+// internal: XXH64 over a byte range, for "is this frame's geometry unchanged". four independent lanes avoid the
+// serial multiply chain of fnv-1a (~4 cycles / byte, which cost 1 ms per MB in end_frame).
 
 #include "strata/types.hpp"
 

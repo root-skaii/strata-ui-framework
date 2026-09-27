@@ -213,23 +213,22 @@ void context::begin_frame(const input_state& in)
     pop_color(m_->color_depth_);
     pop_var(m_->var_depth_);
 
-    // only the top is limited (a stall must not fast-forward animations); a lower clamp would make ui time
-    // run faster than real time at very high frame rates
+    // only the top is clamped (stalls must not fast-forward animations); a lower clamp would speed up ui time at
+    // high frame rates
     m_->dt_      = std::clamp(in.delta_time, 1.0e-6f, 0.1f);
-    // timers get the whole delta (a host that slept until a deadline must find it reached); an hour caps nonsense
+    // timers take the whole delta (a host sleeping to a deadline must find it reached); one hour caps nonsense
     m_->wall_dt_ = std::clamp(in.delta_time, 1.0e-6f, 3600.0f);
     m_->time_   += m_->wall_dt_;
     m_->caret_blink_  = std::max(in.caret_blink_time, 0.0f);
     m_->wheel_lines_  = std::min(in.wheel_lines, 100.0f); // (<= 0 is "a screenful", see scroll_step)
     m_->double_click_ = std::clamp(static_cast<f64>(in.double_click_time), 0.05, 5.0);
     const f32 inv_scale = 1.0f / m_->scale_;
-    // a minimized (or briefly zero-sized) window reports a display size near 0; several window-layout
-    // clamps downstream assume it is at least roughly window-sized (their lower bound is a fixed constant
-    // like 150 or title_h + 48), and a smaller upper bound than that trips the debug std::clamp assertion.
-    // nothing is visible while minimized anyway, so flooring here is free.
+    // a minimized window reports a near-zero display size, but layout clamps downstream assume roughly window-sized
+    // bounds (fixed lower bounds like 150 or title_h + 48) and would trip std::clamp's debug assertion. nothing is
+    // visible while minimized, so flooring is free.
     m_->display_ = {std::max(in.display_size.x * inv_scale, 200.0f), std::max(in.display_size.y * inv_scale, 200.0f)};
-    // smooth scrolling: the notches join what is still to be let out, and a share of that goes this frame (all of it
-    // once little is left). a turn the other way drops what was left of the old direction
+    // smooth scrolling: notches add to the backlog and a share of it is applied per frame (all of it when small).
+    // reversing direction drops the old backlog
     const auto smooth = [this](f32& pending, f32 fresh) noexcept {
         if (!m_->scroll_smoothing_) {
             pending = 0.0f;
@@ -266,10 +265,9 @@ void context::begin_frame(const input_state& in)
     m_->mod_shift_ = in.shift;
     m_->mod_alt_   = in.alt;
 
-    // a key_sequence's pending prefix is cleared here, one frame after a key failed to advance any sequence sharing
-    // it: every sequence_pressed() call for that key had its turn first (that is why this happens at the *next*
-    // begin_frame, not inside sequence_pressed itself), so a prefix shared by several sequences is not torn down by
-    // the first one that happens not to match, before a later one gets to check the same key
+    // a key_sequence's pending prefix is cleared one frame after a key failed to advance it, so every
+    // sequence_pressed() call sharing that prefix sees the key before it is dropped. do not clear it inside
+    // sequence_pressed: the first non-matching sequence would tear down a prefix a later one still matches
     if (m_->seq_pending_count_ > 0 && m_->pressed_key_ != 0 && !m_->seq_pending_touched_) {
         m_->seq_pending_count_ = 0;
     }
@@ -445,7 +443,7 @@ void context::end_frame()
     assert(m_->cur_ == nullptr && "missing end_window");
     dock_end_frame();
     toast_end_frame();
-    // a menu level that was not built this frame (its code stopped running) closes with everything above it
+    // a menu level not built this frame closes along with everything above it
     for (u32 i = 0; i < max_menu_levels; ++i) {
         if (m_->menu_open_[i].key != 0 && !m_->menu_open_[i].seen) {
             menu_close_from(i);
@@ -464,7 +462,7 @@ void context::end_frame()
         m_->dd_candidate_ = 0;
         m_->dd_cancelled_ = false;
     }
-    // a press that no text field claimed takes keyboard focus away; so does a field that was not drawn
+    // an unclaimed press drops keyboard focus; so does a field that was not drawn
     if ((m_->mouse_pressed_ && !m_->press_claimed_) || (m_->focus_id_ != 0 && !m_->focus_seen_)) {
         m_->focus_id_ = 0;
     }
@@ -481,9 +479,8 @@ void context::end_frame()
     }
     m_->hover_time_ = (m_->hover_key_cur_ != 0 && m_->hover_key_cur_ == m_->hover_key_prev_) ? m_->hover_time_ + m_->wall_dt_ : 0.0f;
 
-    // the animation table keeps stale slots around, so a tree that was fully expanded (and is now culled again) would
-    // leave it as big as the whole tree forever. it costs nothing until it is walked, but a table far larger than the
-    // live key count is also a cache miss per lookup: compact it back down now and then.
+    // stale slots keep the animation table as big as its peak (e.g. a fully expanded tree), costing a cache miss per
+    // lookup: compact it now and then.
     if (m_->anims_.size() > 1024 && (m_->frame_ & 0xff) == 0) {
         std::size_t live = 0;
         for (const anim_slot& s : m_->anims_) {
@@ -496,10 +493,8 @@ void context::end_frame()
 
     const draw_data dd = m_->dl_.data();
 
-    // has anything the renderer sees changed? a hash of the four arrays, which is the only honest test: the ui is
-    // rebuilt from scratch every frame, so "nothing was touched" is not something the widget code can report.
-    // xxh64 over the raw bytes, each array seeded with the hash of the ones before -- they are trivially copyable and
-    // packed, and a frame that differs anywhere (a colour, a caret, one pixel of a scrollbar) differs here.
+    // changed? the ui is rebuilt every frame, so only a hash can tell: xxh64 over the four packed, trivially copyable
+    // arrays, each seeded with the previous hash. any visible difference changes it.
     u64 hash = 0;
     hash = internal::hash_bytes(dd.vertices.data(), dd.vertices.size_bytes(), hash);
     hash = internal::hash_bytes(dd.indices.data(), dd.indices.size_bytes(), hash);
@@ -511,13 +506,12 @@ void context::end_frame()
     m_->frame_unchanged_ = m_->geometry_hash_ != 0 && m_->geometry_hash_ == hash;
     m_->geometry_hash_   = hash;
 
-    // ... and is a later frame going to look different even if nothing is touched? an animation still short of its
-    // target, plus the two things driven by a clock rather than by a value: a toast waiting to expire or fade, and
-    // the pause before a tooltip appears. without those two a host that idles on can_idle() would freeze a toast on
-    // screen forever and never show a tooltip, because the frames that would have advanced them never run.
+    // will a later frame differ untouched? animations short of their target, plus the clock-driven cases the values
+    // cannot show: toasts expiring / fading and the tooltip delay. without them an idling host would freeze toasts
+    // and never show tooltips.
     const bool tooltip_pending = m_->hover_key_cur_ != 0 && m_->hover_time_ < m_->style_.tooltip_delay_s;
-    // toasts: one sliding, fading or with a bar that moves (its timer counting down, a busy bar) changes every frame. one
-    // that stays until closed, or whose timer the pointer is holding, changes nothing by itself
+    // toasts: sliding, fading or with a moving bar (countdown, busy) change every frame; sticky or hover-paused ones
+    // do not
     bool toast_moving = false;
     for (const toast_entry& t : m_->toasts_) {
         toast_moving = toast_moving || t.dismissed || t.anim < 1.0f || t.progress == toast_busy || (!t.sticky && !t.paused);
@@ -564,8 +558,8 @@ void context::end_frame()
 
 // state --------------------------------------------------------------------
 
-// animation state: an open-addressing table keyed by widget id. slots not touched for a couple of frames are stale and
-// reusable; a full table grows, dropping the stale ones.
+// animation state: open-addressing table keyed by widget id. slots untouched for a couple of frames are stale and
+// reusable; a full table grows, dropping stale ones.
 
 context::anim_slot* context::anim_find(id key) noexcept
 {
@@ -655,7 +649,7 @@ f32 context::approach(f32 current, f32 target, f32 speed) const noexcept
     if (std::abs(target - v) < 0.002f) {
         return target; // close enough: snap, so a settled animation stops producing new geometry
     }
-    m_->anim_moved_ = true; // still moving: this frame's geometry is not the last word (see animations_settling)
+    m_->anim_moved_ = true; // still moving (see animations_settling)
     return v;
 }
 
@@ -683,9 +677,8 @@ context::window_state* context::window_for(id key, vec2 pos, f32 width) noexcept
         }
     }
     if (free_slot == nullptr) {
-        // every slot is taken: the window shown longest ago gives its slot up (were it to come back, it starts over where
-        // its code first puts it). kept whatever their age: docked windows and floating docks, which the dock layout refers
-        // to, open modals, and anything shown this frame or the last
+        // table full: the least recently shown window gives up its slot (it restarts where its code places it). exempt:
+        // docked windows and floating docks (the layout refers to them), open modals, anything shown this or last frame
         const auto owns_space = [&](id k) {
             return std::ranges::any_of(m_->dock_->spaces, [k](const dock_space& sp) { return sp.key != 0 && sp.owner == k; });
         };
@@ -770,14 +763,14 @@ void context::track_edit(id session, bool changed, bool engaged) noexcept
         *open = {session, false};
     }
     if (open != nullptr && (engaged || was)) { open->changed = open->changed || changed; }
-    // over: a session that changed something, or a change with no session around it (it started and ended at once)
+    // over: a session that changed something, or a sessionless change (started and ended at once)
     f.after_edit = !engaged && (open != nullptr && was ? open->changed : changed);
     if (!engaged && open != nullptr) { *open = {}; }
     m_->edit_flags_ = f;
     m_->edit_item_  = m_->last_item_key_;
 }
 
-// what refers to a window by its key, other than its slot: the stacking order and the keyboard / hover / focus trackers
+// references to a window by key besides its slot: stacking order and keyboard / hover / focus trackers
 void context::forget_window(id key) noexcept
 {
     if (const u32 z = z_index(key); z != no_z) {
@@ -916,8 +909,7 @@ void context::switch_run(u32 owner) noexcept
     m_->run_start_ = now;
 }
 
-// draw order: drawing outside windows first, then the windows by stacking order
-// (each window's runs kept in emission order), then popups on top of everything.
+// draw order: outside-window drawing, then windows by stacking order (runs in emission order), then popups.
 void context::apply_layer_order()
 {
     switch_run(run_base);
@@ -945,7 +937,7 @@ void context::apply_layer_order()
         if (stack_z(wa) != stack_z(wb)) { return stack_z(wa) < stack_z(wb); }
         return (wa.dock_owner != 0 && wa.docked_now ? 1 : 0) < (wb.dock_owner != 0 && wb.docked_now ? 1 : 0);
     });
-    for (u32 i = n; i-- > 0;) { // the topmost window; the menu bar does not take the focus from the windows below it
+    for (u32 i = n; i-- > 0;) { // topmost window; the menu bar does not take focus from windows below
         if (!m_->frame_windows_[order[i]]->menubar) {
             m_->focused_window_ = m_->frame_windows_[order[i]]->key;
             break;
@@ -1123,23 +1115,20 @@ rect context::layout_place(vec2 size) noexcept
     l.first     = false;
     l.same_line = false;
     l.cursor_x  = pos.x + size.x;
-    // the first item starts the extent: a layout that is scrolled above the top of the screen has only negative
-    // positions, and a `bottom` that started at 0 would stay there and make the content look taller than it is
+    // the first item starts the extent: a layout scrolled above the screen has only negative positions, and a
+    // `bottom` starting at 0 would inflate the content height
     l.bottom    = first_item ? pos.y + size.y : std::max(l.bottom, pos.y + size.y);
     l.right     = first_item ? pos.x + size.x : std::max(l.right, pos.x + size.x);
     return rect::from_size(pos, size);
 }
 
-// rows of a long list or a deep tree are submitted whether or not they can be seen: the caller does not know where the
-// view is. everything a row costs -- the hit test, an animation slot, measuring its text, its geometry -- is wasted on
-// one that is scrolled out, and a tree with a few thousand open nodes pays all of it thousands of times. the layout has
-// already been advanced by the time this is asked, so culling a row changes nothing about where anything sits: only the
-// work disappears. the margin keeps a row that is half in view alive.
+// rows are submitted whether visible or not (the caller does not know the view), so culled rows skip all their
+// work: hit test, animation slot, text measuring, geometry. the layout was already advanced, so positions do not
+// change. the margin keeps half-visible rows alive.
 bool context::item_culled(const rect& r) noexcept
 {
     ++m_->stats_cur_.items_submitted;
-    // while a popup / drag preview is being measured off-screen nothing is drawn anyway, but the measuring pass needs
-    // every item to report its size, so it must not be culled
+    // off-screen measuring passes (popup / drag previews) need every item's size: no culling
     if (m_->dd_hidden_ || m_->gpopup_hidden_) {
         return false;
     }
@@ -1162,8 +1151,8 @@ void context::note_culled_item(id key, const rect& r) noexcept
     m_->item_pressed_      = false;
 }
 
-// the same labels are measured again on every frame of every row; a direct-mapped cache of (font, text) -> size
-// removes that walk. a collision simply overwrites the slot, so it never grows and never has to be swept.
+// the same labels are measured every frame: a direct-mapped (font, text) -> size cache. collisions overwrite, so it
+// never grows or needs sweeping.
 vec2 context::measure_cached(font_id f, std::string_view s) noexcept
 {
     if (s.empty()) {
@@ -1216,9 +1205,8 @@ id context::widget_id(std::string_view label) noexcept
 {
     const id key = hash_id(label, current_seed());
 #ifndef NDEBUG
-    // remember which label produced this id, so a collision on it can be named. the visible part only: "a##b" and
-    // "a##c" are deliberately different ids and both report as "a", which is the wrong thing to blame, so the raw
-    // string is what is kept.
+    // record the label behind this id for collision reports. keep the raw string: "a##b" and "a##c" are distinct ids
+    // that would both show as "a".
     if (m_->id_labels_.size() != id_label_size) {
         m_->id_labels_.assign(id_label_size, id_label_slot{});
     }
@@ -1279,7 +1267,7 @@ context::interaction context::interact(id key, const rect& r) noexcept
 context::interaction context::interact_impl(id key, const rect& r, bool in_window) noexcept
 {
     interaction out;
-    check_id(key); // before the early-out: a widget hidden behind a transition still owns its id
+    check_id(key); // before the early-out: a hidden widget still owns its id
     if (m_->dl_.alpha() < 0.1f) {
         return out; // (nearly) invisible content, e.g. mid page transition
     }
@@ -1288,18 +1276,15 @@ context::interaction context::interact_impl(id key, const rect& r, bool in_windo
     const bool blocked   = !m_->in_overlay_ && ((m_->popup_open_prev_ && m_->popup_rect_prev_.contains(m_->mouse_)) || m_->menu_hit_prev_);
     const bool over      = in_window && !blocked && m_->dl_.clip().contains(m_->mouse_) && r.contains(m_->mouse_);
 
-    // an item that offered its rectangle with allow_item_overlap() loses the press to anything submitted on top of
-    // it. the press is exact (it happens in this same frame, before the offering item can act on it); the hover
-    // highlight can only be taken away one frame late, because the item above has not been submitted yet when the
-    // one below is drawn -- so that part goes by what covered it last frame.
+    // an allow_item_overlap() item loses the press to anything submitted over it. the press is resolved this frame;
+    // the hover can only be removed a frame late (the covering item is submitted after), so it uses last frame's cover.
     const bool ceded = m_->overlap_key_ != 0 && key != m_->overlap_key_ && m_->overlap_rect_.contains(m_->mouse_);
     if (ceded && over) {
         m_->overlap_taken_cur_ = m_->overlap_key_;
     }
     const bool suppressed = key != 0 && key == m_->overlap_taken_prev_;
 
-    // a disabled item is still "the thing under the pointer", so a tooltip can explain why it cannot be used, but
-    // nothing else happens to it: no hover highlight, no press, no keyboard
+    // a disabled item is still "under the pointer" (for a tooltip explaining why), but gets no hover, press or keyboard
     if (m_->disabled_depth_ > 0) {
         m_->last_item_key_       = key;
         m_->last_item_rect_      = r;
@@ -1307,7 +1292,7 @@ context::interaction context::interact_impl(id key, const rect& r, bool in_windo
         m_->last_item_pressed_   = false;
         m_->last_item_double_    = false;
         m_->last_item_focused_   = false;
-        // the pointer says so too: a disabled item that only fails to react is indistinguishable from a broken one
+        // and a not-allowed cursor, so it does not look broken
         if (over) { m_->cursor_ = cursor_kind::not_allowed; }
         if (over) { m_->hover_key_cur_ = key; }
         return out;
@@ -1317,8 +1302,8 @@ context::interaction context::interact_impl(id key, const rect& r, bool in_windo
     if (out.hovered && m_->mouse_pressed_ && !m_->swallow_press_ && (m_->active_ == 0 || (ceded && m_->active_ == m_->overlap_key_))) {
         if (m_->active_ != 0) { m_->overlap_stolen_ = true; }
         m_->active_ = key;
-        // a second press on the same spot within the double-click time; reported when the press completes below.
-        // kept apart from register_click(), whose run of 1 / 2 / 3 belongs to the focused text field
+        // a second press on the same spot within the double-click time, reported on completion below. separate from
+        // register_click(), whose 1 / 2 / 3 run belongs to the focused text field
         const vec2 moved  = m_->mouse_ - m_->item_click_pos_;
         m_->item_dbl_pending_ = key == m_->item_click_key_ && m_->time_ - m_->item_click_time_ < m_->double_click_ && dot(moved, moved) < 25.0f;
         m_->item_click_key_   = key;
@@ -1487,8 +1472,8 @@ bool context::selection_click(selection_state& sel, int index) const
     return true;
 }
 
-// where the next accessory of the row just submitted goes: from the right end of that row leftwards, inside the
-// scrollbar inset. False when there is no row to hang it on, or no room left on it.
+// slot for the next accessory of the row just submitted, right to left inside the scrollbar inset. false with no
+// row or no room.
 bool context::accessory_slot(f32 width, rect& out) noexcept
 {
     if (m_->cur_ == nullptr || m_->row_anchor_ == 0) {
@@ -1730,8 +1715,8 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, f32 width)
     return begin_window(title, initial_pos, vec2{width, 0.0f}, window_flags::none);
 }
 
-// one axis of a scrollbar thumb: `along` is the pointer on the track's axis, everything else measured along it too.
-// the two wrappers below are the only difference between a vertical and a horizontal bar.
+// one axis of a scrollbar thumb; `along` and everything else are measured on the track's axis.
+// the wrappers below are all that differs between vertical and horizontal.
 f32 context::thumb_drag_along(f32 along, const interaction& in, f32& grab, f32 thumb_lo, f32 thumb_len, f32 track_lo,
                               f32 travel, f32 max_scroll, f32 scroll) const noexcept
 {
@@ -1795,7 +1780,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         st->title_len = static_cast<u8>(n);
     }
 
-    // docked: the dock node decides where the window is and how big; the tab bar replaces its title bar
+    // docked: the dock node sets position and size; the tab bar replaces the title bar
     const dock_node*  node  = nullptr;
     const dock_space* space = nullptr;
     if (st->dock != 0 && st->dock <= max_dock_nodes && has_flag(flags, window_flags::dockable)) {
@@ -1836,12 +1821,11 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     if (z_index(wid) == no_z) {
         bring_to_front(wid); // first appearance: on top
     }
-    // press anywhere on the topmost window under the pointer raises it (docked windows stay in the background)
+    // a press on the topmost window under the pointer raises it (docked windows stay behind)
     if (m_->mouse_pressed_ && m_->hovered_window_prev_ == wid && (!docked || st->dock_owner != 0)) {
         bring_to_front(docked ? st->dock_owner : wid); // (a window in a floating dock raises the whole dock)
     }
-    // ... and takes the keyboard, which docked windows do too even though they do not restack: a panel shortcut has
-    // to be able to tell whether the user is looking at it
+    // ... and focuses it, docked windows too (without restacking), so panel shortcuts know which panel is active
     if (m_->mouse_pressed_ && m_->hovered_window_prev_ == wid && !st->menubar && m_->modal_top_prev_ == 0) {
         m_->key_window_ = wid;
     }
@@ -1952,7 +1936,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         }
     }
 
-    // a window carried to a dock target goes see-through, so the pane it is aimed at shows through it
+    // a window carried over a dock target turns see-through so the target pane shows
     st->ghost = approach(st->ghost, !docked && m_->dock_->drag_prev == wid && m_->dock_->target_prev.valid ? 1.0f : 0.0f);
     if (st->ghost > 0.01f) {
         m_->dl_.push_alpha(1.0f - 0.45f * st->ghost);
@@ -2133,12 +2117,12 @@ void context::text_colored(color c, std::string_view s)
     // text sharing a line with taller widgets is centered on that line
     const f32 dy = std::max(0.0f, (m_->layout_.line_h - size.y) * 0.5f);
     label_draw({r.min.x, r.min.y + dy}, c, s, f);
-    // plain text is an item too, so item_hovered(), item_rect(), tooltip() and context_menu() work after it. It
-    // takes no press, so nothing about clicking changes: it only becomes the thing those questions are about.
+    // plain text is an item too, so item_hovered(), item_rect(), tooltip() and context_menu() work after it. it takes
+    // no press.
     note_passive_item(widget_id(s), r);
 }
 
-// registers a rectangle as "the last item" for the questions that follow it, without taking the press
+// makes a rect "the last item" without taking the press
 void context::note_passive_item(id key, const rect& r) noexcept
 {
     const bool over = m_->cur_window_ != 0 && m_->hovered_window_prev_ == m_->cur_window_ && m_->active_ == 0 &&
@@ -2542,8 +2526,8 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     }
     const rect         box = fl.control;
 
-    // a password field with an eye button: pressing it shows or hides the text (its state lives in an animation slot,
-    // which is dropped once the field has not been drawn for a moment). it is tested first so it wins the press
+    // password eye button: toggles visibility (state in an animation slot, dropped when the field goes undrawn).
+    // tested first so it wins the press
     const f32  reveal_w = reveal_btn ? 26.0f : 0.0f;
     const rect reveal_r = {{box.max.x - reveal_w - 2.0f, box.min.y + 2.0f}, {box.max.x - 3.0f, box.max.y - 2.0f}};
     bool       revealed = false;
@@ -2558,8 +2542,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     }
     const bool hide = password && !revealed; // what is drawn as bullets
 
-    // a clear button: an x at the right end while the field has text. like the eye it is tested before the field, so
-    // it takes the press instead of putting the caret somewhere
+    // clear button (x while the field has text), tested before the field so it takes the press
     const bool has_text  = m_->focus_id_ == key ? !m_->edit_buf_.empty() : !current.empty();
     const bool clear_btn = has_flag(flags, input_flags::clear_button) && !readonly && has_text;
     const f32  clear_w   = clear_btn ? 22.0f : 0.0f;
@@ -2632,7 +2615,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     };
 
     // --- focus and mouse -----------------------------------------------------
-    if (m_->focus_request_ == key) { // asked for by the code (a find bar that opens): like a click on the field, all selected
+    if (m_->focus_request_ == key) { // requested by code (find bar opening): like a click, all selected
         m_->focus_request_ = 0;
         m_->press_claimed_ = true;
         if (m_->focus_id_ != key) {

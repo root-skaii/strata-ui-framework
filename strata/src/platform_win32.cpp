@@ -233,7 +233,7 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
     case WM_MOUSEHWHEEL: // a tilt wheel or a trackpad swipe: positive is towards the right
         wheel_x_ += static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<f32>(WHEEL_DELTA);
         return true;
-    case WM_SETTINGCHANGE: // "ImmersiveColorSet": dark / light mode or the accent; SPI_SETHIGHCONTRAST: high contrast
+    case WM_SETTINGCHANGE: // "ImmersiveColorSet": dark / light or accent; SPI_SETHIGHCONTRAST: high contrast
         if ((lparam != 0 && std::wstring_view{reinterpret_cast<const wchar_t*>(lparam)} == L"ImmersiveColorSet") ||
             wparam == SPI_SETHIGHCONTRAST) {
             appearance_changed_ = true;
@@ -268,7 +268,7 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
     }
 
     case WM_IME_SETCONTEXT:
-        // the ui draws the composition itself: keep the input method's own composition window away (its candidate list stays)
+        // the ui draws the composition: hide the IME's composition window (its candidate list stays)
         ::DefWindowProcW(wnd, msg, wparam, wparam != 0 ? (lparam & ~static_cast<std::intptr_t>(ISC_SHOWUICOMPOSITIONWINDOW)) : lparam);
         return true;
     case WM_IME_STARTCOMPOSITION:
@@ -325,7 +325,7 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         return true;
     }
 
-    case WM_SYSCHAR: // Alt + letter: the ui reads it as a mnemonic (the key press itself is in pressed_key); no system beep
+    case WM_SYSCHAR: // Alt + letter is a mnemonic (the press is in pressed_key); no system beep
         if ((wparam >= 'a' && wparam <= 'z') || (wparam >= 'A' && wparam <= 'Z') || (wparam >= '0' && wparam <= '9')) {
             return true;
         }
@@ -433,9 +433,8 @@ input_state win32_platform::new_frame() noexcept
     in.shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
     in.alt   = (::GetKeyState(VK_MENU) & 0x8000) != 0;
 
-    // every key held right now, so context::key_down() can answer about keys the ui has no name for. GetKeyboardState
-    // is one call for all 256 of them and, unlike GetAsyncKeyState, reports the state this message queue has seen --
-    // which is what the rest of the frame's input is in step with.
+    // every held key, for context::key_down(). GetKeyboardState reads all 256 in one call and, unlike
+    // GetAsyncKeyState, matches this message queue's state (in step with the rest of the frame's input).
     std::array<BYTE, 256> vk{};
     if (::GetKeyboardState(vk.data())) {
         for (std::size_t i = 0; i < vk.size(); ++i) {

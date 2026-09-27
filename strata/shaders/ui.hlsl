@@ -13,9 +13,8 @@ cbuffer transform : register(b0)
 {
     float2 scale;
     float2 translate;
-    // x: how colours are written (output_space): 0 as they are (an srgb target), 1 linear (an *_SRGB view encodes them),
-    //    2 scRGB (linear, 1.0 = 80 nits), 3 HDR10 (BT.2020, PQ). y: the white level (2: nits / 80, 3: nits / 10000).
-    // z: text contrast, how much glyph coverage is thickened for light text (0 = none)
+    // x: output_space: 0 as is (srgb target), 1 linear (*_SRGB view encodes), 2 scRGB (linear, 1.0 = 80 nits),
+    //    3 HDR10 (BT.2020, PQ). y: white level (2: nits / 80, 3: nits / 10000). z: text contrast (0 = none)
     float4 output;
 };
 
@@ -33,7 +32,7 @@ struct shape
     float2 shadow_offset;
     float2 gradient_dir;  // unit vector the fill runs along
     float  gradient_kind; // 0 linear, 1 radial
-    float  extra;         // backdrop: noise amount (and shadow_offset = saturation, brightness of the blurred frame)
+    float  extra;         // backdrop: noise (shadow_offset = saturation, brightness)
 };
 
 Texture2D              atlas     : register(t0);
@@ -44,10 +43,10 @@ SamplerState           sampler0  : register(s0);
 
 cbuffer blur_params : register(b1)
 {
-    float4 bp0; // xy: destination viewport size in pixels (backdrop: the whole display), zw: uv scale of the source region
-    float4 bp1; // xy: step between taps in source uv, zw: largest valid source uv
-    float4 bp2; // x: tap offset of the downsample pass (source pixels), z: gaussian weight of the centre texel
-    float4 bp3; // gaussian: weight, offset of the first two filtered taps (each reads a pair of texels)
+    float4 bp0; // xy: destination size in pixels (backdrop: display), zw: source-region uv scale
+    float4 bp1; // xy: tap step in source uv, zw: max valid source uv
+    float4 bp2; // x: downsample tap offset (source px), z: gaussian centre weight
+    float4 bp3; // gaussian: weight, offset of the first two pair-taps
     float4 bp4; // xy: ... and of the third
 };
 
@@ -91,7 +90,7 @@ float4 unpack_color(uint c)
     return float4(c & 255u, (c >> 8) & 255u, (c >> 16) & 255u, c >> 24) * (1.0f / 255.0f);
 }
 
-// ---- output encoding: the ui's colours are srgb; an srgb view, an scRGB or an HDR10 target wants them otherwise ----
+// ---- output encoding: ui colours are srgb; srgb views, scRGB and HDR10 targets need conversion ----
 
 float3 srgb_to_linear(float3 c)
 {
@@ -117,14 +116,14 @@ float3 encode_rgb(float3 c)
     return pq_encode(mul(bt709_to_bt2020, l) * output.y);
 }
 
-// the last step of every ui pixel shader: premultiplied srgb in, premultiplied target encoding out
+// final step of every pixel shader: premultiplied srgb in, premultiplied target encoding out
 float4 encode_output(float4 premul)
 {
     if (output.x < 0.5f || premul.a <= 0.0f) { return premul; }
     return float4(encode_rgb(premul.rgb / premul.a) * premul.a, premul.a);
 }
 
-// signed distance (pixels) to a box with individual corner radii; y grows downwards
+// signed distance (pixels) to a box with per-corner radii; y down
 float sd_round_box(float2 p, float2 half_size, float4 r)
 {
     float rr = p.x > 0.0f ? (p.y > 0.0f ? r.z : r.y) : (p.y > 0.0f ? r.w : r.x);
@@ -140,7 +139,7 @@ float4 shade_shape(shape s, float2 pixel)
     float outer = saturate(0.5f - d);
     float inner = saturate(0.5f - (d + s.border_width));
 
-    // linear gradient along gradient_dir over the box, or radial from the centre to the edge
+    // linear gradient along gradient_dir, or radial from centre to edge
     float  extent = max(abs(s.gradient_dir.x) * 2.0f * s.half_size.x + abs(s.gradient_dir.y) * 2.0f * s.half_size.y, 1.0e-3f);
     float  t      = s.gradient_kind > 0.5f ? saturate(length(p / max(s.half_size, 1.0e-3f)))
                                            : saturate(dot(p, s.gradient_dir) / extent + 0.5f);
@@ -170,8 +169,7 @@ float4 ps_main(ps_input i) : SV_Target
     float coverage = atlas.SampleLevel(sampler0, i.uv, 0.0f).r;
     if (output.z > 0.0f)
     {
-        // light text on a dark background reads thinner than the same coverage dark on light: thicken the edges in
-        // proportion to how light the text is (the curve keeps 0 and 1 where they are)
+        // thicken light-on-dark glyph edges in proportion to text lightness (0 and 1 are kept)
         float k  = output.z * dot(i.col.rgb, float3(0.2126f, 0.7152f, 0.0722f));
         coverage = coverage * (1.0f + k) / (1.0f + k * coverage);
     }
@@ -179,8 +177,8 @@ float4 ps_main(ps_input i) : SV_Target
     return encode_output(float4(i.col.rgb * a, a));
 }
 
-// an image is a shape record whose fields are reused: shadow_offset = uv of the top-left corner,
-// (border_width, shadow_blur) = uv of the bottom-right corner. the rounded box gives the coverage.
+// images reuse shape fields: shadow_offset = top-left uv, (border_width, shadow_blur) = bottom-right uv.
+// the rounded box gives coverage.
 float4 ps_image(ps_input i) : SV_Target
 {
     shape  s   = shapes[i.shape_index];
@@ -192,7 +190,7 @@ float4 ps_image(ps_input i) : SV_Target
     float2 uv1  = float2(s.border_width, s.shadow_blur);
     float2 uv   = lerp(uv0, uv1, t);
 
-    // the mip level: how many texels of the image fall on one pixel of the screen (0 for an image that is not shrunk)
+    // mip level from texels per screen pixel (0 when not minified)
     float2 dim;
     image_tex.GetDimensions(dim.x, dim.y);
     float2 texels_per_pixel = abs(uv1 - uv0) * dim / max(2.0f * s.half_size, 1.0f);
@@ -203,8 +201,7 @@ float4 ps_image(ps_input i) : SV_Target
     return encode_output(float4(c.rgb * a, a));
 }
 
-// frosted glass: the blurred frame inside a rounded box, mixed with the tint (fill_top) and a fine grain. the result
-// replaces what is underneath, which is why the panel is opaque where its coverage is 1.
+// frosted glass: blurred frame in a rounded box, mixed with the tint (fill_top) and grain. opaque where coverage is 1.
 float4 ps_backdrop(ps_input i) : SV_Target
 {
     shape  s   = shapes[i.shape_index];
@@ -217,7 +214,7 @@ float4 ps_backdrop(ps_input i) : SV_Target
     bg = lerp(float3(lum, lum, lum), bg, s.shadow_offset.x) * s.shadow_offset.y; // saturation, brightness
     bg = output.x < 1.5f ? saturate(bg) : max(bg, 0.0f);                       // (scRGB goes past 1)
     float4 tint = unpack_color(s.fill_top);
-    float3 rgb  = lerp(bg, encode_rgb(tint.rgb), tint.a); // (bg is the target's own pixels: already encoded)
+    float3 rgb  = lerp(bg, encode_rgb(tint.rgb), tint.a); // (bg is already in target encoding)
 
     float grain = frac(sin(dot(i.pos.xy, float2(12.9898f, 78.233f))) * 43758.5453f) - 0.5f;
     rgb = max(rgb + grain * s.extra * 0.5f, 0.0f); // (not saturated: scRGB goes past 1)
@@ -237,7 +234,7 @@ fs_in vs_fullscreen(uint id : SV_VertexID)
     return o;
 }
 
-// box-filters the source down: four bilinear taps around the pixel cover the block the pixel stands for
+// box downsample: four bilinear taps cover the pixel's block
 float4 ps_blur_down(fs_in i) : SV_Target
 {
     float2 uv = i.pos.xy / bp0.xy * bp0.zw;
@@ -249,8 +246,7 @@ float4 ps_blur_down(fs_in i) : SV_Target
     return c * 0.25f;
 }
 
-// one direction of a gaussian over 13 texels, read as 7 filtered taps: the centre, then on each side three taps that each
-// land between two texels at the point where the filter weighs them as the gaussian does. weights come from the cpu
+// one gaussian direction over 13 texels as 7 filtered taps (centre + three pair-taps per side). weights from the cpu
 float4 ps_blur_gauss(fs_in i) : SV_Target
 {
     float2 uv  = i.pos.xy / bp0.xy * bp0.zw;

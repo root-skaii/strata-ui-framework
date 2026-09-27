@@ -1,6 +1,5 @@
-// checks for the second round of app-shaped gaps: disabled items, raw keys and mouse buttons, window focus, text
-// focus, plain text as an item, row accessories, multi-selection, the self-contained confirmation, tab identity,
-// the filtered combo and the geometry an app should not have to re-derive
+// app-shaped features: disabled items, raw keys and mouse buttons, window / text focus, plain text as an item, row
+// accessories, multi-selection, self-contained confirmation, tab identity, filtered combo, geometry queries
 
 #include "selftest_common.hpp"
 
@@ -108,7 +107,7 @@ void test_raw_keys_and_buttons()
     h.in.mouse_down[1] = false;
     h.in.mouse_down[2] = false;
 
-    // a text field with the keyboard swallows the plain keys, so Delete does not destroy while a name is typed
+    // a focused text field swallows plain keys, so Delete does not destroy while typing a name
     std::string name = "x";
     rect field{};
     const auto with_field = [&] {
@@ -182,8 +181,7 @@ void test_text_focus()
     CHECK(h.ui.focused_field() != 0);
     CHECK(focused_here);
 
-    // the grant selects what was there, so the first keystroke replaces it -- and then typing carries on, which is
-    // what the repeated request must not undo (it would re-select and every keystroke would replace the last)
+    // the grant selects the text so the first keystroke replaces it; repeated requests must not re-select while typing
     h.type("Z");
     h.frame(build);
     h.type("Y");
@@ -455,7 +453,7 @@ void test_combo_filtered()
     h.type("del");                     // narrows to "delta"
     h.frames(build, 2);
     h.key(key::enter);
-    h.frames(build, 3); // the popup was drawn on the frame the key arrived; popup_open() lags one more
+    h.frames(build, 3); // popup drawn on the key's frame; popup_open() lags one more
     CHECK(current == 3);
     CHECK(changes == 1);
     CHECK(!h.ui.popup_open());

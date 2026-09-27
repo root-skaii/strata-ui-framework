@@ -191,7 +191,7 @@ void test_modals()
     h.click({mr2.min.x + 12.0f + 30.0f, mr2.max.y - 12.0f - fh * 0.5f}, build);
     CHECK(!h.ui.modal_open());
 
-    // a dialog returns the index of the button pressed (1-based); the last one is at the bottom right
+    // a dialog returns the 1-based index of the pressed button; the last one sits bottom-right
     show_modal = false;
     h.ui.open_modal("Ask?");
     h.frames(build, 30);
@@ -387,7 +387,7 @@ void test_toasts_and_log_v2()
     std::fprintf(stderr, "[toasts: buttons, progress; log: wrap, clock]\n");
     const auto nothing = [] {};
 
-    // buttons: pressing one closes the toast and says which; the body of such a toast is not a button
+    // pressing a button closes the toast and reports which; the body is not a button
     {
         harness h;
         const std::array<std::string_view, 2> acts = {"Undo", "Details"};
@@ -452,7 +452,7 @@ void test_toasts_and_log_v2()
         CHECK(!h.ui.toast_alive(t));
     }
 
-    // the log: wrapping makes long lines take more rows (more glyphs are drawn), clock stamps are the time of day
+    // the log: wrapping gives long lines more rows (more glyphs), clock stamps are time of day
     {
         CHECK(log_buffer::clock_text(0).size() == 12 && log_buffer::clock_text(1'000'000'123).ends_with(".123"));
         harness h;
@@ -482,7 +482,7 @@ void test_toasts_and_log_v2()
     }
 }
 
-// text beyond the basics: right-to-left text, Arabic joining, emoji and other supplementary characters ------------------------
+// text beyond the basics: rtl, Arabic joining, emoji and supplementary characters ------------------------
 
 void test_log_view()
 {
@@ -493,8 +493,8 @@ void test_log_view()
     CHECK(log.size() == 100); // a ring: the oldest lines fall out
     CHECK(log[0].text() == "message number 200");
     CHECK(log[99].text() == "message number 299");
-    // the text arena is compacted as lines fall out of the ring, so the offsets of the lines that stayed have to be
-    // shifted with it: reading the oldest and the newest after 200 evictions is what catches a botched compaction
+    // compaction as lines leave the ring must shift the survivors' offsets: reading the oldest and newest after 200
+    // evictions catches a botched compaction
     {
         log_buffer moved = std::move(log); // the lines point at the arena, so a move has to reseat them
         CHECK(moved.size() == 100);
@@ -562,7 +562,7 @@ void test_popups_and_drag_drop()
 {
     std::fprintf(stderr, "[generic popups, drag and drop, spinner / badge / chip]\n");
 
-    // popups: open under a button, work like a small window, close on Esc, a click outside, or close_popup()
+    // popups open under a button, act as a small window, close on Esc, an outside click, or close_popup()
     {
         harness h;
         bool wrap = false;
@@ -587,7 +587,7 @@ void test_popups_and_drag_drop()
         h.frames(build, 2);
         CHECK(h.ui.popup_open() && h.ui.want_capture_mouse());
 
-        // the popup content takes clicks: the check box is the first row, 4 px below the button plus the padding
+        // popup content takes clicks: the check box is the first row, 4 px below the button plus padding
         const vec2 first_row{btn.min.x + 12.0f + 8.0f, btn.max.y + 4.0f + 12.0f + 8.0f};
         h.click(first_row, build);
         CHECK(wrap && open_now);
@@ -661,7 +661,7 @@ void test_popups_and_drag_drop()
         h.frames(build, 2);
         CHECK(!h.ui.dragging());
 
-        // dropped on itself: it is a drop, not a click of the source; Esc cancels; the wrong type is not taken
+        // dropped on itself it is a drop, not a click; Esc cancels; the wrong type is refused
         dropped_on = -1;
         h.move(a); h.frames(build, 2); h.down(); h.frame(build);
         h.move(b); h.frames(build, 2);
@@ -734,7 +734,7 @@ void test_modal_motion()
     h.ui.end_frame();
     ys.clear();
     h.frames(build, 60);
-    // it settles from below its place, never moving back, and the steps get small toward the end: no one-pixel jumps
+    // settles from below without moving back, with shrinking steps: no one-pixel jumps
     bool monotonic = true;
     f32  worst_tail = 0.0f;
     for (std::size_t i = 4; i < ys.size(); ++i) { // (the first frames only measure the window, invisibly)
@@ -742,7 +742,7 @@ void test_modal_motion()
         if (i > 20) { worst_tail = std::max(worst_tail, ys[i - 1] - ys[i]); }
     }
     CHECK(monotonic);
-    CHECK(worst_tail < 0.2f); // after a third of a second it only creeps: at most a fifth of a pixel per frame
+    CHECK(worst_tail < 0.2f); // after a third of a second it creeps: at most 0.2 px per frame
     CHECK(ys.back() == std::round(ys.back())); // and it rests on whole pixels
     CHECK(ys[4] - ys.back() > 3.0f);             // it did start away from its place
 }
@@ -805,7 +805,7 @@ void test_layout_scrolled_above_screen()
 {
     std::fprintf(stderr, "[content scrolled above the top of the screen keeps its height]\n");
     harness h;
-    // a window at the top of the screen with cards taller than its frame: scrolling moves the first card above y = 0
+    // a top-of-screen window with cards taller than it: scrolling moves the first card above y = 0
     const auto build = [&] {
         if (auto w = h.ui.window("s", {50, 0}, {400, 320}, plain_window)) {
             for (int c = 0; c < 3; ++c) {
@@ -837,7 +837,7 @@ void test_layout_scrolled_above_screen()
         lowest = std::max(lowest, t.second);
     }
     CHECK(stable);
-    // and the end of the content is reached: the thumb sits at the bottom of its track and stays there
+    // reaching the end: the thumb sits at the track bottom and stays
     const auto end = win_thumb();
     for (int i = 0; i < 30; ++i) { h.in.wheel = -1.0f; h.frame(build); }
     CHECK(near_eq(win_thumb().second, end.second, 0.5f));

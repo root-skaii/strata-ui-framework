@@ -82,9 +82,8 @@ struct frame_buffers {
     UINT                   vb_capacity{};
     UINT                   ib_capacity{};
     UINT                   shape_capacity{};
-    // what this slot's buffers hold (draw_data::content_hash). per slot, not per renderer: with frames in flight an
-    // unchanged frame is written into a different slot than the one before it, so a slot may be several frames
-    // behind even when nothing changed. 0 = holds nothing (also what a reallocation resets it to).
+    // content hash of this slot's buffers. per slot because with frames in flight consecutive frames use different
+    // slots, so a slot can be several frames behind. 0 = empty / reset by reallocation.
     u64                    uploaded_hash{};
 };
 
@@ -105,9 +104,9 @@ struct d3d12_renderer::impl {
     struct texture_meta {
         texture_image image; // kept (for update_texture) only when the texture is updatable
         bool          updatable{};
-        u32           cooldown{}; // a destroyed texture's slot: renders to go before frames in flight stop reading its descriptor
+        u32           cooldown{}; // destroyed texture's slot: renders left before frames in flight stop reading it
     };
-    // a copy into a texture, staged by create_texture / update_texture and recorded at the start of the next render()
+    // a texture copy staged by create_texture / update_texture, recorded at the start of the next render()
     struct pending_copy {
         ComPtr<ID3D12Resource>              texture;
         ComPtr<ID3D12Resource>              upload;
@@ -139,9 +138,8 @@ struct d3d12_renderer::impl {
     UINT                              rtv_size{};
     u32                               frames_in_flight{};
     bool                              blur_supported{};
-    // resources that were replaced while the gpu may still be reading them, released a few renders later (the host waits
-    // on a frame slot's fence before reusing it, so frames_in_flight + 1 renders on, nothing reads them any more). staging
-    // buffers are zeroed first: what was uploaded does not linger in memory the process gives back
+    // resources replaced while the gpu may read them, released frames_in_flight + 1 renders later (the host waits on a
+    // slot's fence before reuse). staging buffers are zeroed first so uploads do not linger in freed memory
     struct grave {
         ComPtr<ID3D12Resource> res;
         u32                    renders{};
@@ -264,7 +262,7 @@ struct d3d12_renderer::impl {
     };
     static_assert(sizeof(blur_constants) == blur_constant_count * 4);
 
-    // one full-screen triangle into blur_tex[dst], written only inside the plan's low-resolution region (the scissor)
+    // one full-screen triangle into blur_tex[dst], scissored to the plan's low-res region
     void blur_pass(ID3D12GraphicsCommandList* list, u32 dst, UINT vw, UINT vh, D3D12_GPU_DESCRIPTOR_HANDLE src,
                    const blur_constants& c, ID3D12PipelineState* state, const internal::blur_plan& plan) noexcept
     {
@@ -283,8 +281,8 @@ struct d3d12_renderer::impl {
         barrier(list, blur_tex[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
-    // copies the part of the target around `panel` (physical pixels), boxes it down and blurs it; on success blur_tex[0]
-    // holds the result in its top-left (vw, vh), exact inside `out_exact`
+    // copies the target around `panel` (physical), boxes it down and blurs it; on success blur_tex[0] holds the result
+    // in its top-left (vw, vh), exact inside `out_exact`
     [[nodiscard]] bool run_blur(ID3D12GraphicsCommandList* list, const d3d12_target& t, float radius_px, const rect& panel,
                                 UINT& out_vw, UINT& out_vh, rect& out_exact) noexcept
     {
@@ -347,7 +345,7 @@ struct d3d12_renderer::impl {
         return true;
     }
 
-    // zero the persistently visible upload buffers; the host must have idled the gpu before destroying the renderer
+    // zero the persistently mapped upload buffers; the host must have idled the gpu first
     void wipe() noexcept
     {
         for (texture_meta& t : texture_meta_) { t.image.wipe(); } // (the copies kept for update_texture)
@@ -382,8 +380,8 @@ struct d3d12_renderer::impl {
         return true;
     }
 
-    // creates a texture in the default heap and fills it from `pixels` (tightly packed rows of `bytes_per_pixel`)
-    // with a blocking copy on the queue; the staging copy is zeroed afterwards
+    // default-heap texture filled from `pixels` (tightly packed, `bytes_per_pixel`) by a blocking queue copy; staging is
+    // zeroed afterwards
     [[nodiscard]] bool upload_texture(ComPtr<ID3D12Resource>& texture, u32 width, u32 height, DXGI_FORMAT format,
                                       u32 bytes_per_pixel, const u8* pixels) noexcept
     {
@@ -480,9 +478,8 @@ struct d3d12_renderer::impl {
         return true;
     }
 
-    // stages regions of the levels of `image` for `tex`: one upload buffer, one copy per region, recorded by the next render()
-    // on the host's command list (so nothing here waits for the gpu). the texture goes from `before` to COPY_DEST and on to
-    // `after` there
+    // stages regions of `image`'s levels for `tex`: one upload buffer, one copy per region, recorded by the next
+    // render() on the host's command list (no gpu wait). transitions `before` -> COPY_DEST -> `after` there
     [[nodiscard]] bool copy_image_regions(const ComPtr<ID3D12Resource>& tex, const texture_image& image,
                                           std::span<const texture_image::region> regions, D3D12_RESOURCE_STATES before,
                                           D3D12_RESOURCE_STATES after) noexcept
@@ -530,7 +527,7 @@ struct d3d12_renderer::impl {
         return true;
     }
 
-    // what create_texture / update_texture staged since the last render, into the host's command list ahead of the ui
+    // records what create_texture / update_texture staged since the last render, ahead of the ui
     void record_pending(ID3D12GraphicsCommandList* list) noexcept
     {
         for (pending_copy& pc : pending) {
@@ -595,8 +592,8 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
     p->queue  = info.queue;
     p->frames.resize(info.frames_in_flight);
 
-    // root signature: [0] eight 32-bit constants (transform, output encoding), [1] atlas srv table t0 (ps), [2] shape table t1 (ps),
-    // [3] image srv table t2 (ps), static linear-clamp sampler
+    // root signature: [0] eight 32-bit constants (transform, output encoding), [1] atlas srv t0, [2] shape table t1,
+    // [3] image srv t2 (all ps), static linear-clamp sampler
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     range.NumDescriptors                    = 1;
@@ -918,7 +915,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     if (frame_index >= s.frames.size()) {
         return;
     }
-    s.record_pending(list); // textures created / updated since the last frame, ahead of the draws that read them
+    s.record_pending(list); // staged texture copies, ahead of the draws that read them
     frame_buffers& fb = s.frames[frame_index];
 
     const auto vcount = static_cast<UINT>(data.vertices.size());
@@ -934,8 +931,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         fb.uploaded_hash = 0; // a buffer was replaced: this slot holds nothing
     }
 
-    // this slot may already hold exactly these bytes (an untouched ui, some frames ago): then there is nothing to
-    // upload. the gpu has long finished with it -- the host waited on this slot's fence before calling render.
+    // this slot may already hold these exact bytes: skip the upload. the host waited on its fence, so the gpu is done.
     if (data.content_hash == 0 || data.content_hash != fb.uploaded_hash) {
         void* mapped{};
         if (FAILED(fb.vb->Map(0, nullptr, &mapped))) { return; }
@@ -955,7 +951,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     const D3D12_VIEWPORT vp{0.0f, 0.0f, data.display_size.x, data.display_size.y, 0.0f, 1.0f};
     const D3D12_GPU_DESCRIPTOR_HANDLE heap_start = s.srv_heap->GetGPUDescriptorHandleForHeapStart();
 
-    // everything the ui's own pipeline needs; also used to get back after a blur pass changed the state
+    // the ui pipeline state; also restores it after a blur pass
     const auto bind_main = [&] {
         list->RSSetViewports(1, &vp);
         list->SetGraphicsRootSignature(s.root.Get());

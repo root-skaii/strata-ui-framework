@@ -1,6 +1,5 @@
-// the sample overlay dll: load it into a direct3d 11 game (overlay/tools/injector.cpp, or any injector) and press F1.
-// it shows the pieces a real tool needs: a docked window with tabs, a log other threads can write to (the C api below), a
-// theme switcher, and a way to take the overlay out again.
+// sample overlay dll: inject into a d3d11 game (overlay/tools/injector.cpp or any injector) and press F1. shows a
+// docked tabbed window, a log other threads write to (the C api below), a theme switcher and self-removal.
 //
 //   STRATA_OVERLAY_SHOW=1        start with the overlay open
 //   STRATA_OVERLAY_CAPTURE=path  write a png of the frame (ui included) after 30 visible frames (for tests)
@@ -38,7 +37,7 @@ HMODULE                                          g_module{};
 
 void overlay_ui(context& ui)
 {
-    (void)g_log_in.drain_into(g_log); // lines other threads wrote (strata_overlay_log) join the log here, on the render thread
+    (void)g_log_in.drain_into(g_log); // lines from other threads (strata_overlay_log) join the log on the render thread
 
     if (auto w = ui.window("strata overlay", {40.0f, 40.0f}, {460.0f, 0.0f}, window_flags::resizable)) {
         (void)ui.tab_bar("tabs", {"Info", "Log", "Style"}, g_tab);

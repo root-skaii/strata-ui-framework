@@ -53,8 +53,7 @@ struct state {
     std::atomic<bool>    capture_keys{false};
     std::atomic<u64>     frame_count{0};
     std::atomic<int>     in_hook{0};
-    // a ui scale asked for from another thread, taken up by the render thread at the start of the next frame
-    // (rebuilding the atlas and handing it to the renderer is not something another thread may do)
+    // ui scale requested from another thread, applied on the render thread next frame (only it may rebuild the atlas)
     std::atomic<float>   want_scale{0.0f};
     float                base_scale{1.0f}; // what Ctrl+0 goes back to
     char                 error[256]{};
@@ -69,14 +68,14 @@ struct state {
     colorspace_fn orig_colorspace{};
     bool          patched_present{}, patched_present1{}, patched_resize{}, patched_resize1{}, patched_colorspace{};
 
-    // the colour space a game declared for a swap chain (SetColorSpace1), and whether the output encoding has to be
-    // worked out again (a resize can change the format, a game can switch hdr on and off)
+    // colour space the game declared (SetColorSpace1), and whether the output encoding needs re-deriving (a resize
+    // can change the format, games can toggle hdr)
     std::atomic<IDXGISwapChain*>     colorspace_chain{nullptr};
     std::atomic<int>                 colorspace{-1};
     std::atomic<bool>                output_dirty{true};
     std::atomic<int>                 output_now{0}; // the output_space in use (for output_space_in_use)
-    // presents by a swap chain other than the attached one, since the attached one last presented: the game has
-    // replaced its swap chain (or its window) when this keeps growing
+    // presents by other swap chains since the attached one last presented: growing means the game replaced its swap
+    // chain (or window)
     unsigned                         foreign_presents{};
     DXGI_FORMAT                      renderer_format12{};
 
@@ -119,15 +118,15 @@ struct state {
     d3d11_renderer                   renderer;
     std::unique_ptr<context>         ui;
     win32_platform                   platform;
-    std::recursive_mutex             platform_mutex; // the window thread feeds messages, the render thread reads the frame (recursive: a call inside the platform can dispatch a message to our own window procedure)
+    std::recursive_mutex             platform_mutex; // window thread writes, render thread reads (re-entrant wndproc)
     unsigned                         visible_frames{};
     bool                             captured{};
     bool                             attach_failed{};
     int                              cursor_shown{};  // ShowCursor increments made while visible, taken back when hidden
 };
 
-// never destroyed: the process may end (or the loader detach the dll) while the game's threads are still inside a hook, and
-// tearing d3d objects down during that is a crash at exit. uninstall() frees what matters when the dll is meant to go.
+// never destroyed: game threads may still be inside a hook at process exit, and tearing d3d down then crashes.
+// uninstall() frees what matters when the dll is meant to unload.
 state& g = *new state;
 
 // STRATA_OVERLAY_LOG=<file>: what the hook is doing, for finding out why it does not attach
@@ -151,7 +150,7 @@ void set_error(const char* what) noexcept
     log_line("error: %s", what);
 }
 
-// ---- png (uncompressed deflate blocks: big, simple, enough for a debug capture) -----------------------------------
+// ---- png (stored deflate blocks: big, simple, enough for a debug capture) -----------------------------------
 
 [[nodiscard]] u32 crc32(const u8* p, std::size_t n, u32 crc = 0) noexcept
 {
@@ -274,7 +273,7 @@ void barrier12(ID3D12GraphicsCommandList* list, ID3D12Resource* r, D3D12_RESOURC
     list->ResourceBarrier(1, &b);
 }
 
-// makes the descriptors (one per buffer of the swap chain), allocators and fence; again when the buffers were recreated
+// descriptors (one per swap chain buffer), allocators and fence; remade when the buffers are recreated
 bool ensure_targets12(IDXGISwapChain* sc)
 {
     DXGI_SWAP_CHAIN_DESC d{};
@@ -312,7 +311,7 @@ bool ensure_targets12(IDXGISwapChain* sc)
     return true;
 }
 
-// the back buffer (with the ui on it) as rgba: the copy is part of the frame's command list, the caller waits and reads
+// the back buffer (with ui) as rgba: the copy joins the frame's command list; the caller waits and reads
 struct readback12 {
     ComPtr<ID3D12Resource>             buffer;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
@@ -424,7 +423,7 @@ void render12(IDXGISwapChain* sc, const draw_data& data, bool capture)
 void apply_cursor_state(bool now_visible)
 {
     if (now_visible) {
-        // a game that hid the cursor: bring it back (the counter is per thread: this runs on the window's thread)
+        // the game hid the cursor: show it (the counter is per thread; this runs on the window's thread)
         if (g.cursor_shown == 0) {
             int count = ::ShowCursor(TRUE);
             g.cursor_shown = 1;
@@ -478,8 +477,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 [[nodiscard]] ComPtr<ID3D12CommandQueue> game_queue12(ID3D12Device* device);
 
-// everything made on the game's device: gone when the game replaces its device (or the overlay is uninstalled). the ui
-// context stays -- its windows, their places and what the user typed survive a new device
+// objects on the game's device: dropped when it replaces its device or on uninstall. the ui context survives a
+// new device (windows, places, typed text)
 void release_device_objects()
 {
     wait_idle12();
@@ -500,7 +499,7 @@ void release_device_objects()
     g.backend = state::api::none;
 }
 
-// the d3d12 renderer is built for one back buffer format (its pipelines have it baked in); made again when the format changes
+// the d3d12 renderer bakes the back buffer format into its pipelines; remade when it changes
 bool create_renderer12(DXGI_FORMAT format, UINT buffers)
 {
     wait_idle12();
@@ -527,7 +526,7 @@ bool create_renderer12(DXGI_FORMAT format, UINT buffers)
     return true;
 }
 
-// the atlas pixels were released after the first renderer took them: a renderer made later needs them built again
+// atlas pixels were released after the first renderer took them: later renderers need a rebuild
 bool ensure_font_pixels()
 {
     if (!g.ui->font().pixels().empty()) { return true; }
@@ -538,7 +537,7 @@ bool ensure_font_pixels()
 void subclass_window(HWND hwnd)
 {
     if (g.hwnd == hwnd && g.subclassed) { return; }
-    // a window of the game's that is going away (or has): give it its procedure back if it still has ours
+    // a game window going away: restore its wndproc if it still has ours
     if (g.subclassed && g.hwnd != nullptr && ::IsWindow(g.hwnd) &&
         reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(g.hwnd, GWLP_WNDPROC)) == &wnd_proc) {
         ::SetWindowLongPtrW(g.hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g.orig_proc));
@@ -554,8 +553,8 @@ void subclass_window(HWND hwnd)
     if (!g.subclassed) { set_error("could not subclass the game's window"); }
 }
 
-// false: not yet (try the next Present); `fatal`: never (this is not a direct3d 11 / 12 game, or the ui cannot be built).
-// runs again when the game replaces its swap chain: what still fits (the ui, the device's objects) is kept
+// false: not yet (retry next Present); `fatal`: never (not d3d11 / 12, or the ui cannot be built).
+// reruns when the game replaces its swap chain, keeping what still fits (ui, device objects)
 bool attach(IDXGISwapChain* sc, bool& fatal)
 {
     DXGI_SWAP_CHAIN_DESC d{};
@@ -567,7 +566,7 @@ bool attach(IDXGISwapChain* sc, bool& fatal)
     if (SUCCEEDED(sc->GetDevice(IID_PPV_ARGS(&device)))) {
         api = state::api::d3d11;
     } else if (SUCCEEDED(sc->GetDevice(IID_PPV_ARGS(&device12)))) {
-        // direct3d 12: the ui is submitted on the game's direct queue (not known yet with the fallback: try the next Present)
+        // d3d12: ui is submitted on the game's direct queue (unknown yet with the fallback: retry next Present)
         queue = game_queue12(device12.Get());
         if (queue == nullptr) { return false; }
         ComPtr<ID3D12Device> queue_device;
@@ -633,7 +632,7 @@ bool attach(IDXGISwapChain* sc, bool& fatal)
     return g.subclassed;
 }
 
-// the game let go of the swap chain the ui was drawn on: what was made for its buffers goes, the rest stays for the next one
+// the game released the swap chain we drew on: drop per-buffer objects, keep the rest for the next one
 void detach_chain()
 {
     wait_idle12();
@@ -654,9 +653,8 @@ void detach_chain()
            od.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 }
 
-// how the ui's colours go into the game's frame: forced by the options, or read off the swap chain -- an FP16 one is scRGB,
-// a 10-bit one is HDR10 when the game declared it (SetColorSpace1) or, when that happened before the overlay was there, when
-// the monitor is in hdr mode; everything else is srgb
+// colour encoding: forced by options, or from the swap chain -- FP16 is scRGB, 10-bit is HDR10 if the game
+// declared it (SetColorSpace1) or, if declared before we loaded, the monitor is in hdr mode; else srgb
 [[nodiscard]] output_desc detect_output(IDXGISwapChain* sc)
 {
     output_desc out;
@@ -673,8 +671,7 @@ void detach_chain()
     else if (declared >= 0)                                          { out.space = output_space::srgb; }
     else if (d.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)  { out.space = output_space::scrgb; }
     else if (d.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM && output_is_hdr(sc)) { out.space = output_space::hdr10; }
-    // an scRGB swap chain on a monitor that is not in hdr mode: 1.0 is already the display's white, and a paper white
-    // above 80 nits would push the whole ui past it -- blown out to glaring white
+    // scRGB on a non-hdr monitor: 1.0 is already display white, so a paper white above 80 nits would blow the ui out
     if (out.space == output_space::scrgb && !output_is_hdr(sc)) { out.paper_white_nits = 80.0f; }
     return out;
 }
@@ -689,9 +686,8 @@ void apply_output(IDXGISwapChain* sc)
     log_line("output: %s", out.space == output_space::scrgb ? "scRGB" : out.space == output_space::hdr10 ? "HDR10" : "srgb");
 }
 
-// a view of the back buffer for this frame only. it is not kept between frames on purpose: a view holds the buffer, and a
-// held buffer keeps the game's swap chain alive after the game released it -- so the game's next CreateSwapChain on the same
-// window would fail (a window has one flip-model swap chain at a time), which is how an overlay breaks a resolution change
+// a per-frame back buffer view, never kept: holding the buffer keeps the game's swap chain alive after release,
+// so its next CreateSwapChain on the window fails (one flip-model swap chain per window) -- breaking resolution changes
 [[nodiscard]] ComPtr<ID3D11RenderTargetView> frame_target(IDXGISwapChain* sc)
 {
     ComPtr<ID3D11Texture2D> back;
@@ -714,9 +710,8 @@ void apply_output(IDXGISwapChain* sc)
     return rtv;
 }
 
-// a scale change asked for from anywhere is applied here, on the render thread: the atlas is rebuilt and handed to
-// the renderer, which is the step an app driving set_scale() itself has to remember and usually forgets -- text then
-// draws from a texture that no longer matches the glyph coordinates.
+// scale changes from any thread apply here on the render thread: rebuild the atlas and hand it to the renderer
+// (skipping that step leaves glyph coordinates mismatched with the texture).
 void apply_pending_scale()
 {
     const float wanted = g.want_scale.exchange(0.0f);
@@ -725,7 +720,7 @@ void apply_pending_scale()
     }
     const u32 before = g.ui->font_generation();
     if (!g.ui->set_scale(wanted) || g.ui->font_generation() == before) {
-        return; // unchanged, or the atlas could not be built at that size: keep the one that works
+        return; // unchanged, or the atlas failed at that size: keep the working one
     }
     const bool ok = g.backend == state::api::d3d12 ? g.renderer12.update_atlas(g.ui->font())
                                                    : g.renderer.update_atlas(g.ui->font());
@@ -762,7 +757,7 @@ void draw_frame(IDXGISwapChain* sc)
     }
     g.ui->begin_frame(std::move(input));
     if (g.opt.scale_hotkeys && !g.ui->want_text_input()) {
-        //  Ctrl + Plus / Minus (both the main row and the numeric keypad), Ctrl + 0 back to where it started
+        //  Ctrl + Plus / Minus (main row or keypad), Ctrl + 0 resets
         const auto stepped = [&](int direction) {
             const float next = std::clamp(g.ui->scale() + 0.1f * static_cast<float>(direction), 0.5f, 4.0f);
             g.want_scale.store(next);
@@ -779,7 +774,7 @@ void draw_frame(IDXGISwapChain* sc)
         const std::lock_guard lock{g.platform_mutex};
         g.platform.set_cursor(g.ui->cursor());
     }
-    ::ClipCursor(nullptr); // (a game that clips the cursor to its window every frame is not asked politely: the ui needs all of the desktop)
+    ::ClipCursor(nullptr); // (games clipping the cursor every frame are overridden: the ui needs the whole desktop)
 
     const bool want_capture = !g.opt.capture_path.empty() && !g.captured && g.visible_frames + 1 >= g.opt.capture_frame;
     if (g.backend == state::api::d3d12) {
@@ -811,9 +806,9 @@ void on_present(IDXGISwapChain* sc)
     static int calls = 0;
     if (calls++ < 3) { log_line("present %d on %p (attached chain %p)", calls, static_cast<void*>(sc), static_cast<void*>(g.chain)); }
     if (g.chain != nullptr && sc != g.chain) {
-        // another swap chain presents. on the same window it can only be the attached one's replacement (a window has one
-        // flip-model swap chain at a time): switch now. on another window it may be a second view of the game's, so only
-        // once the attached one has stopped presenting for a good while (the game made a new window as well)
+        // another swap chain presents. on the same window it must replace the attached one (one flip-model swap chain
+        // per window): switch now. on another window it may be a second view, so switch only once the attached one has
+        // been silent for a while
         DXGI_SWAP_CHAIN_DESC d{};
         const bool described = SUCCEEDED(sc->GetDesc(&d)) && d.OutputWindow != nullptr && ::IsWindow(d.OutputWindow);
         if (described && d.OutputWindow == g.hwnd) {
@@ -870,7 +865,7 @@ HRESULT STDMETHODCALLTYPE hook_resize(IDXGISwapChain* sc, UINT buffers, UINT w, 
     return g.orig_resize(sc, buffers, w, h, format, flags);
 }
 
-// d3d12 games often resize through this one (it takes a queue per buffer); the overlay's targets go the same way
+// d3d12 games often resize through this one (a queue per buffer); our targets follow
 HRESULT STDMETHODCALLTYPE hook_resize1(IDXGISwapChain3* sc, UINT buffers, UINT w, UINT h, DXGI_FORMAT format, UINT flags,
                                        const UINT* node_masks, IUnknown* const* queues)
 {
@@ -898,7 +893,7 @@ HRESULT STDMETHODCALLTYPE hook_colorspace(IDXGISwapChain3* sc, DXGI_COLOR_SPACE_
     return hr;
 }
 
-// the game's direct queue: whichever direct queue executes command lists (a compute / copy queue does not count)
+// the game's direct queue: whichever direct queue executes command lists (compute / copy do not count)
 void STDMETHODCALLTYPE hook_execute(ID3D12CommandQueue* q, UINT count, ID3D12CommandList* const* lists)
 {
     const hook_scope scope;
@@ -923,7 +918,7 @@ bool patch_slot(void** vt, int index, void* hook, void** original)
 
 void unpatch_slot(void** vt, int index, void* hook, void* original)
 {
-    if (vt[index] != hook) { return; } // (somebody hooked on top of us: leave the chain intact, we pass through from now on)
+    if (vt[index] != hook) { return; } // (someone hooked over us: keep the chain intact and pass through from now on)
     DWORD old = 0;
     if (::VirtualProtect(&vt[index], sizeof(void*), PAGE_READWRITE, &old)) {
         vt[index] = original;
@@ -932,9 +927,8 @@ void unpatch_slot(void** vt, int index, void* hook, void* original)
     }
 }
 
-// the swap chain vtable belongs to dxgi and is the same whichever api made the swap chain, so one probe of either api finds
-// it. the probe uses the api the game has already loaded: a d3d11 game never gets d3d12 (and its driver) loaded into it by
-// the overlay, nor a d3d12 game d3d11. both or neither loaded (injected before the game made its device): d3d11
+// the swap chain vtable belongs to dxgi and is shared across apis, so one probe finds it. probe with the api the
+// game already loaded so we never load the other one (and its driver) into it; both or neither loaded: d3d11
 [[nodiscard]] bool probe_with_d3d12() noexcept
 {
     return ::GetModuleHandleW(L"d3d12.dll") != nullptr && ::GetModuleHandleW(L"d3d11.dll") == nullptr;
@@ -969,7 +963,7 @@ void unpatch_slot(void** vt, int index, void* hook, void* original)
 
 [[nodiscard]] void** probe_d3d12(HWND probe)
 {
-    // d3d12.dll is already in the process (that is why it was picked): no LoadLibrary, nothing to free
+    // d3d12.dll is already loaded (that is why it was picked): no LoadLibrary, nothing to free
     using create_fn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
     const auto create = reinterpret_cast<create_fn>(::GetProcAddress(::GetModuleHandleW(L"d3d12.dll"), "D3D12CreateDevice"));
     ComPtr<ID3D12Device>       device;
@@ -1023,8 +1017,8 @@ void** find_swap_chain_vtable()
     return vt;
 }
 
-// the game's direct queue is found by hooking ExecuteCommandLists. the vtable comes from a queue made on the game's own device
-// when a d3d12 swap chain first presents: no device of the overlay's, and nothing at all for a game that is not direct3d 12
+// the game's direct queue is found by hooking ExecuteCommandLists, with the vtable from a queue made on the game's
+// own device when a d3d12 swap chain first presents (nothing for non-d3d12 games)
 void hook_queue_vtable(ID3D12Device* device)
 {
     if (g.patched_execute) { return; }
@@ -1037,8 +1031,8 @@ void hook_queue_vtable(ID3D12Device* device)
     log_line("queue vtable %p, patched %d", static_cast<void*>(g.queue_vtable), g.patched_execute ? 1 : 0);
 }
 
-// the game's direct queue: the one seen executing command lists (IDXGISwapChain::GetDevice does not hand it out). null until
-// one has been seen, which takes a frame after the hook goes in
+// the game's direct queue as seen executing command lists (GetDevice cannot provide it). null until seen, a frame
+// after hooking
 [[nodiscard]] ComPtr<ID3D12CommandQueue> game_queue12(ID3D12Device* device)
 {
     hook_queue_vtable(device);
@@ -1074,7 +1068,7 @@ bool install(const options& opt)
         uninstall();
         return false;
     }
-    // direct3d 12 games present through the same swap chain class; their queue is found when they first present (game_queue12)
+    // d3d12 games present through the same swap chain class; their queue is found at first present (game_queue12)
     return true;
 }
 

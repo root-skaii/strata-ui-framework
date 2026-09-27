@@ -7,8 +7,7 @@
 #include <string>
 #include <string_view>
 
-// ready-made themes and a plain-text theme file. assign with `ui.theme() = strata::themes::light();`
-// (apply between frames) or start from one and tweak individual members.
+// ready-made themes and a text theme format. `ui.theme() = strata::themes::light();` between frames, or tweak members.
 namespace strata::themes {
 
 [[nodiscard]] constexpr style midnight() noexcept
@@ -171,7 +170,7 @@ namespace strata::themes {
     s.border_width  = 2.0f;
     s.gradient      = 0.0f;
     s.shadow_blur   = 0.0f;
-    s.success       = color::from_hex(0x3ff23fff); // pure, bright hues: meaning must not depend on subtle shades here
+    s.success       = color::from_hex(0x3ff23fff); // pure bright hues: meaning must not rely on subtle shades
     s.warning       = color::from_hex(0xffdd00ff);
     s.error         = color::from_hex(0xff4040ff);
     return s;
@@ -195,7 +194,7 @@ namespace strata::themes {
     return s;
 }
 
-// a phosphor terminal: amber on brown-black, square-ish and flat
+// phosphor terminal: amber on brown-black, flat
 [[nodiscard]] constexpr style amber() noexcept
 {
     style s;
@@ -215,7 +214,7 @@ namespace strata::themes {
     return s;
 }
 
-// translucent panels meant for `window_flags::acrylic` (blur behind them); flat tints where blur is not available
+// translucent panels for `window_flags::acrylic`; flat tints without blur
 [[nodiscard]] constexpr style glass() noexcept
 {
     style s;
@@ -244,38 +243,37 @@ namespace strata::themes {
 // built-in themes by name: midnight, light, ocean, rose, dracula, nord, solarized_dark, solarized_light,
 // high_contrast, forest, amber, glass
 [[nodiscard]] std::span<const std::string_view> names() noexcept;
-// case-insensitive; false (and `out` untouched) for an unknown name
+// case-insensitive; false (`out` untouched) if unknown
 [[nodiscard]] bool by_name(std::string_view name, style& out) noexcept;
 
-// the theme that follows the user's system settings (win32_platform::appearance() reads them): high contrast when that
-// is on, otherwise midnight for dark apps or light for light ones, with the system accent colour when it is known
-// (alpha 0 = keep the theme's). re-apply it when win32_platform::appearance_changed() says the user changed them
+// the theme matching system settings (win32_platform::appearance()): high contrast if on, else midnight / light,
+// with the system accent if known (alpha 0 = theme's). re-apply on win32_platform::appearance_changed()
 [[nodiscard]] style for_appearance(bool dark, bool high_contrast, color accent = color{0, 0, 0, 0}) noexcept;
 
-// theme files: one `key = value` per line; blank lines and lines starting with `#`, `;` or `//` are comments.
+// theme files: `key = value` per line; blank lines and `#`, `;`, `//` lines are comments.
 //     # my theme
-//     base          = nord                (optional: start from a built-in theme, must come first)
+//     base          = nord                (optional built-in base, must come first)
 //     rounding      = 10
 //     accent        = #ff8800             (#rgb, #rgba, #rrggbb or #rrggbbaa)
 //     window_bg     = #14161df4
-// keys are the style members (frame_padding is split into frame_padding_x / _y).
+// keys are style members (frame_padding is frame_padding_x / _y).
 struct theme_result {
     std::size_t applied{};  // keys that were read
     std::size_t unknown{};  // keys that are not style members
     std::size_t invalid{};  // values that could not be read
-    std::size_t first_problem_line{}; // 1-based line of the first unknown / invalid entry, 0 if none
+    std::size_t first_problem_line{}; // 1-based line of the first bad entry, 0 if none
     [[nodiscard]] bool ok() const noexcept { return unknown == 0 && invalid == 0; }
 };
 
-// writes every member; `name` becomes a comment on the first line
+// writes every member; `name` becomes a first-line comment
 [[nodiscard]] std::string to_string(const style& s, std::string_view name = {});
-// changes only what the text sets, so a file can be a partial theme on top of `s`
+// changes only what the text sets (partial themes on top of `s`)
 theme_result from_string(std::string_view text, style& s);
-// utf-8 path. save returns false if the file cannot be written, load if it cannot be read
+// utf-8 path; false if the file cannot be written / read
 [[nodiscard]] bool save_file(std::string_view path, const style& s, std::string_view name = {});
 [[nodiscard]] bool load_file(std::string_view path, style& s, theme_result* result = nullptr);
 
-// a theme as a section of a config (see config.hpp): the same keys as a theme file
+// a theme as a config section (config.hpp), same keys as a theme file
 void          to_config(config& cfg, const style& s, std::string_view section = "theme");
 theme_result  from_config(const config& cfg, style& s, std::string_view section = "theme");
 

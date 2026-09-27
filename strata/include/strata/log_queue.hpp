@@ -1,18 +1,16 @@
 #pragma once
 
-// lines for a log_buffer written from any thread. a log_buffer (and the log_view drawing it) belongs to the ui thread; a
-// program logs from workers, loaders and callbacks. those add() here, and the ui thread moves what has come in into its
-// buffer once per frame:
+// thread-safe intake for a log_buffer (which belongs to the ui thread). any thread add()s; the ui thread drains
+// once per frame:
 //
-//     strata::log_queue g_log_in;                         // shared by everyone
+//     strata::log_queue g_log_in;                         // shared
 //     g_log_in.add(strata::log_level::info, "loaded 12 assets");        // any thread
 //     g_log_in.addf(strata::log_level::warn, "{} missing", name);
 //     ...
 //     g_log_in.drain_into(log);                           // ui thread, each frame, before ui.log_view(..., log)
 //
-// each line keeps the wall-clock time it was added at, not the time it was drained. a queue that nobody drains stops
-// growing at `max_pending` lines and counts what it dropped. the text of the pending lines lives in one arena, so in steady
-// state neither side allocates per line.
+// lines keep the wall-clock time of add(). an undrained queue stops at `max_pending` and counts drops. pending
+// text lives in one arena, so steady state does not allocate per line.
 
 #include "strata/log.hpp"
 
@@ -51,8 +49,7 @@ public:
         add(level, std::format(fmt, std::forward<args>(a)...));
     }
 
-    // moves everything added so far into `log` (ui thread); the number of lines moved. the lock is held only to swap
-    // the pending lines out, not while the log takes them
+    // moves pending lines into `log` (ui thread); returns the count. the lock covers only the swap
     std::size_t drain_into(log_buffer& log)
     {
         {
@@ -64,12 +61,12 @@ public:
             log.add(p.level, std::string_view{out_.text}.substr(p.off, p.len), -1.0, p.wall_ms);
         }
         const std::size_t n = out_.lines.size();
-        out_.lines.clear(); // (capacity kept: the next swap hands it back to the writers)
+        out_.lines.clear(); // (capacity kept for the writers)
         out_.text.clear();
         return n;
     }
 
-    // lines refused because max_pending were waiting (nobody drained the queue)
+    // lines refused because max_pending were waiting
     [[nodiscard]] std::size_t dropped() const
     {
         const std::lock_guard lock{mutex_};

@@ -144,7 +144,7 @@ struct app::impl {
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         rtv.Reset();
         if (SUCCEEDED(chain->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, chain_flags))) { (void)create_target(); }
-        ui->invalidate(); // (the new buffers hold nothing: the next frame is drawn even if the ui did not change)
+        ui->invalidate(); // (new buffers are empty: draw the next frame regardless)
     }
 
     void apply_theme() noexcept
@@ -233,8 +233,7 @@ app::~app()                         = default;
 
 std::expected<app, app_error> app::create(const app_config& cfg)
 {
-    // per-monitor dpi, so the ui is drawn at the monitor's resolution instead of being stretched by the system. (a
-    // process that set its awareness already -- a manifest -- keeps what it has: this fails harmlessly then)
+    // per-monitor dpi so the system does not stretch the ui (fails harmlessly if a manifest already set it)
     ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     auto p   = std::make_unique<impl>();
@@ -313,7 +312,7 @@ int app::run(const std::function<void(app&, context&)>& frame)
         s.apply_dpi();
         if (s.cfg.follow_system_theme && s.platform.appearance_changed()) { s.apply_theme(); }
 
-        // a frame starts when the swap chain can take one, which keeps the input the frame reacts to as fresh as it gets
+        // start the frame when the swap chain can take one, so its input is as fresh as possible
         if (s.latency_wait != nullptr) { ::WaitForSingleObjectEx(s.latency_wait, 100, TRUE); }
 
         s.ui->begin_frame(s.platform.new_frame());

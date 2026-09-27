@@ -1,7 +1,7 @@
 #pragma once
 
-// minimal png reader / writer for screenshots and golden images (8-bit rgb / rgba, no interlacing), with its own
-// deflate / inflate so the sandbox needs no image library.
+// minimal png reader / writer for screenshots and goldens (8-bit rgb / rgba, no interlacing), with its own
+// deflate / inflate.
 
 #include <strata/types.hpp>
 
@@ -11,7 +11,7 @@
 
 namespace imgio {
 
-// writes rgb (the alpha channel is dropped); false if the file cannot be written. `path` is utf-8
+// writes rgb (alpha dropped); false on failure. `path` is utf-8
 [[nodiscard]] bool write_png(std::string_view path, std::span<const strata::u8> rgba, strata::u32 width, strata::u32 height);
 // reads any 8-bit rgb / rgba png into rgba; false if the file is missing or not supported
 [[nodiscard]] bool read_png(std::string_view path, std::vector<strata::u8>& rgba, strata::u32& width, strata::u32& height);

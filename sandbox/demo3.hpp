@@ -1,7 +1,7 @@
 #pragma once
 
-// more sandbox demos: tabs and popups, drag and drop, date / time pickers, long lists and tables, code editor, passwords
-// and input masks. the state lives in demo3_state (a member of demo2_state); main draws the windows through demo3_show.
+// more demos: tabs and popups, drag and drop, date / time pickers, long lists and tables, code editor, passwords
+// and masks. state in demo3_state (member of demo2_state); main draws them through demo3_show.
 
 #include <strata/strata.hpp>
 

@@ -129,7 +129,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
     }
     const std::size_t count = log.visible_.size();
 
-    // the body: a scrolling child; only the visible rows are drawn ---------------------------------------------------------
+    // the body: a scrolling child; only visible rows are drawn ---------------------------------------------------------
     f32 body_h = size.y;
     if (body_h <= 0.0f) {
         body_h = m_->layout_.bound_bottom > 0.0f ? std::max(m_->layout_.bound_bottom - layout_next_y(), 60.0f) : 220.0f;
@@ -141,7 +141,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
         const f32 time_w = v.show_time ? m_->font_.measure(f, v.clock ? "00:00:00.000 " : "000.0 ").x + 4.0f : 0.0f;
         const f32 tag_w  = m_->font_.measure(f, "WRN ").x + 6.0f;
 
-        // wrapping: every row is as high as its text (measured once per line and width), so the rows are laid out by a table
+        // wrapping: rows are as tall as their text (measured once per line and width), laid out by a table
         const f32 wrap_w = std::max(cf.inner.width() - time_w - tag_w - 14.0f, 40.0f);
         const bool wrap  = v.wrap;
         if (wrap) {
@@ -168,7 +168,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
         };
         const f32 max_scroll = std::max(0.0f, total - view_h);
 
-        // follow mode: sticks to the newest line; scrolling up lets go, reaching the bottom again takes it back
+        // follow mode: sticks to the newest line; scrolling up releases, reaching the bottom re-engages
         if (v.follow && log.last_scroll_ >= 0.0f && st.scroll < log.last_scroll_ - 1.0f) {
             v.follow = false;
         } else if (!v.follow && max_scroll > 0.0f && st.scroll >= max_scroll - 1.0f) {

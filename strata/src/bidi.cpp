@@ -13,7 +13,7 @@ enum class bc : u8 { L, R, AL, EN, ES, ET, AN, CS, NSM, WS, ON };
 
 [[nodiscard]] bool in(char32_t c, char32_t a, char32_t b) noexcept { return c >= a && c <= b; }
 
-// bidi class of a code point (a working approximation of the Unicode database: what text in the common scripts needs)
+// bidi class of a code point (an approximation of the Unicode database covering common scripts)
 [[nodiscard]] bc classify(char32_t c) noexcept
 {
     if (c < 0x0590) {
@@ -108,7 +108,7 @@ constexpr std::array<arabic_form, 43> forms = {{
     return classify(c) == bc::NSM;
 }
 
-// lam followed by an alef makes one ligature glyph: lam-alef (FEFB / FEFC), with hamza above (FEF7 / FEF8), below (FEF9 / FEFA), madda (FEF5 / FEF6)
+// lam + alef ligatures: plain (FEFB / FEFC), hamza above (FEF7 / FEF8), below (FEF9 / FEFA), madda (FEF5 / FEF6)
 [[nodiscard]] char32_t lam_alef(char32_t alef, bool joined_before) noexcept
 {
     switch (alef) {
@@ -138,7 +138,7 @@ void shape(const std::vector<char32_t>& in_cps, const font_atlas* atlas, font_id
         out.origin.push_back(static_cast<u32>(at));
         out.span.push_back(span);
     };
-    // does the letter at `j` connect towards the following letter / accept a connection from the preceding one
+    // does the letter at `j` join to the next letter / accept a join from the previous one
     const auto connects_forward = [&](std::size_t j) {
         if (in_cps[j] == 0x200d) { return true; }
         const arabic_form* fm = find_form(in_cps[j]);
@@ -203,7 +203,7 @@ void shape(const std::vector<char32_t>& in_cps, const font_atlas* atlas, font_id
     }
 }
 
-// the unicode bidi algorithm for one line: fills `order` (visual position -> index in `cps`) and `level`
+// unicode bidi for one line: fills `order` (visual position -> index in `cps`) and `level`
 void resolve(const std::vector<char32_t>& cps, text_direction dir, std::vector<u32>& order, std::vector<u8>& level)
 {
     const std::size_t n = cps.size();
@@ -261,8 +261,8 @@ void resolve(const std::vector<char32_t>& cps, text_direction dir, std::vector<u
         }
     }
 
-    // N0: a pair of brackets takes the direction of what is inside it (or of what is before it when the inside only has the
-    // other direction), so "(word)" is closed at the right end of the word
+    // N0: brackets take the direction of their content (or of the preceding text when the content is only the other
+    // direction), so "(word)" closes at the word's right end
     const auto direction_of = [&](bc x) { return x == bc::L ? bc::L : bc::R; }; // R, EN and AN count as R
     {
         const bc embedding = para != 0 ? bc::R : bc::L;
@@ -313,7 +313,7 @@ void resolve(const std::vector<char32_t>& cps, text_direction dir, std::vector<u
         }
     }
 
-    // neutrals: between two runs of the same direction they join them, otherwise they follow the paragraph
+    // neutrals between same-direction runs join them, otherwise follow the paragraph
     for (std::size_t i = 0; i < n;) {
         if (t[i] != bc::ON && t[i] != bc::WS) { ++i; continue; }
         std::size_t j = i;
@@ -392,9 +392,9 @@ void decode_line_into(std::vector<char32_t>& cps, std::string_view s, std::vecto
 
 bool has_rtl_text(std::string_view s) noexcept
 {
-    // every right-to-left character is encoded with a lead byte >= 0xd6 (hebrew: d6 d7, arabic / syriac / thaana: d8..de, n'ko
-    // and the rest of the bmp block: df e0 ..., presentation forms: ef, supplementary scripts: f0): latin, greek, cyrillic
-    // (leads c2..d5) and plain ascii are turned away without decoding
+    // every rtl character has a utf-8 lead byte >= 0xd6 (hebrew d6 d7, arabic / syriac / thaana d8..de, n'ko and later
+    // df e0 ..., presentation forms ef, supplementary f0); ascii, latin, greek and cyrillic (c2..d5) are rejected
+    // without decoding
     bool candidate = false;
     for (const char ch : s) {
         if (static_cast<u8>(ch) >= 0xd6) { candidate = true; break; }
@@ -463,8 +463,7 @@ void bidi_layout::build(const font_atlas& atlas, font_id font, std::string_view 
         width_ = atlas.measure(font, text).x;
         return;
     }
-    // the scratch and byte_of_ are members: a field being edited rebuilds this every frame, so the buffers are
-    // grown once and then reused
+    // scratch and byte_of_ are members: edited fields rebuild this every frame, so buffers are reused
     visual_scratch& sc = scratch_;
     decode_line_into(sc.cps, text, &byte_of_);
     byte_of_.push_back(static_cast<u32>(text.size()));
@@ -510,7 +509,7 @@ f32 bidi_layout::caret_x(std::size_t byte_offset) const noexcept
     const std::size_t n = glyph_of_.size();
     const auto it = std::upper_bound(byte_of_.begin(), byte_of_.begin() + static_cast<std::ptrdiff_t>(n), static_cast<u32>(byte_offset));
     const std::size_t b = static_cast<std::size_t>(it - byte_of_.begin()); // code points that start at or before the offset
-    // b == 0 cannot happen (offset 0 starts code point 0); the caret sits after code point b - 1 unless the offset is its start
+    // b == 0 is impossible (offset 0 starts code point 0); the caret is after b - 1 unless the offset is its start
     std::size_t k = b;
     if (b > 0 && byte_of_[b - 1] == byte_offset) { k = b - 1; } // exactly at a boundary: before code point b - 1
     if (k == 0) {

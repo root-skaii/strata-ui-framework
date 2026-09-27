@@ -1,7 +1,6 @@
 #pragma once
 
-// calendar dates and times of day for the date / time pickers: plain values, no time zones. dates are proleptic
-// Gregorian; weekdays count from Monday.
+// calendar dates and times of day for the pickers: plain values, no time zones, proleptic Gregorian, weeks from Monday.
 
 #include "strata/types.hpp"
 
@@ -49,7 +48,7 @@ struct time_of_day {
     return t.hour >= 0 && t.hour < 24 && t.minute >= 0 && t.minute < 60 && t.second >= 0 && t.second < 60;
 }
 
-// days since 1970-01-01 (negative before it) and back; the algorithms of Howard Hinnant
+// days since 1970-01-01 (negative before) and back (Howard Hinnant's algorithms)
 [[nodiscard]] constexpr i64 days_from_civil(const date& d) noexcept
 {
     const i64 y   = d.month <= 2 ? d.year - 1 : d.year;
@@ -85,7 +84,7 @@ struct time_of_day {
     return civil_from_days(days_from_civil(d) + days);
 }
 
-// the same day of another month; a day that does not exist there (31 Jan + 1 month) becomes the last day of it
+// same day in another month, clamped to its last day (31 Jan + 1 month)
 [[nodiscard]] constexpr date add_months(const date& d, i32 months) noexcept
 {
     const i64 index = static_cast<i64>(d.year) * 12 + (d.month - 1) + months;
@@ -96,7 +95,7 @@ struct time_of_day {
     return r;
 }
 
-// the nearest valid date / time
+// nearest valid date / time
 [[nodiscard]] constexpr date clamp_date(date d) noexcept
 {
     d.month = d.month < 1 ? 1 : d.month > 12 ? 12 : d.month;
@@ -113,18 +112,17 @@ struct time_of_day {
     return t;
 }
 
-// the local clock
+// local clock
 [[nodiscard]] date        today();
 [[nodiscard]] time_of_day now();
-// makes today() / now() return fixed values (for tests and reproducible screenshots) until reset_clock()
+// fixes today() / now() (tests, reproducible screenshots) until reset_clock()
 void override_clock(const date& d, const time_of_day& t) noexcept;
 void reset_clock() noexcept;
 
 // "2026-09-25" and "13:45" (or "13:45:30" with seconds)
 [[nodiscard]] std::string to_string(const date& d);
 [[nodiscard]] std::string to_string(const time_of_day& t, bool seconds = false);
-// the inverse: "2026-09-25" (also with '/' or '.'), "13:45" or "13:45:30". false (and `out` untouched) for text that is
-// not a real date / time
+// the inverse, also with '/' or '.' dates and optional seconds. false (`out` untouched) if not a real date / time
 [[nodiscard]] bool parse_date(std::string_view text, date& out) noexcept;
 [[nodiscard]] bool parse_time(std::string_view text, time_of_day& out) noexcept;
 

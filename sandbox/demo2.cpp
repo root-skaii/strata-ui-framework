@@ -153,7 +153,7 @@ void demo2_inputs(context& ui, demo2_state& s)
 
     ui.text_dim("styled contents: text_span ranges over plain text");
     {
-        // *bold*, _italic_, `code` (mono font), and a # heading line: the markers stay in the text, the spans style what is between
+        // *bold*, _italic_, `code` (mono) and # headings: the markers stay, spans style the text between
         std::vector<text_span> spans;
         const std::string_view t = s.styled_text;
         const auto code_font = static_cast<font_id>(s.font_mono >= 0 ? s.font_mono : 0);
@@ -372,7 +372,7 @@ std::vector<u8> half_pixels(u32 n) // a radial gradient in half floats
     return px;
 }
 
-// the animated picture: plasma that depends on the frame counter (so screenshots stay reproducible)
+// animated plasma driven by the frame counter (screenshots stay reproducible)
 void plasma_pixels(std::vector<u8>& px, u32 w, u32 h, u32 y0, f32 t)
 {
     px.resize(static_cast<std::size_t>(w) * h * 4);
@@ -410,8 +410,7 @@ void demo2_textures_create(gfx_host& host, demo2_state& s)
     s.tex_dynamic = host.create_texture(texture_desc{dynamic_size, dynamic_size, texture_format::rgba8, 0, true}, plasma);
 }
 
-// the picture is redrawn every frame in three strips, each an update_texture() of its own rectangle; the mip levels below
-// them follow
+// redrawn every frame as three update_texture() strips; the mips below follow
 void demo2_textures_update(gfx_host& host, demo2_state& s)
 {
     if (s.tex_dynamic == 0 || !s.show_textures) { return; }
@@ -733,7 +732,7 @@ void apply_config(context& ui, demo2_state& s, const config& cfg)
     (void)themes::from_config(cfg, ui.theme());
 }
 
-// the settings changed: what the file would hold now (auto-save, when it is on, writes it a moment later)
+// settings changed: what the file would hold now (auto-save writes it shortly after)
 void settings_changed(const context& ui, demo2_state& s)
 {
     fill_config(ui, s, s.file.data());
@@ -920,7 +919,7 @@ void demo2_script(const demo2_state& s, int frame, demo2_sim& sim)
         if (frame == 6) { sim.pos = {300.0f, 214.0f}; }
     } else if (s.scene == "charts") { // hover the first chart
         if (frame == 6) { sim.pos = {330.0f, 190.0f}; }
-    } else if (s.scene == "dockdrag") { // pull the "images" tab out of its pane and hold it over the editor: the drop guides show
+    } else if (s.scene == "dockdrag") { // drag the "images" tab over the editor: drop guides show
         if (frame == 6)  { sim.pos = {322.0f, 485.0f}; }
         if (frame == 8)  { sim.down[0] = true; }
         if (frame == 10) { sim.pos = {350.0f, 520.0f}; }

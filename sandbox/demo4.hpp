@@ -1,8 +1,7 @@
 #pragma once
 
-// sandbox scenes for the tree / list work: the icon set (--scene icons), a deep tree that only pays for the rows in
-// view (--scene bigtree), and the row ergonomics -- overlapping items, a right gutter, ellipsized labels and keyboard
-// navigation (--scene rows). the state lives in demo4_state, a member of demo2_state.
+// tree / list scenes: the icon set (--scene icons), a deep tree paying only for visible rows (--scene bigtree), and
+// row ergonomics: overlap, right gutter, ellipsis, keyboard navigation (--scene rows). state in demo4_state.
 
 #include <strata/strata.hpp>
 
@@ -17,7 +16,7 @@ struct demo4_state {
 
     // --scene icons: every icons:: constant with its name, and whether the font really has the glyph
     bool show_icons = false;
-    int  icon_page  = -1;    // >= 0: show that 256-code-point page instead (a hex start), for picking code points
+    int  icon_page  = -1;    // >= 0: show that 256-code-point page (hex start) instead
 
     // --scene bigtree: a generated namespace tree, all of it expanded
     bool show_bigtree = false;
@@ -43,8 +42,8 @@ struct demo4_state {
     int                    row_selected = 0;
     std::string            filter;
 
-    // --scene app: the things an app used to hand-roll -- row accessories, disabled items, a self-contained
-    // confirmation, a filtered combo, multi-select, raw keys and a runtime ui scale
+    // --scene app: row accessories, disabled items, self-contained confirmation, filtered combo, multi-select, raw keys
+    // and a runtime ui scale
     bool                     show_app = false;
     std::vector<std::string> objects;
     strata::selection_state  sel;

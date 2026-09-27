@@ -1,5 +1,5 @@
-// checks for the list / tree work: off-screen rows doing no work, the extra-id overloads, overlapping items,
-// right gutters, keyboard navigation, scroll control and the icon set
+// list / tree work: culled rows doing no work, extra-id overloads, overlapping items, right gutters, keyboard
+// navigation, scroll control and the icon set
 
 #include "selftest_common.hpp"
 
@@ -57,8 +57,7 @@ void test_culling()
     CHECK(max_scroll > 1884.0f * 10.0f);
 }
 
-// culling must not change what is drawn: the same tree in a viewport tall enough to hold it produces the same
-// geometry as one where nothing is off-screen
+// culling must not change output: geometry matches a viewport tall enough for the whole tree
 void test_culling_is_invisible()
 {
     const auto count = [](bool tall) {
@@ -138,7 +137,7 @@ void test_item_overlap()
     };
     h.frames(build, 2);
 
-    // the button is drawn on top of the full-width row and submitted after it: the press is the button's
+    // the button is drawn over the full-width row and submitted after it: it gets the press
     h.click(btn.center(), build);
     CHECK(btn_hits == 1);
     CHECK(row_hits == 0);
@@ -319,7 +318,7 @@ void test_tree_open_controls()
     h.frames(build, 2);
     CHECK(depth_seen == 1); // set_next_item_open stuck
 
-    // open everything: the inner node only exists once its parent is open, so the request has to outlive one frame
+    // open all: the inner node exists only once its parent is open, so the request must outlive one frame
     h.frame([&] {
         if (auto w = h.ui.window("w", {0.0f, 0.0f}, {300.0f, 400.0f}, plain_window)) {
             h.ui.open_all_tree_nodes();
@@ -336,8 +335,7 @@ void test_tree_open_controls()
     h.frames(build, 3);
     CHECK(depth_seen == 0);
 
-    // and the request must not keep overriding what the user does next: a node opened right after a close-all
-    // stays open
+    // the request must not override the user: a node opened right after close-all stays open
     force_open = true;
     h.frame(build);
     force_open = false;
@@ -345,7 +343,7 @@ void test_tree_open_controls()
     CHECK(depth_seen == 1);
 }
 
-// Ctrl held while a node is clicked opens or closes the whole subtree under it, and only that subtree
+// Ctrl + click on a node toggles its whole subtree, and only that
 void test_tree_recursive_click()
 {
     harness h;
@@ -413,7 +411,7 @@ void test_scroll()
 
     reveal = true;
     h.frames(build, 8); // it moves as far as it has to each frame, so it settles in a few
-    // the row is in view now: its rectangle is inside the child, which is 120 px tall at the window top
+    // the row is in view: its rect is inside the 120 px child at the window top
     CHECK(last.min.y >= 0.0f && last.max.y <= 400.0f);
     CHECK(last.min.y > 0.0f && last.max.y < 150.0f);
 }
@@ -479,9 +477,8 @@ void test_input_clear_button()
 
 void test_icon_set()
 {
-    // every constant has to be a code point the icon font really has. the sandbox default (Segoe MDL2 Assets) is not
-    // always installed, and the Windows 10 build of it is missing "Hide" (see icons.hpp), so this reports rather than
-    // fails on those.
+    // every constant must exist in the icon font. Segoe MDL2 Assets is not always installed and its Windows 10 build
+    // lacks "Hide" (see icons.hpp), so this reports rather than fails there.
     static constexpr std::array<codepoint_range, 1> pua = {glyph_ranges::private_use};
     font_config icon_font;
     icon_font.face         = "Segoe MDL2 Assets";
@@ -507,9 +504,8 @@ void test_icon_set()
 }
 
 
-// a frame that touches thousands of distinct keys grows the animation table to hold them (that is what a fully
-// expanded tree used to do on every frame). once the live key count drops back -- which is what culling does -- the
-// table has to come back down instead of staying big, and being a cache miss per lookup, forever
+// touching thousands of keys grows the animation table; once the live count drops (culling), it must shrink back
+// instead of staying big and cache-unfriendly
 void test_anim_table_shrinks()
 {
     harness h;
@@ -533,7 +529,7 @@ void test_anim_table_shrinks()
     CHECK(st.anim_slots_used < 64);
 }
 
-// the hover highlight of an item that shares its rectangle goes to whatever is drawn on top of it
+// an overlapped item's hover goes to whatever is drawn over it
 void test_overlap_hover()
 {
     harness h;

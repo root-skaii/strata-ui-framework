@@ -152,7 +152,7 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
     child_state* st = state_for(m_->children_, key, m_->frame_);
     if (st->content_h > 0.0f) { apply_pending_scroll(key, st->scroll, &st->scroll_x); } // (once its content has been measured)
 
-    // width: the rest of the line (right of the previous item after same_line), height: down to the window bottom
+    // width: rest of the line; height: down to the window bottom
     f32 w = size.x;
     if (w <= 0.0f) {
         w = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
@@ -192,8 +192,7 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
 
     const bool horiz = has_flag(flags, child_flags::horizontal);
     const bool bars  = !has_flag(flags, child_flags::no_scrollbar);
-    // the horizontal bar takes a strip off the bottom, so the vertical one is shortened by it and the content is
-    // laid out above it (both only while there is something to scroll)
+    // the horizontal bar takes a strip off the bottom, shortening the vertical one (both only when scrollable)
     const f32 hbar = horiz && st->overflow_x && bars ? 10.0f : 0.0f;
     if (!horiz) {
         st->scroll_x = 0.0f;
@@ -224,8 +223,7 @@ void context::end_child()
     const bool horiz = has_flag(f.flags, child_flags::horizontal);
     const bool bars  = !has_flag(f.flags, child_flags::no_scrollbar);
 
-    // how wide the content turned out: m_->layout_.right is the furthest right edge anything reached, and origin.x is
-    // already shifted left by the scroll offset, so the difference is the content width regardless of where it sits
+    // content width: layout_.right minus origin.x (which already includes the scroll offset)
     if (horiz) {
         st.content_w  = m_->layout_.first ? 0.0f : m_->layout_.right - m_->layout_.origin.x;
         st.overflow_x = st.content_w > f.inner.width() + 0.5f;
@@ -241,7 +239,7 @@ void context::end_child()
 
     if (st.overflow_x) {
         const f32 max_x = st.content_w - f.inner.width();
-        // the tilt wheel, and Shift + the ordinary wheel: the convention every list and table on Windows follows
+        // tilt wheel, or Shift + wheel (the Windows convention)
         const bool over = pointer_over(f.bounds);
         if (m_->wheel_x_ != 0.0f && !m_->wheel_x_consumed_ && over) {
             st.scroll_x = std::clamp(st.scroll_x + wheel_scroll_x(m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
@@ -280,7 +278,7 @@ void context::end_child()
             const f32  track_h = f.bounds.height() - 10.0f - hbar; // room for the horizontal bar, when there is one
             const f32  thumb_h = std::max(20.0f, track_h * view_h / st.content_h);
             const f32  x0      = f.bounds.max.x - 9.0f;
-            // the whole track takes the press: a click beside the thumb moves it there, and it can be dragged from anywhere
+            // the whole track takes the press: clicking beside the thumb jumps there, dragging works from anywhere
             f32 thumb_y = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
             const interaction in = interact(widget_id("##cscroll"), {{x0 - 3.0f, track_top}, {x0 + 8.0f, track_top + track_h}});
             st.scroll = thumb_drag(in, st.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, st.scroll);
@@ -572,8 +570,8 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
         m_->hotkey_capture_ = 0;
     }
 
-    // each step commits right away (no latency for the common single-chord case), but capturing continues a little
-    // longer so a further key extends it into a sequence, replacing what was just committed with the longer one
+    // each step commits at once (no latency for single chords), but capture continues briefly so another key extends
+    // it into a sequence, replacing the committed one
     bool changed = false;
     if (capturing && m_->pressed_key_ != 0) {
         const bool bare = !(m_->press_ctrl_ || m_->press_shift_ || m_->press_alt_);
@@ -597,7 +595,7 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
                 m_->hotkey_capture_ = 0;
             }
         }
-        m_->pressed_key_ = 0; // this key is spent either way, so it is not also read as some unrelated accelerator
+        m_->pressed_key_ = 0; // the key is spent either way; do not also fire an accelerator
         m_->key_count_   = 0;
     } else if (capturing && m_->seq_edit_count_ > 0 && m_->time_ >= m_->seq_edit_deadline_) {
         // paused without a further key: what was captured already stands, just stop listening for more
@@ -638,7 +636,7 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
     return changed;
 }
 
-// `chord` is null for a plain key; otherwise key_code is chord->key and the modifiers held with the key are stored too
+// `chord` null = plain key; otherwise key_code is chord->key and the held modifiers are stored too
 bool context::hotkey_field(std::string_view label, u32& key_code, key_chord* chord)
 {
     if (m_->cur_ == nullptr) {

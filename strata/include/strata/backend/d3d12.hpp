@@ -22,16 +22,15 @@ struct d3d12_init_info {
     u32                 rtv_format       = 0; // DXGI_FORMAT of the render target
 };
 
-// the render target the ui draws into; only needed for backdrop blur (acrylic panels). `resource` must be single-sample,
-// in the RENDER_TARGET state while render() records, and have the format given as rtv_format. `rtv` is the cpu descriptor
-// handle (D3D12_CPU_DESCRIPTOR_HANDLE::ptr), rebound after the blur passes.
+// the render target, needed only for backdrop blur. single-sample, RENDER_TARGET state during render(), format =
+// rtv_format. `rtv` = cpu descriptor handle ptr, rebound after the blur passes.
 struct d3d12_target {
     ID3D12Resource* resource{};
     std::uintptr_t  rtv{};
 };
 
-// records draw_data into a command list that is already recording with the render target bound. upload buffers are
-// indexed by frame_index, so the host must have waited on that frame's fence first (the usual frames-in-flight contract).
+// records into an open command list with the target bound. upload buffers are per frame_index, so the host must
+// have waited on that frame's fence.
 class d3d12_renderer {
 public:
     d3d12_renderer() noexcept;
@@ -46,36 +45,30 @@ public:
     void destroy() noexcept;
 
     // sets its own pso, root signature, descriptor heap, viewport, scissor and ia state.
-    // without `target` backdrop panels are drawn as flat tints
+    // without `target` backdrops are flat tints
     void render(const draw_data& data, ID3D12GraphicsCommandList* list, u32 frame_index, const d3d12_target* target = nullptr);
 
-    // how colours are written into the target (see output_space): an srgb view, an scRGB or an HDR10 swap chain needs it
-    // said, otherwise the ui comes out washed out, too dark or garish. applies from the next render()
+    // colour encoding of the target (see output_space); wrong values look washed out or garish. applies next render()
     void set_output(const output_desc& output) noexcept;
     [[nodiscard]] output_desc output() const noexcept;
 
-    // the device is gone (a driver update or crash, a gpu that was removed, TDR): Present / Map fail from now on and
-    // everything made on it is dead. recovering is the host's job, in this order: make a new device (and swap chain),
-    // ui.rebuild_font_atlas(), create() this renderer on the new device from ui.font(), ui.release_font_pixels(), then
-    // create the textures again (their old ids mean nothing any more) and ui.invalidate()
+    // device lost (driver update / crash, removal, TDR). recovery is the host's job, in order: new device and swap
+    // chain, ui.rebuild_font_atlas(), create() this renderer from ui.font(), ui.release_font_pixels(), recreate
+    // textures (old ids are invalid), ui.invalidate()
     [[nodiscard]] bool device_lost() const noexcept;
 
-    // uploads a new font atlas (after context::set_scale rebuilt it). the host must have waited for the gpu to finish
-    // every frame that used the old one. call context::release_font_pixels() afterwards.
+    // uploads a rebuilt font atlas; the gpu must be done with every frame using the old one. then release_font_pixels().
     [[nodiscard]] bool update_atlas(const font_atlas& atlas);
 
-    // uploads a straight-alpha rgba8 image (rows tightly packed) and returns the id ui.image() takes; 0 on failure or when
-    // all max_textures slots are taken. nothing waits for the gpu: the pixels are staged, and the copy is recorded at the
-    // start of the next render() on its command list, ahead of the draws that read the texture.
+    // uploads a straight-alpha rgba8 image (tightly packed) and returns its id; 0 on failure or no free slot. staged,
+    // copied at the start of the next render() before the draws.
     [[nodiscard]] texture_id create_texture(u32 width, u32 height, std::span<const u8> rgba);
-    // the general form: other pixel formats, mip maps and updatable textures (see texture_desc); staged the same way
+    // general form: pixel formats, mips, updatable textures (see texture_desc); staged the same way
     [[nodiscard]] texture_id create_texture(const texture_desc& desc, std::span<const u8> pixels);
-    // replaces a rectangle of an `updatable` texture and refreshes its mips. staged like create_texture: cheap enough to
-    // call every frame (a video, a live preview); the frame that render() records next shows it, and frames already in
-    // flight keep what they had. false if the id is not updatable or the rectangle does not fit
+    // updates a rectangle of an `updatable` texture and its mips, staged: cheap per frame; frames in flight keep the old
+    // content. false if not updatable or out of bounds
     [[nodiscard]] bool update_texture(texture_id id, u32 x, u32 y, u32 width, u32 height, std::span<const u8> pixels);
-    // may be called any time: frames in flight can still draw the texture, so it is released (and its slot reused) only
-    // once they are done
+    // any time: released (slot reused) once frames in flight are done
     void destroy_texture(texture_id id) noexcept;
     static constexpr u32 max_textures = 255;
 

@@ -1,11 +1,8 @@
-// a stand-in for a game: a window, a flip-model direct3d 11 (or, with --d3d12, direct3d 12) swap chain, a clear color that
-// changes and Present.
+// a stand-in game: a window, a flip-model d3d11 (or --d3d12) swap chain, a changing clear colour and Present.
 //   strata_overlay_host.exe [--d3d12] [--fp16] --dll <overlay dll>
-// it runs a few frames, loads the dll the way an injector would, waits for the hook to attach, checks that nothing is drawn while
-// the overlay is hidden, sends F1 to the window, checks that frames get drawn, sends F1 again and checks that they stop. then it
-// replaces its swap chain the way a game changing resolution does, and checks that the overlay follows to the new one.
-// --fp16 makes the swap chain FP16 (scRGB), which the overlay has to notice and encode the ui for.
-// exit code 0 = it all worked.
+// loads the dll like an injector, waits for the hook, then checks: nothing drawn while hidden, F1 shows it, F1 hides
+// it, and the overlay follows a swap chain replacement (like a resolution change). --fp16 uses an scRGB swap chain
+// the overlay must detect. exit code 0 = passed.
 
 #include <windows.h>
 #include <shellapi.h>
@@ -114,8 +111,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         list12->Close();
     }
 
-    // what a game does when it changes resolution or display mode: let go of the swap chain and make a new one on the same
-    // window. that only works once the old one is really gone, so it also checks that the overlay holds nothing of it
+    // a resolution / mode change: release the swap chain and create a new one on the same window. only works once the
+    // old one is really gone, so this also checks the overlay holds nothing of it
     const auto recreate_chain = [&]() -> bool {
         if (use12) {
             queue12->Signal(fence12.Get(), ++fence_value);
@@ -149,7 +146,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         }
         const float t = static_cast<float>(frame_number++) * 0.02f;
         float color[4] = {0.10f + 0.05f * std::sin(t), 0.16f, 0.24f + 0.05f * std::cos(t), 1.0f};
-        if (fp16) { // an FP16 swap chain is linear light: the same dark blue has to be written linear, or it shows up bright
+        if (fp16) { // FP16 is linear: write the dark blue linearised or it shows bright
             for (int k = 0; k < 3; ++k) { color[k] = std::pow(color[k], 2.2f); }
         }
         if (!use12) {
@@ -201,7 +198,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     // a click on the demo window (positions in a 960 x 540 client area)
     const auto click = [&](int x, int y) {
-        // the real cursor goes there too: a window whose cursor is elsewhere gets WM_MOUSELEAVE for the synthetic moves
+        // move the real cursor too: otherwise the window gets WM_MOUSELEAVE for the synthetic moves
         POINT screen{x, y};
         ::ClientToScreen(hwnd, &screen);
         ::SetCursorPos(screen.x, screen.y);
@@ -267,8 +264,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
                 ++failures;
             }
 
-            // the swap chain is replaced while the overlay is open: it has to let go of the old one (or the new one cannot
-            // be made) and draw on the new one
+            // swap chain replaced while open: the overlay must release the old one (or the new one fails)
+            // and draw on the new
             ::SendMessageW(hwnd, WM_KEYDOWN, VK_F1, 0); // show
             run_frames(20);
             if (!recreate_chain()) {

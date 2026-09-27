@@ -16,22 +16,21 @@ cmake/     options, compile flags, hlsl embedding, package config
 | Visual Studio | *Open Folder* on this directory (Ninja presets), **or** generate a solution: `cmake --preset vs2022` then open `build/vs2022/strata.sln` |
 | Terminal | `build_vs.cmd x64-release` (loads the VS x64 environment, configures, builds) |
 
-Visual Studio's *Open Folder* uses its bundled CMake; `cmake_minimum_required(4.3)` needs a VS
-that ships CMake >= 4.3, otherwise generate the solution with the `vs2022` preset from a
-CMake 4.3 command line.
+*Open Folder* uses Visual Studio's bundled CMake, which must be >= 4.3; otherwise generate the solution with the
+`vs2022` preset from a CMake 4.3 command line.
 
 Options (`-D`): `STRATA_BUILD_DX11`, `STRATA_BUILD_DX12`, `STRATA_BUILD_SANDBOX`, `STRATA_STATIC_CRT` (/MT),
 `STRATA_FAST_MATH` (/fp:fast), `STRATA_AVX2` (/arch:AVX2), `STRATA_WERROR`, `STRATA_INSTALL`, `STRATA_BUILD_TESTS`.
 
-Tests: `ctest --test-dir build/x64-release` runs the headless self-test and compares screenshots of the sandbox scenes with
-`tests/golden/*.png` (`-L gpu` selects only the screenshots, they need a desktop session and a gpu). After a change that
-is meant to look different, `cmake --build build/x64-release --target strata_update_goldens` rewrites the goldens (review the
-diff of the images!). A golden is what one machine drew: another machine with other fonts needs its own.
+Tests: `ctest --test-dir build/x64-release` runs the headless self-test and compares sandbox screenshots with
+`tests/golden/*.png` (`-L gpu` selects only those; they need a desktop session and a gpu). After an intended visual
+change, `cmake --build build/x64-release --target strata_update_goldens` rewrites them (review the image diff!).
+Goldens are machine-specific: other fonts need their own.
 
-Requirements: `STRATA_AVX2` is off by default, so the binaries run on any x64 CPU. Turned on, `/arch:AVX2` binaries
-fault with an illegal instruction on CPUs without AVX2 (pre-2013 Intel / pre-2015 AMD) - only for a program that controls
-the machines it runs on, never for an overlay dll. `fxc.exe` (Windows SDK) compiles the shaders at build time and
-embeds the bytecode, so no shader files or `d3dcompiler` DLL are needed at runtime.
+Requirements: `STRATA_AVX2` is off by default, so binaries run on any x64 CPU. With it on they fault on CPUs without
+AVX2 (pre-2013 Intel / pre-2015 AMD) -- only for programs that control their machines, never an overlay dll.
+`fxc.exe` (Windows SDK) compiles the shaders at build time and embeds the bytecode: no shader files or
+`d3dcompiler` DLL at runtime.
 
 ## Sandbox
 
@@ -67,9 +66,9 @@ strata_sandbox.exe [options]        (strata_sandbox.exe --help lists everything)
                                                then Segoe Fluent Icons, then none), --no-icons
   --no-extra-fonts   --cjk   --no-kern
 ```
-Esc closes the window. Click a window to raise it; the "overlap A / overlap B" windows show the stacking.
-The "show feature windows (docking)" checkbox docks the feature windows into left / right / bottom edge docks, the client area
-and a floating "Tools" dock (drag any of them around: to a side of the app, into the floating dock, or out again).
+Esc closes the window. Click a window to raise it ("overlap A / B" show the stacking). "show feature windows
+(docking)" docks the feature windows into left / right / bottom edge docks, the client area and a floating "Tools"
+dock; drag them around freely.
 
 ## Using the library
 
@@ -93,24 +92,24 @@ ui.end_frame();
 renderer.render(ui.render_data());
 ```
 
-`d3d11_renderer::render` saves and restores every pipeline stage it touches. `d3d12_renderer::render`
-records into your open command list and expects the usual frames-in-flight fence discipline.
+`d3d11_renderer::render` saves and restores every pipeline stage it touches. `d3d12_renderer::render` records into
+your open command list and expects the usual frames-in-flight fence discipline.
 
 ## Design notes
 
-- **No heap traffic in steady state.** Vertex / index / command arrays are `vmem_array`s: reserved address
-  space committed in 64 KiB chunks, never moved, cleared per frame.
-- **Logical pixels.** The ui lays out in logical pixels; the draw list multiplies by the ui scale on the way out, so the
-  renderers only ever see physical pixels (see *DPI and UI scale*).
-- **16-byte vertex** (`float2` pos, `unorm16x2` uv, `rgba8`), one atlas, one shader pair, draws merge per clip rect
-  (an image takes a command of its own, since a command draws with one texture).
-- **16-bit indices**, relative to each command's `vtx_offset` (`BaseVertexLocation`), which halves index bandwidth.
-  A command therefore spans at most 65536 vertices; one that would reach past that is split, exactly as a clip or
-  texture change splits it. Text, polylines and area fills emit in chunks so no single primitive can exceed it.
-- **Nothing changed, nothing sent.** `end_frame` hashes the geometry; `ui.can_idle()` is true when this frame is
-  byte-identical to the last one and no animation is still moving, and the renderers skip the buffer upload on their
-  own when the hash says they already hold it (see *Idling*).
-- **Rounded shapes are analytic.** One quad per shape (an 80-byte record); the pixel shader evaluates a signed distance field with per-corner radii, an angled or radial gradient, inner border and soft drop shadow. Axis-aligned plain rects take a 4-vertex fast path.
+- **No heap traffic in steady state.** Vertex / index / command arrays are `vmem_array`s: reserved address space
+  committed in 64 KiB chunks, never moved, cleared per frame.
+- **Logical pixels.** Layout is in logical pixels; the draw list scales on output, so renderers see only physical
+  pixels (see *DPI and UI scale*).
+- **16-byte vertex** (`float2` pos, `unorm16x2` uv, `rgba8`), one atlas, one shader pair; draws merge per clip rect
+  (an image takes its own command).
+- **16-bit indices** relative to each command's `vtx_offset` (`BaseVertexLocation`), halving index bandwidth. A
+  command spans at most 65536 vertices and is split beyond that like on a clip / texture change; text, polylines and
+  area fills emit in chunks.
+- **Nothing changed, nothing sent.** `end_frame` hashes the geometry; `ui.can_idle()` is true when the frame is
+  identical and no animation is moving, and renderers skip the upload when they already hold it (see *Idling*).
+- **Analytic rounded shapes.** One quad per shape (80-byte record); the pixel shader evaluates an SDF with per-corner
+  radii, angled / radial gradient, inner border and soft shadow. Plain axis-aligned rects take a 4-vertex fast path.
 - **Animated widgets** (hover / press / toggle) via a small fixed hash table keyed by widget id.
 - **No exceptions, no RTTI**, static CRT, `/GL` + `/LTCG` in release, windows.h kept out of public headers.
 
@@ -139,28 +138,24 @@ ui.tab_bar("tabs", {{"General", icons::settings}, "Advanced", "About"}, tab, ico
 switch (tab) { /* draw the content of the selected tab */ }
 ```
 
-- **Text input:** single-line, UTF-8 aware. Click / drag to place the caret and select, double-click selects a word, triple-click a line,
-  arrows, Home / End, Ctrl+arrows (by word), Shift extends the selection, Backspace / Delete, Ctrl+A / C / X / V,
-  **Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo**. The host feeds `input_state::keys` and `typed`; `win32_platform` does that
-  from `WM_KEYDOWN` / `WM_CHAR`, and `ui.set_clipboard(platform.clipboard())` enables copy / paste.
-  `ui.want_text_input()` is true while a field has focus (the sandbox uses it so Esc doesn't close the window while typing).
-- **Undo / redo:** every change of the focused field is recorded (up to 256 steps / 1 MiB). Typing, Backspace and Delete in
-  a row (within a second) are one step; a paste, cut or replaced selection is a step of its own. The history lives only
-  while the field has focus, is kept in zeroed-on-free memory like the edit buffer, and password fields keep none.
-- **Multi-line input:** `ui.input_multiline(label, text, size, flags, hint, max_bytes)` for `std::string` or `secure_string`.
-  Enter starts a line (Ctrl+Enter is `input_submitted()`), Up / Down keep their column, Page Up / Down, Home / End (by line),
-  Ctrl+Home / End (by text), Tab inserts four spaces, click / drag / double-click / triple-click select (a triple click takes the
-  line between two line breaks, with its break), the wheel and a scrollbar scroll.
-  Lines wrap at word boundaries (a word wider than the field breaks between characters) unless `input_flags::no_wrap`,
-  which scrolls sideways instead. `input_flags::read_only` gives a selectable, copyable view. Pasted text keeps its line
-  breaks (`\r\n` and `\r` become `\n`) and tabs become spaces. It shares the caret, selection, clipboard and undo code of the
-  single-line field. The lines are recomputed only when the text, width or font changes.
-- **Combo box:** the popup is drawn in an overlay layer above every window, flips upward near the bottom edge, scrolls
-  with the wheel when it has more than 8 rows, supports Up / Down / Enter / Esc, and a click outside only closes it.
-- **Tabs:** a header row with a sliding highlight; you choose what to draw for the selected index.
+- **Text input:** UTF-8 aware. Click / drag, double-click (word), triple-click (line), arrows, Home / End,
+  Ctrl+arrows, Shift to extend, Backspace / Delete, Ctrl+A / C / X / V, **Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo**.
+  `win32_platform` feeds `input_state::keys` / `typed` from `WM_KEYDOWN` / `WM_CHAR`; `ui.set_clipboard(platform.clipboard())`
+  enables copy / paste. `ui.want_text_input()` is true while a field has focus.
+- **Undo / redo:** up to 256 steps / 1 MiB per focused field. Typing or deleting within a second is one step; paste,
+  cut and replaced selections are their own. The history lives only while focused, in zeroed-on-free memory;
+  password fields keep none.
+- **Multi-line input:** `ui.input_multiline(label, text, size, flags, hint, max_bytes)` for `std::string` or
+  `secure_string`. Enter = newline (Ctrl+Enter is `input_submitted()`), Up / Down keep the column, Page Up / Down,
+  Home / End (line), Ctrl+Home / End (text), Tab inserts four spaces, mouse selection, wheel and scrollbar. Wraps at
+  words unless `input_flags::no_wrap` (scrolls sideways); `read_only` gives a copyable view. Pasted line breaks are
+  normalised to `\n`, tabs become spaces. Lines are recomputed only when text, width or font change.
+- **Combo box:** drawn above every window, flips up near the bottom, scrolls past 8 rows, Up / Down / Enter / Esc; a
+  click outside only closes it.
+- **Tabs:** header row with a sliding highlight; you draw the selected content.
 - **Icons:** bake `glyph_ranges::private_use` from an icon font (Segoe MDL2 Assets / Segoe Fluent Icons ship with
-  Windows; `font_config::exact_face` makes a missing font an error instead of a silent substitute) and use
-  `strata/icons.hpp` for named code points, or any code point as `strata::glyph_string{0xe80f}`.
+  Windows; `font_config::exact_face` makes a missing font an error) and use `strata/icons.hpp`, or any code point as
+  `strata::glyph_string{0xe80f}`.
 
 ## Color, trees, tables
 
@@ -191,41 +186,33 @@ if (ui.begin_table("files", 3, strata::table_default, /*scroll height*/ 240.0f))
 }
 ```
 
-- **Color picker:** saturation / value square, hue bar, alpha bar over a checkerboard, live preview and a hex field that
-  accepts `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`. It keeps its own HSV while you drag, so grays and black do not lose
-  the hue. `color_edit` shows it in a popup (flips upward near the screen edge, closes on Esc or a click outside).
-- **Popups:** `begin_popup_at` / `end_popup` are the general mechanism behind the combo list and the color popup:
-  drawn above every window with the normal layout redirected into them, so any widget works inside.
-- **Trees:** guide lines, animated arrow, `arrow_only` (arrow toggles, the row is read with `ui.item_pressed()`),
-  `selected`, `default_open`. `selectable` is the same row without children.
-- **Rows outside the view cost nothing.** `selectable`, `tree_leaf`, `tree_node`, `table_tree_*` and `custom_item`
-  place themselves in the layout and then stop if their rectangle does not meet the clip rectangle: no hit test, no
-  animation slot, no measuring, no geometry. The layout advance, the open / closed state and the `tree_pop` nesting
-  are the same either way, so the scrollbar range and everything below are unchanged and nothing has to opt in. This
-  is what makes a deep tree affordable when `list_clipper` cannot be used, because the rows are not all one height:
-  `--scene bigtree` is 5 704 nodes over four levels, all expanded, at 0.4 ms of UI time a frame with 22 rows drawn.
-- **Telling rows apart without building strings.** Ids come from the label, so rows that repeat a name used to need a
-  `name + "##" + path` per row per frame. The extra-id overloads take the identity separately -- it is hashed after
-  the label and never shown -- and `push_id` also accepts a pointer, a `u64` or an `int`:
+- **Color picker:** SV square, hue bar, alpha bar, preview and a hex field (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`).
+  Keeps its own HSV while dragging, so greys keep their hue. `color_edit` shows it in a popup.
+- **Popups:** `begin_popup_at` / `end_popup` (behind the combo and color popups) draw above every window with the
+  layout redirected inside, so any widget works there.
+- **Trees:** guide lines, animated arrow, `arrow_only` (read the row with `ui.item_pressed()`), `selected`,
+  `default_open`. `selectable` is the same row without children.
+- **Off-screen rows cost nothing.** `selectable`, `tree_leaf`, `tree_node`, `table_tree_*` and `custom_item` advance
+  the layout, then stop if outside the clip rect: no hit test, animation slot, measuring or geometry. Scrollbar range,
+  open state and nesting are unaffected, and nothing has to opt in. This makes deep trees of mixed row height
+  affordable: `--scene bigtree` (5 704 nodes, all expanded) takes 0.4 ms a frame with 22 rows drawn.
+- **Row identity without strings.** Extra-id overloads take the identity separately (hashed after the label, never
+  shown); `push_id` also takes a pointer, `u64` or `int`:
 
 ```cpp
 ui.selectable(node.name, {reinterpret_cast<const char*>(&node.id), sizeof(node.id)}, node.id == selected);
 ui.tree_node(ns.name, ns.full_path, tree_flags::default_open);
 ui.push_id(&object);  /* rows of this object */  ui.pop_id();
 ```
-- **Opening and closing:** `set_next_item_open(bool)` (and `set_next_item_open_recursive`) overrides the stored state
-  of the next node; Ctrl or Shift held while a node's arrow is clicked applies it to the whole subtree;
-  `open_all_tree_nodes()` / `close_all_tree_nodes()` do the same for everything in the current id scope, and keep
-  applying for a few frames so a tree unfolds all the way instead of one level per frame.
-- **Tables:** widths are stored as fractions of the table width, so they survive window resizing and drag-resizing
-  keeps the total constant. Each cell is clipped to its column. With a height, the body scrolls (wheel or scrollbar)
-  under a fixed header; `table_next_row()` returns false for rows outside the view so big tables stay cheap.
-  Rows use the previous row's height for their background (uniform rows look exact, mixed heights are drawn
-  slightly off for one row).
-- **Nested tables:** `begin_table` inside a cell of another table (up to five levels deep) works like any other; the outer
-  row grows to fit it. Tables repeated in rows need distinct ids so each keeps its own column widths and scroll position:
-  `ui.push_id(row_key); if (ui.begin_table("items", 2)) {...} ui.pop_id();`. The mouse wheel goes to the innermost table
-  (or child region, or window) under the pointer that can still scroll.
+- **Opening and closing:** `set_next_item_open(bool)` / `set_next_item_open_recursive` override the next node;
+  Ctrl / Shift + arrow click applies to the subtree; `open_all_tree_nodes()` / `close_all_tree_nodes()` cover the
+  current id scope and keep applying until the tree fully unfolds.
+- **Tables:** widths are fractions of the table width (survive resizing; drag-resizing keeps the total). Cells clip
+  to their column. With a height the body scrolls under a fixed header; `table_next_row()` is false for rows out of
+  view. Row backgrounds use the previous row's height (mixed heights are off for one row).
+- **Nested tables:** up to five levels; the outer row grows to fit. Tables repeated per row need distinct ids:
+  `ui.push_id(row_key); if (ui.begin_table("items", 2)) {...} ui.pop_id();`. The wheel goes to the innermost
+  scrollable region under the pointer.
 
 ## Images and docking
 
@@ -258,53 +245,35 @@ std::string layout = ui.dock_save_layout();      // the whole arrangement as tex
 ui.dock_load_layout(layout);                     // ... and bring it back (before or after the windows were shown)
 ```
 
-- **Images:** one textured quad per image, corners rounded analytically by the pixel shader (the same signed-distance
-  test as the shapes), so a rounded, tinted, cropped image costs no more than a plain one. The renderer hands out ids;
-  `d3d11_renderer` keeps a list of shader resource views, `d3d12_renderer` a slot in its descriptor heap (255 textures,
-  `create_texture` uploads on the queue given to `create()` and waits). A command that refers to a destroyed texture draws
+- **Images:** one quad each, corners rounded by the same SDF as shapes, so rounding, tint and crop are free. d3d11
+  keeps a list of SRVs; d3d12 a descriptor-heap slot (255 textures). A command whose texture was destroyed draws
   nothing.
-- **Texture formats:** `texture_format::rgba8`, `bgra8` (decoder / GDI order), `r8` (a grey level, shown as opaque grey), `a8` (coverage:
-  white with that alpha, so `tint` colors it: masks, icons) and `rgba16f` (half floats, the displayed range is 0..1). `r8` / `a8` are
-  expanded to rgba8 on the cpu (one code path in both renderers); the others upload as they are.
-- **Mip maps:** `texture_desc::mip_levels` = 1 (none), 0 (the whole chain) or n. The levels are made on the cpu with a 2x2 box filter
-  that weights colors by alpha (transparent texels do not darken the edge of a shape), and the pixel shader picks the level from how
-  much the quad shrinks the image (trilinear), so a picture drawn far below its size stays smooth instead of shimmering. Images
-  that are drawn at their size or larger read level 0 as before.
-- **Texture updates:** a texture created `updatable` keeps a cpu copy (wiped when the texture is destroyed; without the flag the
-  copy is wiped right after the upload). `update_texture(id, x, y, w, h, pixels)` replaces a rectangle and rebuilds only the parts
-  of the mip levels it touches: d3d11 `UpdateSubresource`, d3d12 a blocking copy on the queue (which runs after the frames already
-  submitted, so the ones in flight are undisturbed). `strata::texture_image` (public, `strata/texture.hpp`) is the cpu side -
-  conversion, mip chain, dirty regions - for hosts with a renderer of their own.
-- **Docking:** a window with `window_flags::dockable` that is dragged by its title bar over the dock area shows where it would
-  land: the centre of a pane adds a **tab**, its edges **split** the pane, the border of the area splits the whole tree.
-  Let go and it fills that pane (tab bar instead of a title bar, no move / resize of its own, scrolls when its content
-  does not fit). Drag the splitters to resize panes, drag a tab away to float the window again. A window that is not
-  submitted for a frame leaves the dock and its pane collapses into its sibling. Docked windows sit below floating ones,
-  the tab bars and splitters count for `want_capture_mouse()`. `dock_window(title, zone, target, size)` /
-  `undock_window` / `is_docked` / `window_rect` do the same from code (e.g. for a default layout). Up to 32 panes; without a space a docked window just floats where it last was.
-- **Docking comfort:** while a window is dragged over a pane, a cross of **drop guides** shows in its middle (centre = tab, the
-  four arrows = split that side) and one guide per border of a big space (splits the whole tree); the guide under the pointer
-  lights up together with the preview, and the rest of the pane still works by position. Dropping on a pane's **tab bar** joins
-  its tabs at the place under the pointer (a marker shows where). Drag a tab sideways along its bar to **reorder** the tabs, pull it
-  down or up to tear it off. **Double-click** a tab to float its window, a splitter or an edge-dock handle to reset it (equal
-  halves / the size it was given). Hold **Shift** while dragging a window (or a whole pane) to move it without docking;
-  **Esc** cancels the docking of the drag in progress.
-- **Dock spaces:** every dock area is a *space* with its own tree of panes, up to 8 at once, so docks are not all over the app:
-  `dock_area(rect)` is the main one, `dock_area("name", rect)` adds more, `dock_edge(name, side, size, region)` is a panel
-  along the left / right / top / bottom of a region that returns what is left, so several chain around the client area
-  (an empty edge dock takes no room and shows a thin drop strip along the side while a dockable window is dragged; the
-  user resizes an occupied one by its handle), and `floating_dock(title, pos, size)` is a window that is itself a space:
-  windows dock into it, move, stack and collapse with it. `dock_window(title, zone, target, size, space)` docks from code.
-- **Whole panes:** what is left of a tab bar right of its tabs is a grip (six dots). Drag it and the whole pane, every tab of it,
-  travels: a ghost of the tab bar follows the pointer, the same drop previews show where it lands (a pane cannot be dropped on
-  itself), and on release the tabs join / split the target together, keeping their order and the selected one. Let go over no dock
-  and the windows float again, fanned out from the pointer.
-- **Saving a layout:** `dock_save_layout()` returns plain text (`strata-dock 2`, then per space its splits, ratios, tabs, selected
-  tab and edge-dock size, and per window its position, size and collapsed state). `dock_load_layout(text)` replaces the current
-  arrangement: windows and spaces are matched by name, so what is not shown any more is skipped and what is not in the text keeps
-  floating; text that is not a layout (or does not fit in 32 panes) returns false and changes nothing -- that includes a
-  `strata-dock 1` layout, saved before ids were 64-bit, whose window keys no longer match anything. Save it whenever you like,
-  e.g. at exit, and load it at start up.
+- **Texture formats:** `rgba8`, `bgra8` (decoder / GDI order), `r8` (opaque grey), `a8` (white with that alpha, so
+  `tint` colors it) and `rgba16f` (0..1 displayed). `r8` / `a8` are expanded to rgba8 on the cpu.
+- **Mip maps:** `mip_levels` = 1 (none), 0 (full chain) or n. Built on the cpu with an alpha-weighted 2x2 box filter;
+  the shader samples trilinearly, so heavily shrunk images do not shimmer.
+- **Texture updates:** `updatable` textures keep a cpu copy (otherwise wiped after upload).
+  `update_texture(id, x, y, w, h, pixels)` replaces a rectangle and rebuilds only the touched mip regions (d3d11
+  `UpdateSubresource`; d3d12 staged, frames in flight undisturbed). `strata::texture_image` (`strata/texture.hpp`)
+  is the cpu side for custom renderers.
+- **Docking:** drag a `window_flags::dockable` window by its title over a dock area: a pane's centre adds a **tab**,
+  its edges **split** it, the area border splits the whole tree. Docked windows get a tab bar instead of a title,
+  cannot move / resize themselves, and sit below floating ones. Drag splitters to resize, drag a tab away to float
+  it. A window not submitted for a frame leaves its dock. `dock_window` / `undock_window` / `is_docked` /
+  `window_rect` do it from code. Up to 32 panes; with no space, docked windows float where they were.
+- **Docking comfort:** **drop guides** (a centre cross per pane, one per border of a big space) highlight with the
+  preview. Dropping on a **tab bar** inserts at the pointer. Drag tabs along the bar to **reorder**, off it to tear
+  off. **Double-click** a tab to float it, a splitter / edge handle to reset it. **Shift** drags without docking,
+  **Esc** cancels docking.
+- **Dock spaces:** up to 8, each with its own pane tree: `dock_area(rect)` (main), `dock_area("name", rect)`,
+  `dock_edge(name, side, size, region)` (a side panel returning the remaining region, so they chain; empty ones take
+  no room and show a drop strip while dragging), and `floating_dock(title, pos, size)` (a window that is a space).
+- **Whole panes:** the space right of a pane's tabs is a grip (six dots) that drags the whole pane; its tabs join or
+  split the target together, keeping order and selection. Dropped over no dock, they float, fanned out.
+- **Saving a layout:** `dock_save_layout()` returns text (`strata-dock 2`: per space its splits, ratios, tabs,
+  selection and edge size; per window position, size, collapsed). `dock_load_layout(text)` matches by name, skips
+  unknown windows and floats missing ones; invalid text, more than 32 panes, or a `strata-dock 1` layout (pre
+  64-bit ids) return false and change nothing.
 
 ## DPI and UI scale
 
@@ -314,14 +283,11 @@ renderer.update_atlas(ui.font());          // d3d11 / d3d12: upload it
 ui.release_font_pixels();
 // on WM_DPICHANGED: the same three lines with the new platform.dpi_scale()
 ```
-Everything - padding, rounding, icons, table columns, your `custom_item`s - stays in logical pixels; `input_state::mouse_pos` and
-`display_size` arrive in physical ones and are converted, draw commands leave in physical ones, and glyphs are rasterised at
-`scale` times their configured size, so text stays sharp instead of being stretched. `font_atlas` has both flavours of metrics
-(`measure` / `line_height` in logical, `*_px` in physical pixels). Scaling costs one atlas rebuild (0.3 s for the sandbox's four fonts);
-font `ranges` / `data` given to `create()` must outlive the context if you rescale. `context::scale()`, `font_generation()`.
-The sandbox uses the monitor's dpi at start, follows `WM_DPICHANGED`, and has an "ui scale" combo. The dpi scale is
-the right default but a poor setting: see *UI scale at runtime* below for changing it while the ui is up, which the
-overlay does for you (atlas re-upload included).
+Everything you specify stays in logical pixels; mouse and display size arrive physical and are converted, draw
+commands leave physical, and glyphs are rasterised at `scale` times their size, so text stays sharp. `font_atlas`
+offers both (`measure` / `line_height` logical, `*_px` physical). A rescale costs one atlas rebuild (0.3 s for the
+sandbox's four fonts); font `ranges` / `data` given to `create()` must outlive the context. The dpi scale is a good
+default but a poor setting: see *UI scale at runtime*.
 
 ## Drawing: gradients, curves, acrylic
 
@@ -332,21 +298,19 @@ dl.arc(centre, radius, a0, a1, color, 8.0f);     dl.circle(c, r, color, 1.0f);  
 dl.backdrop(rect, /*blur*/ 18.0f, /*tint*/ color, radii(10.0f));                   // frosted glass
 ui.window("glass", pos, size, strata::window_flags::acrylic);                        // or child_flags::acrylic
 ```
-- **Gradients:** a `shape_style` has `gradient_dir` (any direction; `gradient_direction(degrees)`) and `radial`; `fill_top` is where it
-  starts, `fill_bottom` where it ends. Still one quad per shape.
-- **Lines and curves:** `polyline` builds a strip with mitred joins and a one-pixel antialiasing fringe (butt ends); curves and arcs
-  are tessellated to it (segment count from the length unless given). `polygon_filled` fills a convex polygon.
-- **Acrylic / blur:** a backdrop command copies the render target so far, boxes it down (1/2 or 1/4 size), blurs it with a
-  separable gaussian (two to six passes for big radii) and draws the panel from that - rounded, tinted (`style.window_bg` alpha *
-  `acrylic_alpha`) and with a fine grain (`acrylic_noise`). One blur serves consecutive panels; a new one is made when something
-  was drawn in between, so panels stack correctly. `style.blur_radius` is the radius. d3d11 reads the bound render target itself;
-  d3d12 needs `renderer.render(data, list, frame, &d3d12_target{resource, rtv_handle_ptr})`, without it (or with a multisampled
-  target) backdrop panels degrade to flat tints. Theme `glass` is made for it.
-- **Saturation / brightness:** `style.acrylic_saturation` (0 grey, 1 as it is, > 1 vivid) and `acrylic_brightness` re-grade the blurred
-  frame before the tint goes over it (`draw_list::backdrop(..., noise, saturation, brightness)`).
-- **Glass popups:** `style.popup_acrylic` (0 opaque, 1 glass) makes menus, dropdowns, tooltips and toasts frosted panels: shadow, then
-  the backdrop with the tint blended toward `acrylic_alpha`, then the border. A popup that is still fading in is drawn opaque. All three
-  are keys of the theme file (theme `glass` turns them on).
+- **Gradients:** `shape_style::gradient_dir` (any direction; `gradient_direction(degrees)`) and `radial`, from
+  `fill_top` to `fill_bottom`. Still one quad.
+- **Lines and curves:** `polyline` is a mitred strip with a one-pixel AA fringe (butt ends); curves and arcs
+  tessellate to it. `polygon_filled` fills convex polygons.
+- **Acrylic / blur:** a backdrop copies the target, downsamples (1/2 or 1/4), applies a separable gaussian (2-6
+  passes) and draws a rounded, tinted (`window_bg` alpha * `acrylic_alpha`), grained (`acrylic_noise`) panel.
+  Consecutive panels share a blur. `style.blur_radius` sets the radius. d3d12 needs
+  `renderer.render(data, list, frame, &d3d12_target{resource, rtv_handle_ptr})`; without it (or with MSAA) panels are
+  flat tints. Theme `glass` is made for it.
+- **Saturation / brightness:** `acrylic_saturation` (0 grey, 1 as is, > 1 vivid) and `acrylic_brightness` re-grade
+  the blurred frame.
+- **Glass popups:** `style.popup_acrylic` (0 opaque, 1 glass) frosts menus, dropdowns, tooltips and toasts (opaque
+  while fading in). All of these are theme-file keys.
 
 ## Themes and theme files
 
@@ -356,10 +320,9 @@ strata::themes::by_name("forest", ui.theme());       // solarized_light high_con
 strata::themes::save_file("my.theme", ui.theme(), "my theme");
 strata::themes::theme_result r;  strata::themes::load_file("my.theme", ui.theme(), &r);   // r.applied / unknown / invalid / first_problem_line
 ```
-A theme file is plain text, `key = value` per line, `#`, `;` or `//` start a comment line, colors are `#rgb`, `#rgba`, `#rrggbb` or
-`#rrggbbaa`, and a `base = nord` line (first) starts from a built-in theme so a file can override just a few keys. `to_string` /
-`from_string` do the same in memory. Keys: every `style` member (`padding`, `rounding`, `accent`, `window_bg`, `blur_radius`, ...).
-The sandbox has a "theme file" field with save / load buttons and takes `--theme` / `--theme-file`.
+Theme files are `key = value` lines (`#`, `;`, `//` comments), colors `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa`,
+and an optional first `base = nord` line to override just a few keys. Keys are the `style` members. `to_string` /
+`from_string` work in memory; the sandbox has save / load buttons and `--theme` / `--theme-file`.
 
 ## Key bindings and config files
 
@@ -382,40 +345,32 @@ cfg.save_file("settings.ini");
 cfg.load_file("settings.ini");
 binds.load(cfg);  strata::themes::from_config(cfg, ui.theme());  volume = cfg.get_float("app", "volume", 1.0f);
 ```
-- **Chords:** `key_chord{key, ctrl, shift, alt}` is a virtual-key code (or `input_state::pressed_key` side mouse button) with the exact
-  modifiers. `chord_to_string` / `chord_from_string` use the `accelerator()` syntax (`"Ctrl+Shift+S"`, `"Alt+F4"`, `"Page Up"`,
-  `"Mouse 4"`); `ui.chord_pressed(chord)` is what `accelerator()` uses. Plain keys are ignored while a text field has the keyboard,
-  and nothing fires while a hotkey field waits for a key.
-- **Multi-key chords:** a `key_sequence` is up to `key_sequence::max_steps` (3) chords pressed one after another ("Ctrl+K, Ctrl+S"),
-  each within `key_sequence_timeout` (1.5 s) of the one before; a plain `key_chord` converts to a one-step sequence, so this is a
-  drop-in everywhere a chord was accepted (`keybinds::action::chord` is a `key_sequence`). `sequence_to_string` / `sequence_from_string`
-  join / split the steps with `", "`. `ui.sequence_pressed(seq)` is true on the frame the last step lands; a key that does not
-  continue any sequence sharing the prefix so far leaves it pending for one more frame (so two sequences sharing a prefix, like
-  "Ctrl+K, Ctrl+S" and "Ctrl+K, Ctrl+O", both get a fair look at the next key) before it is dropped. `ui.hotkey_sequence("Label", seq)`
-  is the rebinding field: the first key commits immediately, pressing another within the timeout extends it (each extension commits
-  too); a bare Esc as the very first key leaves it as it was, a bare Backspace / Delete as the very first key unbinds it (with a
-  modifier, or once a step is already captured, they are just steps of the chord).
-- **keybinds:** `bind` / `reset` / `reset_all`, `conflict(name)` (another action on the same chord), `find`, `actions()`. `keybind_editor`
-  shows a reset button where a binding differs from its default and a mark where two actions collide; unbinding is Backspace / Delete.
-- **config:** case-insensitive sections and keys, order kept, values are one line of text; typed getters take a fallback for a missing or
-  malformed value. Keys before the first header are the section `""`. `from_string` merges into what is there and returns the number of
-  lines it could not read; `load_file` / `save_file` take utf-8 paths. Unbound actions are stored as an empty value, so a saved
-  "unbound" survives a load (an action missing from the file keeps its default).
-- **Contexts:** `binds.add("format", "Ctrl+Shift+F", "format the selection", "editor")` makes an action that only works (and only shows in
-  the palette) while `binds.set_context("editor", editor_has_focus)` is on; call it every frame with what is true right now. Actions of
-  different contexts can share a chord without conflicting, and while a context action is on it takes its key from a global action
-  with the same chord.
-- **Command palette:** `strata::command_palette palette; if (auto cmd = palette.show(ui, binds); !cmd.empty()) run(cmd);` is a modal search
-  box over every available action with its shortcut: Ctrl+Shift+P opens it (`palette.shortcut`, or `palette.open()`), typing filters
-  by `fuzzy_score`, Up / Down / Enter or a click chooses, Esc closes. Call `show()` once per frame outside any window.
-- **config_file (auto-save and hot reload, both optional):** `strata::config_file settings{"settings.ini"}; settings.load();` ties a config to a
-  file. Nothing else happens until you switch it on: `set_auto_save(true)` writes the file a moment after the last change (and when
-  the object goes away), `set_hot_reload(true)` reads it again when it changes on disk. Call `if (settings.update(dt)) apply(settings.data());`
-  once per frame (true = the data was replaced from the file). Use its `set_*` setters (or `touch()` after changing `data()`) so
-  auto-save notices. A file that changed on disk while there are unsaved changes is not read until they are written, so hot reload
-  never throws your changes away.
-- The sandbox's "key bindings and config file" window (`--scene config`, `--scene palette`) is the whole thing: rebind, contexts, palette,
-  save / load, the auto-save and hot-reload switches, and a live preview of the file; F2 / F3 / F6 / F7 are its default actions.
+- **Chords:** `key_chord{key, ctrl, shift, alt}`, a virtual-key code (or side mouse button) with exact modifiers.
+  `chord_to_string` / `chord_from_string` use the `accelerator()` syntax (`"Ctrl+Shift+S"`, `"Page Up"`,
+  `"Mouse 4"`). Plain keys are ignored while a text field has the keyboard; nothing fires while a hotkey field
+  captures.
+- **Multi-key chords:** a `key_sequence` is up to 3 chords ("Ctrl+K, Ctrl+S"), each within `key_sequence_timeout`
+  (1.5 s). A `key_chord` converts to a one-step sequence, so it drops in anywhere (`keybinds::action::chord` is a
+  `key_sequence`). `ui.sequence_pressed(seq)` fires on the last step; a non-matching key keeps the prefix one more
+  frame so sequences sharing it ("Ctrl+K, Ctrl+S" / "Ctrl+K, Ctrl+O") all get to check it.
+  `ui.hotkey_sequence("Label", seq)` captures: each key commits at once, another within the timeout extends it; a
+  bare Esc / Backspace / Delete as the first key cancels / unbinds.
+- **keybinds:** `bind` / `reset` / `reset_all`, `conflict(name)`, `find`, `actions()`. `keybind_editor` shows reset
+  buttons and conflict marks; Backspace / Delete unbinds.
+- **config:** case-insensitive sections and keys, order kept, one-line values; typed getters take a fallback. Keys
+  before the first header are in section `""`. `from_string` merges and returns the unreadable line count; paths are
+  utf-8. Unbound actions are stored as empty values, so "unbound" survives a reload.
+- **Contexts:** `binds.add("format", "Ctrl+Shift+F", "format the selection", "editor")` works (and shows in the
+  palette) only while `binds.set_context("editor", editor_has_focus)` is on; set it every frame. Different contexts
+  may share chords; an active context action beats a global one.
+- **Command palette:** `strata::command_palette palette; if (auto cmd = palette.show(ui, binds); !cmd.empty()) run(cmd);`
+  -- a modal fuzzy search (`fuzzy_score`) over available actions. Ctrl+Shift+P (`palette.shortcut`) or
+  `palette.open()`; Up / Down / Enter / click, Esc. Call `show()` once per frame outside any window.
+- **config_file:** `strata::config_file settings{"settings.ini"}; settings.load();` binds a config to a file. Opt-in
+  `set_auto_save(true)` (writes shortly after changes and on destruction) and `set_hot_reload(true)` (re-reads on
+  disk change). Call `if (settings.update(dt)) apply(settings.data());` per frame. Use its setters (or `touch()`
+  after editing `data()`). Unsaved changes are never overwritten by a reload.
+- `--scene config` / `--scene palette` show all of it (F2 / F3 / F6 / F7 are its default actions).
 
 ## Tabs, popups and status widgets
 
@@ -435,15 +390,13 @@ ui.spinner();  ui.same_line();  ui.text("syncing...");
 ui.badge("3", toast_kind::warning);   ui.badge("beta", color{178, 120, 255, 255});
 auto r = ui.chip("filter", {.closable = true, .selected = &on});    // r.clicked / r.closed
 ```
-- **Tabs:** `tab_bar` reports `changed`, `closed`, `moved_from` / `moved_to` and `add`; changing your own list is up to you (`apply_tab_events` does
-  it). Tabs are told apart by their label. Any number of tabs: when they do not fit they scroll (mouse wheel over the bar) and an arrow at
-  the right end opens a list of all of them. The plain `tab_bar(id, tabs, count, selected)` looks and behaves as before.
-- **Popups:** `open_popup` / `toggle_popup` / `popup` (or `begin_popup` / `end_popup`) / `close_popup` / `popup_is_open`. The panel opens under the last widget
-  (`last_item_rect()`) or at a position, its height follows the content, and it is drawn above all windows. One popup is open at a time
-  (menus, dropdowns and this share the slot), so no popup inside a popup.
-- **Status widgets:** `spinner` (an arc for work of unknown length), `badge` (a non-interactive pill; `kind_color(kind, theme)` gives the color),
-  `chip` (a removable / toggleable tag; `chip_options` has `closable`, `selected`, `tint`, `icon`).
-- `--scene tabs` shows all of it, with the options popup open.
+- **Tabs:** `tab_bar` reports `changed`, `closed`, `moved_from` / `moved_to`, `add`; `apply_tab_events` updates your
+  list. Overflowing tabs scroll (wheel) and get a list button.
+- **Popups:** `open_popup` / `toggle_popup` / `popup` (or `begin_popup` / `end_popup`) / `close_popup` /
+  `popup_is_open`. Opens under `last_item_rect()` or at a position, sized to content, above all windows. One at a time
+  (shared with menus and dropdowns).
+- **Status widgets:** `spinner`, `badge` (`kind_color(kind, theme)`), `chip` (`closable`, `selected`, `tint`, `icon`).
+- `--scene tabs` shows it all.
 
 ## Drag and drop, date and time pickers
 
@@ -459,15 +412,13 @@ if (drop)          { move_task(drop.as<int>(), position); }                 // t
 strata::date d{2026, 9, 25};  strata::time_of_day t{13, 45, 0};
 ui.date_picker("date", d);  ui.time_picker("time", t, /*seconds*/ true);  ui.datetime_picker("both", d, t);
 ```
-- **Drag and drop:** the payload is a small copy of your data (an index, an id, a color) tagged with a type name; a target only takes the type it asks
-  for. Dragging starts after a few pixels of movement, Esc cancels, and the release that ends a drag is not a click of the source. A
-  target outlines itself while a matching payload is over it (`drop_flags::no_highlight` turns that off). `begin_drag_source` /
-  `set_drag_payload` / `end_drag_source` are the unscoped form; `dragging()` and `drag_payload_type()` tell what is going on.
-- **Pickers:** a field that opens a month calendar (arrows for months and years, today marked, a Today button) or grids of hours / minutes
-  (and seconds) with - / + for the minutes in between. `datetime.hpp` has `date`, `time_of_day` (comparable), `days_in_month`,
-  `weekday`, `add_days`, `add_months`, `parse_date` / `parse_time`, `to_string`, and `override_clock(...)` to fix `today()` / `now()` for
-  tests and screenshots.
-- `--scene dnd` shows both, with the calendar open.
+- **Drag and drop:** the payload is a small typed copy of your data; targets accept one type. Drags start after a
+  few pixels, Esc cancels, and the release is not a click. Targets outline themselves (`drop_flags::no_highlight`
+  off). Unscoped: `begin_drag_source` / `set_drag_payload` / `end_drag_source`; `dragging()`, `drag_payload_type()`.
+- **Pickers:** a month calendar (month / year arrows, today marked, Today button) or hour / minute (/ second) grids.
+  `datetime.hpp`: `date`, `time_of_day`, `days_in_month`, `weekday`, `add_days`, `add_months`, `parse_date` /
+  `parse_time`, `to_string`, and `override_clock(...)` for tests.
+- `--scene dnd` shows both.
 
 ## Long lists and tables
 
@@ -489,32 +440,25 @@ if (ui.table_tree_node("src", tree_flags::default_open)) {
     ui.table_tree_pop();
 }
 ```
-- **list_clipper** submits only the rows that can be seen and reserves the space of the others, so the scrollbar and layout are those of the whole
-  list (100 000 rows cost a handful). It works in a fixed-height window, a `child`, and a table with a `height` (there it uses the table's row
-  height; `table_skip_rows(n)` skips rows by hand). Rows must have one height.
-- **Table columns:** `table_next_column()` is false for a hidden column (the code keeps filling cells in the order it declared them),
-  `table_headers_row` returns the clicked column by its declared index. `table_column_flags`: `default_hidden`, `no_hide`, `no_reorder`.
-- **Tree tables:** `table_tree_node` / `table_tree_leaf` / `table_tree_pop` draw an arrow, indent by depth and keep their open state by label.
-- **Auto-height windows:** a window that follows its content never grows past the bottom of the display: it scrolls instead.
-- **Rows of mixed height** do not need a clipper at all: they are culled one by one (see *Color, trees, tables*).
-  `ui.skip_item(h)` / `ui.skip_items(n, h)` reserve the space of a run the caller culled itself.
-- **Scrolling** is now controllable from the code, for the innermost region being built (a `child`, otherwise the
-  window): `scroll_y()`, `scroll_max_y()`, `set_scroll_y()`, `scroll_to_top()` / `scroll_to_bottom()`, and
-  `ensure_item_visible()` / `scroll_to_item()` for the row that was just submitted -- which is how "reveal the
-  selection" works. The new offset shows on the next frame, so it is called every frame the selection holds.
-- **Sideways scrolling** is opt-in per child region:
-  `ui.begin_child("pane", size, strata::child_flags::horizontal)`. Content wider than the region then scrolls
-  instead of being cut off, with a bar along the bottom, the tilt wheel (`WM_MOUSEHWHEEL`, which `win32_platform`
-  now forwards as `input_state::wheel_x`) and Shift + wheel. `scroll_x()`, `scroll_max_x()` and `set_scroll_x()`
-  are the counterparts of the vertical three. Full-width widgets still size themselves to the *visible* width, so
-  what overflows is whatever asked to be wide: an image, a long unwrapped line, a table given fixed column widths.
-  Windows and tables have no horizontal scrolling of their own -- they lay out to the width they are given -- so
-  put one inside a horizontal child when it needs to be wider than its pane.
-- **Keyboard navigation** is opt-in per list: between `nav_begin()` and `nav_end()` (or `auto n = ui.navigation("id");`)
-  Up / Down move a cursor over the rows, Home / End jump, PageUp / PageDown move by ten, Left closes a node or steps
-  out to its parent, Right opens it or steps in, and Enter reports the row exactly like a click. Clicking a row moves
-  the cursor to it; the row under the cursor reports `item_focused()` and draws a focus ring; the view follows it. The
-  scope only takes the keys while no text field has them, which is what `nav_active()` says.
+- **list_clipper** submits only visible rows and reserves space for the rest (100 000 rows cost a handful). Works in
+  fixed-height windows, `child` regions and tables with a height (`table_skip_rows(n)` by hand). Uniform rows only.
+- **Table columns:** fill cells in declared order; `table_next_column()` is false for hidden ones and
+  `table_headers_row` returns declared indices. Flags: `default_hidden`, `no_hide`, `no_reorder`.
+- **Tree tables:** `table_tree_node` / `table_tree_leaf` / `table_tree_pop` draw arrows, indent and keep open state.
+- **Auto-height windows** stop at the display bottom and scroll.
+- **Mixed-height rows** need no clipper: they are culled individually (see *Color, trees, tables*).
+  `ui.skip_item(h)` / `ui.skip_items(n, h)` reserve space for self-culled runs.
+- **Scrolling from code**, for the innermost region: `scroll_y()`, `scroll_max_y()`, `set_scroll_y()`,
+  `scroll_to_top()` / `scroll_to_bottom()`, and `ensure_item_visible()` / `scroll_to_item()` for the last row (call
+  every frame to follow a selection; applies next frame).
+- **Sideways scrolling** is opt-in: `ui.begin_child("pane", size, strata::child_flags::horizontal)`. Wider content
+  gets a bottom bar, the tilt wheel (`input_state::wheel_x`) and Shift + wheel; `scroll_x()`, `scroll_max_x()`,
+  `set_scroll_x()`. Full-width widgets still fit the visible width. Windows and tables do not scroll sideways
+  themselves; put them in a horizontal child.
+- **Keyboard navigation** is opt-in: between `nav_begin()` / `nav_end()` (or `auto n = ui.navigation("id");`) Up /
+  Down move a cursor, Home / End, PageUp / PageDown (10), Left / Right close / open or step out / in, Enter acts like a
+  click. Clicks move the cursor; the focused row reports `item_focused()` and draws a ring; the view follows. Inactive
+  while a text field has the keyboard (`nav_active()`).
 - `--scene lists` shows the tables, `--scene bigtree` the deep tree with a live `ui.stats()` panel.
 
 ## Rows: overlapping items, right-aligned controls, diagnostics
@@ -533,36 +477,23 @@ if (row.pressed && !ui.item_claimed()) { select(); }
 if (ui.item_clicked(strata::mouse_button::right)) { ui.open_popup("row menu"); }
 ```
 
-- **`same_line_right(width)`** places the next item so it ends at the right edge of the content area -- which already
-  accounts for the padding and for a scrollbar that is showing, so a right-aligned control does not move when either
-  changes. **`push_right_gutter(w)` / `pop_right_gutter()`** (or the scoped `ui.right_gutter(w)`) take `w` off the
-  width everything until the pop is laid out in, while `same_line_right` still reaches the real edge: the full-width
-  item submitted first ends at the gutter instead of running under whatever is drawn in it, and its label is
-  ellipsized there. `ui.label_clipped(pos, max_width, color, text)` is `text_ellipsis` for a custom item that paints
-  its own row.
-- **Overlapping items.** By default the item submitted *first* claims the press, which is wrong when a button is drawn
-  on top of a row. `allow_item_overlap()` after an item lets a later overlapping one take the press instead (exactly,
-  in the same frame) and drops its hover highlight while the pointer is over that later item (one frame late -- the
-  item on top has not been submitted yet when the one below draws itself). `item_claimed()` says whether that
-  happened. Nothing changes for code that does not call it.
-- **The last item** can be asked about without submitting an invisible one over it: `item_rect()`, `item_hovered()`,
-  `item_clicked(mouse_button)` (right and middle are reported on the press, left on the release, like the widget's own
-  return value) and `item_double_clicked()`.
-- **`draw().corner_brackets(rect, color)`** marks a rectangle by its four corners only -- the viewport outline an
-  object picker draws over what is under the cursor, which reads on top of a busy scene without boxing it in.
-- **`ui.stats()`** reports what the frame that just ended cost: items submitted and how many of those were culled,
-  vertices, indices, draw calls, label measurements and how many the cache answered, animation-table occupancy, and
-  the time in `begin_frame` / `end_frame`. It is what tells you whether a stall is strata or your own data walk.
-- **Tooltip delay** is `style::tooltip_delay_s` (0.4 s by default, `style_var::tooltip_delay` to push it), so tooltips
-  do not pop on every row a pointer crosses while a tree scrolls past.
-- **Text fields** take `input_flags::clear_button` (a small x while the field has text) beside the existing
-  `select_all_on_focus`.
-- **Row accessories** are the ready-made version of all that, for the common case -- a small control at the right
-  end of a row. Tell the row how much to reserve with `set_next_item_gutter(w)` before submitting it, then call
-  `row_accessory_button` / `row_accessory_checkbox` / `row_accessory_toggle` after it. strata places them right to
-  left inside the row, clips them to it, keeps them clear of the scrollbar, takes the press away from the row and
-  elides the row's own label at the gutter -- no hit boxes, hover halos, clip intersections or gradient fades in the
-  caller:
+- **`same_line_right(width)`** ends the next item at the content's right edge (after padding and any scrollbar).
+  **`push_right_gutter(w)` / `pop_right_gutter()`** (or `ui.right_gutter(w)`) narrow the layout by `w` while
+  `same_line_right` still reaches the real edge, so a full-width row ends (and ellipsizes) before its buttons.
+  `ui.label_clipped(pos, max_width, color, text)` is `text_ellipsis` for custom rows.
+- **Overlapping items.** By default the first-submitted item wins the press. `allow_item_overlap()` lets later
+  overlapping items take it (same frame) and suppresses its hover under them (a frame late). `item_claimed()` reports
+  it.
+- **The last item:** `item_rect()`, `item_hovered()`, `item_clicked(mouse_button)` (right / middle on press, left on
+  release) and `item_double_clicked()`.
+- **`draw().corner_brackets(rect, color)`** marks a rect by its corners only (a viewport picker outline).
+- **`ui.stats()`** reports the last frame: items submitted / culled, vertices, indices, draw calls, label
+  measurements and cache hits, animation-table use, `begin_frame` / `end_frame` time.
+- **Tooltip delay:** `style::tooltip_delay_s` (0.4 s; `style_var::tooltip_delay` to push).
+- **Text fields** take `input_flags::clear_button` (an x while non-empty) and `select_all_on_focus`.
+- **Row accessories** do all of this for the common case: reserve with `set_next_item_gutter(w)`, submit the row,
+  then `row_accessory_button` / `_checkbox` / `_toggle`. They are placed right to left, clipped, clear of the
+  scrollbar, take the press from the row, and the row's label is elided at the gutter:
 
 ```cpp
 ui.set_next_item_gutter(56.0f);
@@ -571,14 +502,12 @@ if (ui.item_truncated()) { ui.tooltip(object.name); }          // it was cut: sh
 if (ui.row_accessory_button(icon_font, icons::trash)) { destroy(); }
 ui.row_accessory_checkbox("vis", object.visible);
 ```
-- **Row labels are elided** to the room the row actually has (its width, minus the indent, minus the gutter) instead
-  of running out from under whatever is drawn on top. `item_truncated()` says whether that happened, for a row or
-  for `text_ellipsis()`, so a caller does not have to re-measure to decide whether a tooltip is worth showing.
-- **Plain text is an item.** `text()`, `text_dim()`, `textf()` and `text_colored()` register their rectangle, so
-  `item_hovered()`, `item_rect()`, `tooltip()` and `context_menu()` after them are about the text and not about
-  whatever widget came before it. They still take no press, so nothing about clicking changes.
-- `--scene rows` shows the overlapping header rows, the gutter and the keyboard list; `--scene app` shows the
-  accessories, the selection, the disabled buttons, the filtered combo and the runtime scale together.
+- **Row labels are elided** to the room they have (width minus indent and gutter); `item_truncated()` tells whether
+  a row or `text_ellipsis()` was cut.
+- **Plain text is an item:** `text()`, `text_dim()`, `textf()`, `text_colored()` register their rect, so
+  `item_hovered()`, `tooltip()` and `context_menu()` apply to them. They take no press.
+- `--scene rows` shows overlap, gutters and keyboard lists; `--scene app` shows accessories, selection, disabled
+  buttons, the filtered combo and runtime scaling.
 
 ## Shortcuts, focus, disabled items, selections
 
@@ -597,45 +526,30 @@ if (ui.selectable(rows[i].name, id, sel.contains(i))) { ui.selection_click(sel, 
 switch (ui.confirm("destroy", {"Destroy", "Cancel"}, {.remember = &never_ask, .danger = 1})) { case 1: ...; }
 ```
 
-- **Raw keys.** `key_pressed(vk, ctrl, shift, alt)` is the edge, `key_down(vk)` the level, over windows virtual-key
-  codes -- so Delete, F2, F5 and the rest need no `GetAsyncKeyState` and no held/not-held bit of your own. Both stay
-  quiet while a text field or a hotkey field has the keyboard. `key_down` needs `input_state::keys_held`, which
-  `win32_platform` fills; a host that cannot always answers false, while `key_pressed` works either way.
-  `accelerator("Del")` has always worked outside a menu too, and follows the same focus rule.
-- **Raw mouse buttons:** `mouse_down(b)`, `mouse_clicked(b)`, `mouse_released(b)`, 0 left / 1 right / 2 middle. Ask
-  `item_clicked(mouse_button)` instead when you mean "on the thing I just submitted".
-- **Which window has the keyboard.** `window_focused()` is about the window being submitted right now and
-  `is_window_focused(title)` about any of them, so Delete in one panel does not act on another's selection. It
-  follows the last window that was pressed in, docked panels included (which never restack, so "topmost" could not
-  answer this).
-- **Text focus** is idempotent: `request_text_focus(label)` does nothing when that field already has the keyboard,
-  so it can be called every frame with no "did I ask already" flag and without taking the caret back on every
-  keystroke. `focused_field()` and `field_focused(label)` say which field is live -- no more inferring it from
-  hover plus `want_text_input()`.
-- **Disabled items:** `begin_disabled(cond)` / `end_disabled()`, or the scoped `ui.disabled_if(cond)`. Everything
-  inside is faded and inert -- no hover highlight, no press, no keyboard -- but still reports `item_hovered()`, so
-  the tooltip that explains why it is disabled works. They nest, and an enabled scope inside a disabled one stays
-  disabled.
-- **Selections:** `selection_state` holds the indices, `ui.selection_click(sel, index)` applies the rules a list is
-  expected to have -- plain click selects one, Ctrl toggles, Shift takes the range from the anchor, and the anchor
-  stays put so dragging the range keeps working. `clamp_to(count)` drops what a shrinking list left behind.
-- **Confirmations** own their state: `ask_confirm(id, message, user_data)` opens one and remembers what it was about
-  (`confirm_data()`), `confirm(id, buttons, options)` draws it and returns the button (1..n), -1 for Esc, 0 while
-  nothing is being asked. `confirm_options::remember` points at a "don't ask again" flag: the dialog renders the
-  checkbox, stores the answer there, and while the flag is set it never opens and answers `remembered` straight
-  away -- so the caller needs no special case for it, and no member-variable pair per dialog. `danger` draws one
-  button in the warning colour. The id is global, like a modal's title.
-- **Clipboard:** `ui.copy_text(string_view)` and `ui.paste_text(std::string&)` go through the hooks the text fields
-  already use, instead of `GlobalAlloc` / `OpenClipboard` in the app.
-- **Geometry you should not have to re-derive:** `context::scrollbar_width()`, `content_rect()` (the visible
-  rectangle of the innermost scrolling region, in logical screen coordinates) and `item_arrow_hit()` (the press on
-  the last tree row landed on its arrow, not its label).
-- **Long dropdowns:** `combo_filtered()` opens with the keyboard in a search box, narrows as you type
-  (case-insensitive substring), submits only the rows in view, and takes Up / Down / PageUp / PageDown / Enter /
-  Esc. A few hundred entries are what it is for.
-- **Tabs** can keep their identity apart from their caption: `tab_desc{label, icon, id}`. A tab whose text gains a
-  dirty dot, a pin marker or a count keeps its place, its selection and its drag state only if it keeps its `id`.
-  Middle-clicking a closable tab closes it.
+- **Raw keys:** `key_pressed(vk, ctrl, shift, alt)` (edge) and `key_down(vk)` (level) over virtual-key codes; quiet
+  while a text / hotkey field has the keyboard. `key_down` needs `input_state::keys_held` (filled by
+  `win32_platform`); `key_pressed` always works. `accelerator("Del")` follows the same rule.
+- **Raw mouse buttons:** `mouse_down(b)`, `mouse_clicked(b)`, `mouse_released(b)` (0 left, 1 right, 2 middle); use
+  `item_clicked(mouse_button)` for "on the item I just submitted".
+- **Window focus:** `window_focused()` (the window being submitted) and `is_window_focused(title)`; follows the last
+  window pressed in, docked panels included.
+- **Text focus:** `request_text_focus(label)` is idempotent (safe every frame). `focused_field()` /
+  `field_focused(label)` report the live field.
+- **Disabled items:** `begin_disabled(cond)` / `end_disabled()` or `ui.disabled_if(cond)`: faded and inert, but
+  `item_hovered()` still works for an explanatory tooltip. Nests; inner enabled scopes stay disabled.
+- **Selections:** `selection_state` + `ui.selection_click(sel, index)`: click selects one, Ctrl toggles, Shift takes
+  the range from the anchor. `clamp_to(count)` trims after the list shrinks.
+- **Confirmations** own their state: `ask_confirm(id, message, user_data)` opens one (`confirm_data()` returns the
+  data), `confirm(id, buttons, options)` draws it and returns 1..n, -1 for Esc, 0 while idle.
+  `confirm_options::remember` points at a "don't ask again" flag: while set, it answers `remembered` without opening.
+  `danger` colors one button. Ids are global like modal titles.
+- **Clipboard:** `ui.copy_text(string_view)` / `ui.paste_text(std::string&)` use the text fields' hooks.
+- **Geometry queries:** `scrollbar_width()`, `content_rect()` (visible rect of the innermost scrolling region) and
+  `item_arrow_hit()` (the last tree-row press hit its arrow).
+- **Long dropdowns:** `combo_filtered()` opens with a search box (case-insensitive substring), submits only visible
+  rows, and takes Up / Down / PageUp / PageDown / Enter / Esc. Fine for hundreds of entries.
+- **Tab identity:** `tab_desc{label, icon, id}` keeps place, selection and drag state when the caption changes.
+  Middle-click closes a closable tab.
 
 ## Code editor, passwords and input masks
 
@@ -648,15 +562,13 @@ ui.input_text("password", pw, {}, input_flags::password | input_flags::reveal); 
 ui.input_masked("phone", phone, "(###) ###-####");                 // "(555) 123-4567" is built as you type
 ui.input_masked("plate", plate, "UU-###");                         // "AB-123": letters are made upper case
 ```
-- **input_code** is a multi-line field without wrapping. `code_flags` (all on in `code_default`): `line_numbers`, `highlight_line`, `bracket_match`
-  (the bracket next to the caret and its partner are boxed), `auto_indent` (Enter keeps the indentation and adds a level after `{ ( [`, a typed `}` steps
-  back), `find_replace` (Ctrl+F / Ctrl+H open a bar above the text that marks every match: Enter / Shift+Enter or the arrows step through them,
-  Replace and All change the text). Tab goes to the next tab stop, and indents every line of a selection (Shift+Tab unindents).
-  `code_goto_line` and `code_find` are called in the id scope of the field.
-- **Masks:** `#` a digit, `A` a letter, `U` / `L` a letter turned to upper / lower case, `X` a letter or digit, `?` any character, `\` makes the next
-  character literal, everything else is literal. `value` always holds the formatted text; typing, deleting, pasting and moving the caret keep its
-  shape (the undo history is off for masked fields).
-- `--scene editor` shows the editor (with the find and replace bar open), passwords and masks.
+- **input_code:** a non-wrapping multi-line field. `code_flags` (all in `code_default`): `line_numbers`,
+  `highlight_line`, `bracket_match`, `auto_indent` (keeps indentation, +1 after `{ ( [`, a typed `}` dedents),
+  `find_replace` (Ctrl+F / Ctrl+H bar marking every match; Enter / Shift+Enter step, Replace / All). Tab indents a
+  selection's lines, Shift+Tab unindents. Call `code_goto_line` / `code_find` in the field's id scope.
+- **Masks:** `#` digit, `A` letter, `U` / `L` letter to upper / lower, `X` letter or digit, `?` anything, `\` escapes,
+  the rest is literal. `value` always holds the formatted text; editing keeps its shape (no undo history).
+- `--scene editor` shows it all, with the find / replace bar open.
 
 ## Number inputs, multi-select, plots
 
@@ -676,20 +588,18 @@ o.x_start = 0.0f;  o.x_step = 0.5f;            // sample i is at x_start + i * x
 o.fill = true;  o.zoom_pan = true;             // area under the lines; wheel / drag / double-click
 ui.plot("load", std::array{plot_series{"cpu", cpu, {}}, plot_series{"gpu", gpu, {}}}, o);
 ```
-- **Drag fields:** drag sideways to change the value (Shift = a tenth of the speed, Alt = ten times); a plain click (the pointer stays within
-  5 px) turns the box into a text field with the number selected, so you can just type (Enter applies, Esc cancels, leaving applies); `lo < hi` clamps and makes the field a ruler: its width spans the range and the fill follows the pointer 1:1 (`speed` only matters without a range).
-  Integer drags move in whole steps and carry the remainder.
-- **Number fields:** `input_float` / `input_int` reparse on every change, so half-written text ("-", "1e") leaves the value alone.
-- **Multi-select dropdown:** the field shows what is chosen ("a, b", "all (5)" or the placeholder); the popup has a check box per row,
-  stays open while you click, has "select all" / "clear" above longer lists and works with Up / Down / Enter.
-- **Plots:** min / max on the left, a grid, a hover cursor with a tooltip listing every series' value; series of any length (more samples
-  than pixels are reduced to each pixel's extremes); `values` may be a ring buffer via `offset`. `plot_auto` lo / hi fit the data.
-- **Charts** (`plot(label, series, plot_options)`): "nice" tick marks (steps of 1, 2 or 5 times a power of ten, as many as fit) with labels,
-  units (`plot_axis::unit`, added to every label and the hover tooltip), grid lines, axis titles and a legend; `fill` shades the area
-  under line series and fades it toward the axis (`draw_list::area_fill`); a histogram has bars with real widths (`x_step`). With
-  `zoom_pan` the wheel zooms x around the pointer, Ctrl + wheel zooms the values, dragging pans (the values too once they were zoomed),
-  a double-click resets; the view is kept per chart between frames (`plot_zoomed`, `plot_x_range`, `plot_reset_view`), it always
-  overlaps the data and is limited to four times the data width. The value range follows the samples in view unless fixed or zoomed.
+- **Drag fields:** drag sideways (Shift 0.1x, Alt 10x); a click without moving 5 px types (Enter / leaving applies,
+  Esc cancels). `lo < hi` clamps and makes the field a ruler tracking the pointer 1:1. Integer drags carry the
+  remainder.
+- **Number fields:** `input_float` / `input_int` reparse on change; partial text ("-", "1e") leaves the value alone.
+- **Multi-select dropdown:** shows "a, b", "all (5)" or the placeholder; stays open while clicking, has "select all"
+  / "clear" for longer lists, Up / Down / Enter.
+- **Plots:** min / max labels, grid, hover cursor with every series' value; long series reduce to per-pixel
+  extremes; `offset` for ring buffers; `plot_auto` fits the data.
+- **Charts** (`plot(label, series, plot_options)`): nice ticks (1 / 2 / 5 x 10^n), units, grid, axis titles,
+  legend; `fill` shades under lines (`draw_list::area_fill`); histograms use `x_step` widths. With `zoom_pan`: wheel
+  zooms x at the pointer, Ctrl + wheel zooms values, drag pans, double-click resets. Views persist per chart
+  (`plot_zoomed`, `plot_x_range`, `plot_reset_view`), stay over the data and zoom out to at most 4x its width.
 
 ## Selectable text and the log view
 
@@ -701,20 +611,15 @@ strata::log_buffer log{5000};                                // a ring of lines
 log.addf(strata::log_level::warn, "low disk: {} MB", mb);    log.add(strata::log_level::error, "boom");             // lines are stamped with ui.time() when first drawn (shown by the "time" checkbox)
 ui.log_view("console", log);                                 // toolbar + lines, fills a fixed-height window
 ```
-- **Selectable text** is the read-only multi-line field without its frame (`input_flags::read_only | no_frame | auto_height`), so it shares
-  the selection, caret-less highlighting, word selection and clipboard code.
-- **Log view:** filter (case-insensitive substring), minimum level, follow (sticks to the newest line; scrolling up lets go, reaching the
-  bottom takes it back), optional time column, copy, clear. Only the visible rows are drawn (12000 lines cost like 20). Click / Shift-click /
-  drag select rows, Ctrl+A / Ctrl+C copy them. The view's state lives in `log.view`, so a buffer is one view.
-  **`wrap`** (`log.view.wrap`, a checkbox in the toolbar) lets long lines and lines with line breaks take as many rows as they need: the
-  height of each line is measured once per line and width, the rows are laid out from a table (binary search for the first visible row), so
-  a wrapped log of thousands of lines still draws only what is in view. **Clock times:** every line is stamped with the system clock when
-  it is added (`log.add(level, text, ui_time, wall_ms)` to replay lines with the times they had); `show_time` + `clock` shows
-  `HH:MM:SS.mmm` local time (`log_buffer::clock_text(wall_ms)`), otherwise the seconds of ui time as before.
-  The text of every line lives in one arena rather than a `std::string` per line -- a program logs at whatever rate
-  it produces events, and a string each meant an allocation each. `line.text()` is a `std::string_view` into that
-  arena, valid until the next `add()` / `clear()`; the arena is compacted as lines fall out of the ring and settles
-  at about the size of the lines the ring holds, after which logging allocates nothing.
+- **Selectable text** is a frameless read-only multi-line field (`read_only | no_frame | auto_height`), sharing its
+  selection and clipboard code.
+- **Log view:** filter (substring), minimum level, follow (scrolling up releases, the bottom re-engages), time
+  column, copy, clear. Only visible rows draw (12000 lines cost like 20). Click / Shift-click / drag select rows,
+  Ctrl+A / C copy. State lives in `log.view`. **`wrap`** gives long / multi-line entries several rows (heights
+  cached per line and width, binary-searched). **Clock times:** lines are stamped with the wall clock on add
+  (`log.add(level, text, ui_time, wall_ms)` replays); `show_time` + `clock` shows local `HH:MM:SS.mmm`.
+  Line text lives in one compacting arena: `line.text()` is valid until the next `add()` / `clear()`, and steady
+  state allocates nothing.
 
 ## Modals, menus, toasts
 
@@ -737,28 +642,23 @@ if (ui.accelerator("Ctrl+O")) { /* works with every menu closed: the same string
 if (auto m = ui.context_menu("row", row_rect)) { ui.menu_item("Rename"); ui.menu_item("Delete", "Del"); }  // right-click
 ui.toast("Saved", "profile.json was written.", strata::toast_kind::success);       // info / success / warning / error
 ```
-- **Modals:** centered, fading in over a dimmed area (`style.modal_dim`) that covers every window and the menu bar; the topmost one has the
-  input, everything below gets no hover or clicks (`want_capture_mouse()` stays true). `modal_flags::esc_closes` / `backdrop_closes`
-  (Esc is ignored while something inside has the keyboard). `dialog()` is the ready-made message box; it returns the 1-based button pressed, -1
-  when dismissed, 0 while open, and closes itself.
-- **Menus:** popups in the overlay layer (a menu measures itself in its first, invisible frame). A press outside closes the whole chain, Esc
-  too; a plain row closes an open submenu beside it; with a bar menu open the other headers open on hover. `menu_item(label, shortcut,
-  selected, enabled)` and a `bool&` overload for check items; a click closes all menus. The main menu bar is a window of its own above the
-  others (`main_menu_bar_height()`), `begin_popup_menu` / `open_popup_menu` are the same popups without the right click.
-  `menu_item(label, menu_item_options)` (also with a `bool&`) has everything a row can have: `shortcut` text, an `icon` glyph (any
-  font, e.g. the icon font; a checked row puts it on an accent chip) or an `image` texture in the icon column, `selected`, `enabled` and
-  `keep_open` (the click returns true but the menus stay: toggles, tool options).
-- **Mnemonics and accelerators:** a `&` in a label marks its mnemonic (`"&Open"`, `"&&"` is a literal `&`; underlined in popups, and in the
-  bar while Alt is held). While a menu is open, pressing the letter (or digit) activates that row of the deepest open popup, or opens the
-  submenu; Alt + the letter opens a menu of the bar (the win32 platform swallows the system beep of Alt + letter). `accelerator("Ctrl+Shift+S")`
-  is true on the frame the combination is pressed (exact modifiers; names: letters, digits, F1-F24, Enter, Esc, Space, Tab, Backspace, Del,
-  Ins, Home, End, PgUp, PgDn, arrows); with a text field focused only Ctrl / Alt combinations count, and not its own Ctrl+A/C/V/X/Z/Y.
-- **Toasts:** stacked newest-first in a corner (`set_toast_corner`), sliding and fading; hovering one pauses its timer, clicking dismisses
-  it; at most 8 at a time. `ui.toast(toast_options)` returns a `toast_handle` and adds **buttons** and **progress**:
-  `.actions = {"Undo", "Details"}` (up to three; pressing one closes the toast and `ui.toast_action(handle)` says which, once) and
-  `.progress` (0..1: a bar that fills, `toast_busy`: an endless one; `.seconds = 0` keeps it until closed).
-  `toast_progress(handle, fraction, text)` feeds it (1.0 completes it: it closes 2 s later), `toast_close`, `toast_alive`. A toast with
-  buttons or progress is not dismissed by a click on its body (a small x shows while it is hovered); a plain one still is.
+- **Modals:** centred, fading in over a dim (`style.modal_dim`) covering everything; the topmost gets the input.
+  `modal_flags::esc_closes` / `backdrop_closes`. `dialog()` returns the 1-based button, -1 dismissed, 0 while open,
+  and closes itself.
+- **Menus:** overlay popups. An outside press or Esc closes the chain; bar menus open on hover once one is open.
+  `menu_item(label, shortcut, selected, enabled)` plus a `bool&` check overload; a click closes all menus. The main
+  menu bar is its own top window (`main_menu_bar_height()`); `begin_popup_menu` / `open_popup_menu` open without a
+  right click. `menu_item(label, menu_item_options)` adds `shortcut`, an `icon` glyph or `image` texture,
+  `selected`, `enabled` and `keep_open`.
+- **Mnemonics and accelerators:** `&` marks a mnemonic (`"&&"` = `&`; underlined in popups, and in the bar while Alt
+  is held). The letter activates a row of the deepest open popup; Alt + letter opens a bar menu (no system beep).
+  `accelerator("Ctrl+Shift+S")` fires with exact modifiers (letters, digits, F1-F24, Enter, Esc, Space, Tab,
+  Backspace, Del, Ins, Home, End, PgUp, PgDn, arrows); with a text field focused only Ctrl / Alt combos count,
+  minus the field's own.
+- **Toasts:** stacked in a corner (`set_toast_corner`), max 8; hover pauses, click dismisses. `ui.toast(toast_options)`
+  returns a `toast_handle` and supports `.actions` (up to 3 buttons; `ui.toast_action(handle)` reports one, once),
+  `.progress` (0..1, or `toast_busy`), and `.seconds = 0` (until closed). `toast_progress(handle, fraction, text)`
+  (1.0 closes it 2 s later), `toast_close`, `toast_alive`. Toasts with buttons or progress close only via their x.
 
 ## Menus: sidebar layout, child regions, cards, tooltips, key binding
 
@@ -780,31 +680,25 @@ if (auto w = ui.window("settings", {260, 90}, {740, 480}, flags)) {
     }
 }
 ```
-`strata_sandbox --menu` shows exactly this as a working example (five pages; the pages are placeholders).
+`strata_sandbox --menu` runs this example (five placeholder pages).
 
-- **Window flags:** `no_title_bar`, `no_collapse`, `no_move`, `no_background` (content only, no fill / border /
-  shadow), `drag_by_body` (dragging any empty spot moves the window), `resizable`, `dockable`, `acrylic` (frosted glass).
-- **Child regions:** `begin_child` / `end_child` or the scoped `ui.child(id, size, flags)`: a clipped, scrollable area with its
-  own scrollbar (wheel goes to the innermost scroller under the pointer). `size.x == 0` is the rest of the line (right of
-  the previous item after `same_line()`), `size.y == 0` fills down to the bottom of a fixed-height window.
-  `child_flags::frame` draws a background, `no_padding`, `no_scrollbar`. Children nest (up to 4 deep).
-- **Cards:** `ui.card("Title", icon, icon_font)`: a titled group box that grows with its content (the height comes from
-  the previous frame, so the very first frame shows only the header).
-- **Tab strip:** `ui.tab_strip(id, tabs, count | {..}, selected, icon_font, width, flags, height)`, a vertical sidebar with a sliding
-  highlight; `tab_strip_flags::icons_only` makes a narrow icon rail whose labels appear as tooltips.
-- **Tooltips:** `ui.tooltip("text")` after any widget; shows after the pointer rests on it. `ui.item_hovered()`.
-- **Hotkeys:** `ui.hotkey("Label", key_code)`: click, press a key or a side mouse button; Esc cancels, Backspace / Delete
-  unbinds. `key_code` is a virtual-key code (`strata::key_name(code)` gives its name). `input_state::pressed_key` carries the
-  key; `win32_platform` fills it. `ui.hotkey_chord("Label", chord)` does the same for a key with modifiers (see below).
-  `ui.hotkey_sequence("Label", seq)` captures a short sequence of chords pressed one after another (a `key_sequence`, see
-  "Key bindings and config files"): each step commits right away, and the field keeps listening for `key_sequence_timeout`
-  longer in case another key extends it into a longer chord.
-- **Docking animation:** `ui.set_dock_animation(true)` makes panes slide to their new place when a window docks, undocks or a pane closes
-  (a new pane grows out of the edge it was dropped at); dragging a splitter always follows the pointer. On by default; `set_dock_animation(false)` snaps panes into place.
-- **Alpha and transitions:** `ui.push_alpha(a)` / `pop_alpha()` scale everything drawn (nearly invisible content is inert);
-  `ui.page_transition(key, page, slide)` fades and slides the content that follows when `page` changes.
-- **Layout helper:** `ui.same_line(x)` continues on the same line at an x offset from the left of the content area
-  (right-align a close button with `content_width() - width`).
+- **Window flags:** `no_title_bar`, `no_collapse`, `no_move`, `no_background`, `drag_by_body`, `resizable`,
+  `dockable`, `acrylic`.
+- **Child regions:** `begin_child` / `end_child` or `ui.child(id, size, flags)`: clipped, scrollable, own scrollbar.
+  `size.x == 0` = rest of the line, `size.y == 0` = to the bottom of a fixed-height window. `child_flags::frame`,
+  `no_padding`, `no_scrollbar`. Nest up to 4 deep.
+- **Cards:** `ui.card("Title", icon, icon_font)`, a titled group box sized from the previous frame.
+- **Tab strip:** `ui.tab_strip(id, tabs, count | {..}, selected, icon_font, width, flags, height)`, a vertical
+  sidebar; `tab_strip_flags::icons_only` makes an icon rail with tooltip labels.
+- **Tooltips:** `ui.tooltip("text")` after any widget; `ui.item_hovered()`.
+- **Hotkeys:** `ui.hotkey("Label", key_code)`: click, press a key or side mouse button; Esc cancels, Backspace /
+  Delete unbinds (`strata::key_name(code)` names it). `hotkey_chord` adds modifiers; `hotkey_sequence` captures a
+  `key_sequence` (see *Key bindings*).
+- **Docking animation:** panes slide on dock / undock / close (default on; `ui.set_dock_animation(false)` snaps).
+  Splitters always follow the pointer directly.
+- **Alpha and transitions:** `ui.push_alpha(a)` / `pop_alpha()` (near-invisible content is inert);
+  `ui.page_transition(key, page, slide)` fades and slides on `page` change.
+- **Layout:** `ui.same_line(x)` continues at an x offset (right-align with `content_width() - width`).
 
 ## Rich text
 
@@ -822,45 +716,36 @@ ui.text_wrapped("plain text, wrapped");
     ui.combo("<c=8a91a6>colour</c>", pick, {"<c=ff6b8a>rose</c>", "<c=19c2b4>teal</c>"});
 }
 ```
-`<f=N>...</f>` switches to font id N, `<c=rrggbb>` / `<c=rrggbbaa>` ... `</c>` changes the color, `<b>` bold, `<i>` italic, `<u>` underline
-and `<s>` strike-through (each closed by `</b>` ...; they combine: `<b><i>both</i></b>`), `<<` is a literal `<`. Tags nest.
+Tags: `<f=N>` font id, `<c=rrggbb[aa]>` color, `<b>` `<i>` `<u>` `<s>` (combine freely), each closed by `</f>`,
+`</c>`, `</b>` ...; `<<` is a literal `<`. Tags nest.
 
-**Links.** `<a=href>text</a>` draws `text` underlined in the accent color (a `<c=>` inside the link keeps its own
-color), shows the hand cursor over it, and reports the href for the frame it was clicked in:
+**Links.** `<a=href>text</a>` draws underlined in the accent color (an inner `<c=>` wins), shows the hand cursor and
+reports the href on the click frame. strata never opens anything itself:
 
 ```cpp
 ui.rich_text("see <a=https://example.com>the manual</a>, or <a=cmd:reset>reset</a>");
 if (auto href = ui.rich_link_clicked(); !href.empty()) { open(href); }   // an event, not a state
 ui.rich_link_hovered();   // the href under the pointer right now, for a status bar
 ```
-The href is whatever you put there -- a url, a file, a command name; strata does not open anything itself, because
-what a link should do is the application's business. Links in *widget captions* (under `rich_labels()`) are drawn
-but not clickable: the widget owns the click.
-The styles are synthesized, so they work with any font and change no advance (layout is the same as for plain text): bold is a
-second strike a pixel to the right, italic slants the glyph quads, the lines follow the text. They are also a `text_flags` argument of
-`draw_list::text(pos, color, text, font, text_flags::bold | text_flags::underline)`. For a real bold face pick another font id.
-The runs of a line share one baseline and the line is as high as its tallest run; `\n` starts a new line and, with
-`rich_text_wrapped` / `text_wrapped`, lines also break before a word that does not fit (a longer word breaks between
-characters). Icons work the same way: `<f=3>` + an icon code point.
-While `rich_labels()` is alive the labels of buttons, checkboxes, toggles, field captions, tab bars and strips, tree rows,
-selectables, combo items, card titles, table headers and tooltips (and `text()`) are markup; the widgets size themselves
-to the mixed-font text. Widget ids still come from the raw string, table headers and `text_ellipsis` are clipped instead
-of cut. The *contents* of text fields are plain text, but can be styled: see below.
+Links in widget captions (`rich_labels()`) are drawn but not clickable.
+Styles are synthesized for any font and never change advances: bold is a second strike, italic slants the quads,
+lines follow the text. They are also `text_flags` for `draw_list::text(...)`; for a real bold face use another font
+id. Runs share a baseline, lines are as tall as their tallest run, `\n` breaks, and the `_wrapped` forms break at
+words (long words between characters). Icons work as `<f=3>` + a code point.
+While `rich_labels()` is alive, captions of buttons, checkboxes, toggles, fields, tabs, strips, tree rows,
+selectables, combo items, cards, table headers, tooltips and `text()` are markup. Ids still hash the raw string.
 
-**Styled contents of text fields.** `ui.input_spans(spans)` before the next `input_text` / `input_multiline` gives ranges of the
-text (`text_span{start, end, font, color, style}`, byte offsets) their own font, color and bold / italic / underline / strike:
-syntax highlighting, a live markup preview, a mono font for code. Lines are as high as the tallest font in them and runs share a
-baseline; wrapping, caret, selection and mouse hits measure the mixed runs. The field stays plain text (undo, copy and paste see only
-the text): recompute the spans from it when the field reports a change; ranges are clamped, overlaps resolved (the first wins) and
-bad font ids fall back, so stale spans for a frame are harmless. Password fields ignore them.
+**Styled field contents.** `ui.input_spans(spans)` before the next `input_text` / `input_multiline` gives byte
+ranges (`text_span{start, end, font, color, style}`) their own font, color and style: syntax highlighting, markup
+previews. Wrapping, caret, selection and hits honour the mixed runs; the text stays plain for undo / clipboard.
+Recompute on change; stale spans are clamped and harmless, overlaps resolve first-wins, bad fonts fall back.
+Password fields ignore them.
 
-**Input methods (IME).** While the user composes text (Chinese, Japanese, Korean ...), the composition is shown at the caret of the
-focused field - inline and underlined in a single-line field, in a small box at the caret in a multi-line one - and only inserted
-when confirmed. `input_state::ime` / `ime_len` / `ime_cursor` carry the composition (`win32_platform` fills them from
-`WM_IME_COMPOSITION`); what the user confirms arrives as `typed`. Call `platform.set_ime(ui.ime_wanted(), ui.ime_position(),
-ui.ime_line_height())` after `end_frame()`: the IME is on only while a text field has the keyboard (hotkeys keep working under a CJK
-layout; password fields turn it off) and the candidate window sits at the caret. The window procedure returns 0 for messages where
-`win32_platform::swallows(msg)` is true (the IME's own composition window is suppressed; the ui draws it).
+**Input methods (IME).** Compositions (Chinese, Japanese, Korean ...) show at the caret (inline in single-line
+fields, in a box in multi-line ones) until confirmed into `typed`. `win32_platform` fills `input_state::ime` /
+`ime_len` / `ime_cursor`. Call `platform.set_ime(ui.ime_wanted(), ui.ime_position(), ui.ime_line_height())` after
+`end_frame()` (IME on only while a text field is focused, off for passwords), and return 0 from the window procedure
+where `win32_platform::swallows(msg)` is true.
 
 ## Theming, custom drawing, overrides
 
@@ -885,34 +770,26 @@ s.border = c;  s.border_width = 1;  s.shadow = d;  s.shadow_blur = 12;  s.shadow
 ui.draw().shape(item.bounds, s);                           // also: rect_filled, rect_outline, line, text, ...
 ```
 
-`style` covers colors, rounding, padding, spacing, border width, shadow, gradient strength and animation
-speed; `style_color` / `style_var` name what `push_color` / `push_var` / `style_overrides` can change.
+`style` covers colors, rounding, padding, spacing, borders, shadow, gradient and animation speed; `style_color` /
+`style_var` name what `push_color` / `push_var` / `style_overrides` can change.
 
 ## Windows
 
-Windows are draggable, collapsible, and stack: pressing anywhere on a window raises it above the others (this
-frame, without re-recording anything: the draw commands of each window are contiguous and get reordered at
-`end_frame`). Input goes to the topmost window under the pointer, and the unfocused windows' titles dim.
-`ui.want_capture_mouse()` tells a host application when the pointer belongs to the UI.
+Windows drag, collapse and stack: pressing one raises it this frame (each window's commands are contiguous and
+reordered at `end_frame`). Input goes to the topmost window under the pointer; unfocused titles dim.
+`ui.want_capture_mouse()` tells the host when the pointer belongs to the UI.
 
-**Resizing:** `ui.window("title", pos, {width, height}, strata::window_flags::resizable)`. The right edge, the bottom edge
-and the bottom-right corner are drag handles (marked by a grip in the corner); the size is remembered, minimum 150 px wide.
-`height == 0` means "follow the content" until the user drags a vertical edge, after which the height is fixed and the
-content scrolls (wheel or scrollbar; tables and combo lists inside get the wheel first). A "follow the content" window
-never grows past the bottom of the display: when the content is taller it stops there and scrolls, so nothing is
-unreachable. Windows can also be created with a fixed height and no resizing. The plain `ui.window("title", pos, width)`
-form is unchanged.
+**Resizing:** `ui.window("title", pos, {width, height}, strata::window_flags::resizable)` resizes by the right and
+bottom edges and the corner grip (min 150 px wide); the size is remembered. `height == 0` follows the content until
+the user drags vertically, then scrolls; content-following windows stop at the display bottom and scroll.
 
-**Pointer shape:** `ui.cursor()` reports what the pointer should look like: `arrow`, `text` (I-beam), `hand` (over a
-rich-text link), `not_allowed` (over a disabled item, so "this does nothing" is distinguishable from "this is
-broken"), and the resize arrows `resize_ew`, `resize_ns`, `resize_nwse`, `resize_nesw`. With `win32_platform`:
-`platform.set_cursor(ui.cursor())` after `end_frame()` and, in your window procedure,
-`case WM_SETCURSOR: if (LOWORD(lparam) == HTCLIENT && platform.apply_cursor()) return TRUE;`.
+**Pointer shape:** `ui.cursor()` returns `arrow`, `text`, `hand` (links), `not_allowed` (disabled items) or
+`resize_ew` / `_ns` / `_nwse` / `_nesw`. With `win32_platform`: `platform.set_cursor(ui.cursor())` after
+`end_frame()`, and `case WM_SETCURSOR: if (LOWORD(lparam) == HTCLIENT && platform.apply_cursor()) return TRUE;`.
 
 ## Idling
 
-A UI nobody is touching draws the same thing every frame. `end_frame` hashes the vertices, indices, commands and
-shapes, so it can say whether this frame differs from the last one at all:
+An untouched UI draws the same thing every frame. `end_frame` hashes vertices, indices, commands and shapes to tell:
 
 ```cpp
 ui.end_frame();
@@ -924,16 +801,12 @@ if (ui.can_idle()) {
 }
 ```
 
-- `frame_unchanged()` -- the geometry is byte-identical to the previous frame.
-- `animations_settling()` -- something will look different next frame even if nobody touches anything: an animation
-  still short of its target, a toast counting down, the pause before a tooltip appears. Without this the hash alone
-  would idle a fading animation one frame short and freeze a toast on the screen forever.
-- `can_idle()` is both: unchanged and not settling. A toast that stays until it is closed does not count once it has
-  slid in (it used to keep the UI awake forever).
-- `next_wake_seconds()` -- for a host that sleeps instead of spinning: how long it may wait for input before the next
-  frame, because nothing time-driven changes the UI before then (the caret blink, a tooltip's delay). `0` means run the
-  next frame now, `no_deadline` means wait for input. Pass the real elapsed time -- sleep included -- as
-  `input_state::delta_time`: timers take all of it, animations at most 0.1 s of it.
+- `frame_unchanged()` -- geometry identical to the previous frame.
+- `animations_settling()` -- the next frame will differ anyway: an animation short of its target, a toast counting
+  down, a pending tooltip.
+- `can_idle()` -- both: unchanged and not settling. Sticky toasts stop counting once slid in.
+- `next_wake_seconds()` -- how long a sleeping host may wait for input (caret blink, tooltip delay). `0` = run now,
+  `no_deadline` = wait for input. Pass the real elapsed time, sleep included, as `input_state::delta_time`.
 
 ```cpp
 ui.end_frame();
@@ -941,24 +814,17 @@ if (!ui.frame_unchanged()) { renderer.render(ui.render_data()); present(); }
 const f64 wait = ui.next_wake_seconds();
 MsgWaitForMultipleObjects(0, nullptr, FALSE, wait == strata::no_deadline ? INFINITE : DWORD(wait * 1000), QS_ALLINPUT);
 ```
-- `invalidate()` forces the next frame to count as changed (a texture was replaced, the host rebuilt its back
-  buffers, the theme was edited between frames).
+- `invalidate()` forces the next frame to count as changed (texture replaced, back buffers rebuilt, theme edited).
 
-**An overlay cannot skip drawing** -- the game cleared the target and redrew its own frame, so the UI has to go back
-on top. What it can skip is the upload, and the renderers do that themselves: `render_data()` carries a
-`content_hash`, each renderer remembers what its buffers hold (per frame slot on D3D12, where frames are in flight)
-and skips the `Map` + `memcpy` of the vertex, index and shape buffers when they already hold this frame. For a
-static panel that is most of what rendering costs on the CPU side.
+**Overlays cannot skip drawing** (the game redrew the target), but the renderers skip the upload themselves:
+`render_data()` carries a `content_hash`, and each renderer (per frame slot on D3D12) skips the vertex / index /
+shape `Map` + `memcpy` when it already holds the frame.
 
-`d3d11_renderer::set_state_restore(false)` turns off the save-and-restore of the eighteen pipeline stages `render()`
-touches -- about forty driver calls per frame spent putting back state nobody will read. An in-game overlay needs it
-on (the default); an application that owns its device does not, and then has to set what it needs before whatever it
-draws next.
+`d3d11_renderer::set_state_restore(false)` skips saving and restoring ~18 pipeline stages (~40 driver calls per
+frame). Overlays need it on (default); device owners can turn it off and set their own state afterwards.
 
-In the sandbox, `--idle` does the skip, sleeps until the next deadline and reports it: `--scene icons --idle --frames 300`
-idles 299 of 300 frames. `strata::app` (below) idles this way by itself.
-The busier scenes idle none of them, because a progress bar, a spinner or an fps readout really does change the
-geometry every frame.
+The sandbox's `--idle` skips, sleeps and reports: `--scene icons --idle --frames 300` idles 299 of 300 frames
+(`strata::app` idles by itself). Busy scenes with spinners or fps readouts never idle.
 
 ## Diagnostics
 
@@ -967,30 +833,22 @@ ui.debug_metrics_window(show_metrics);    // frame cost, geometry, culling, idle
 ui.debug_draw_list_window(show_commands); // the live commands: clip, index count, base vertex, texture
 ```
 
-`ui.stats()` is the same numbers as a struct: items submitted and how many the clip rectangle culled, vertices /
-indices / draw calls, the measurement cache hit rate, animation table occupancy, and `begin_frame_ms` /
-`end_frame_ms`. Four of its fields are things that used to fail silently and now do not:
+`ui.stats()` gives the same numbers as a struct, including four silent-failure counters:
 
-- `draw_overflow` -- a vertex / index / command / shape reservation ran out and geometry was dropped. Raise
+- `draw_overflow` -- a vertex / index / command / shape reservation ran out; geometry was dropped. Raise
   `draw_list_limits`.
-- `clip_overflows` / `alpha_overflows` -- nesting deeper than the clip (32) or alpha (16) stack holds. The push is
-  counted instead of stored and the matching pop skips it, so the levels that did fit stay correct; the innermost
-  ones are simply not clipped or faded. (Before, the push was applied without being saved, and every later pop
-  restored the wrong level -- the rest of the frame was clipped one level too shallow.)
-- `id_collisions` -- **debug builds only.** Two widgets whose labels hash to the same id in the same scope share
-  their hover, press and focus state: the second one steals the first one's click, and nothing on screen looks
-  wrong. `id_collision()` and `id_collision_label()` name the first one of the frame, which is almost always a
-  repeated label. Give one a `"label##suffix"`, or wrap them in `push_id()`. Release builds do not check.
+- `clip_overflows` / `alpha_overflows` -- nesting deeper than the clip (32) or alpha (16) stack. The excess levels
+  are not clipped / faded; the ones that fit stay correct.
+- `id_collisions` -- **debug builds only.** Widgets hashing to one id share hover, press and focus (the second steals
+  the first's click). `id_collision()` / `id_collision_label()` name the first; use `"label##suffix"` or `push_id()`.
 
 ## Footprint
 
 ### Binary size
 
-What strata adds to a program, measured by linking a probe that uses it (window, text, button, checkbox, slider,
-text field, rich text, a table) against an empty program with the same flags: x64 release, `/O2 /GL /LTCG /MT`,
-`/OPT:REF /OPT:ICF`, no exceptions, no RTTI. Subtracting the empty program removes the static CRT baseline
-(105 KiB) but *not* the parts of the CRT that strata itself drags in, which is the honest way round -- those bytes
-are in your binary because strata is.
+Measured by linking a probe (window, text, button, checkbox, slider, text field, rich text, a table) against an
+empty program with the same flags: x64 release, `/O2 /GL /LTCG /MT`, `/OPT:REF /OPT:ICF`, no exceptions, no RTTI.
+The static CRT baseline (105 KiB) is subtracted, but CRT parts strata pulls in are counted.
 
 | what | adds | running total |
 |---|---:|---:|
@@ -1000,17 +858,12 @@ are in your binary because strata is.
 | \+ `d3d12_renderer` | 36 KiB | 761 KiB |
 | \+ the two diagnostic windows | 17 KiB | 778 KiB |
 
-Roughly 420 KiB of that is strata's own code; the rest is the CRT it pulls in, most of it the `charconv` /
-`std::format` float tables (~110 KiB) that any use of `textf` or a number field reaches. By translation unit, the
-largest are `context.cpp` (93 KiB), `context_text.cpp` (39 KiB), `font.cpp` (26 KiB), `context_dock.cpp` (25 KiB),
-`context_data.cpp` (tables, 23 KiB) and `bidi.cpp` (19 KiB). `/OPT:REF` drops what a program does not call, so a UI
-that never opens a code editor, a plot or a date picker does not pay for them -- the diagnostic windows in the
-table above are only 17 KiB *because they are called*.
+~420 KiB is strata's own code; most of the rest is `charconv` / `std::format` float tables (~110 KiB). Largest units:
+`context.cpp` (93 KiB), `context_text.cpp` (39), `font.cpp` (26), `context_dock.cpp` (25), `context_data.cpp` (23),
+`bidi.cpp` (19). `/OPT:REF` drops what a program never calls (editors, plots, pickers).
 
-The shipped artifacts, for comparison: `strata_overlay_demo.dll` 820 KiB (strata + both renderers + the overlay
-hook + a demo UI), `strata_sandbox.exe` 1.9 MiB (all of it, plus a large demo application and the self-tests).
-`strata.lib` itself is ~111 MiB on disk, which is `/GL` intermediate code, not machine code -- nothing of that size
-reaches a binary.
+Shipped artifacts: `strata_overlay_demo.dll` 820 KiB, `strata_sandbox.exe` 1.9 MiB. `strata.lib` is ~111 MiB of
+`/GL` intermediate code, not machine code.
 
 ### Memory
 
@@ -1026,8 +879,7 @@ reaches a binary.
 | `draw_cmd` | 36 bytes |
 | `shape_record` | 80 bytes |
 
-**Address space** the draw list reserves up front, committed 64 KiB at a time as it is used and never moved (the
-defaults in `draw_list_limits`; all four are configurable):
+**Address space** reserved by the draw list (committed 64 KiB at a time, never moved; see `draw_list_limits`):
 
 | array | capacity | reserved |
 |---|---:|---:|
@@ -1036,41 +888,31 @@ defaults in `draw_list_limits`; all four are configurable):
 | commands | 16,384 | 576 KiB |
 | shapes | 131,072 | 10 MiB |
 
-About 34 MiB of reservation, of which a real frame touches a fraction of one percent. Reservation is not memory: it
-costs address space (of 128 TiB) and no pages until written.
+~34 MiB reserved, of which a real frame touches well under one percent; unwritten reservation costs no pages.
 
-**Actually committed.** A context with one 14 px font, after 240 frames of two windows holding 60 rows and a 40-row
-four-column table: **816 KiB** of private working set, of which 256 KiB is the CPU-side atlas bitmap
-(`release_font_pixels()` gives that back once every renderer has its copy). The atlas is 8 bits per pixel and sized
-to the glyphs you bake: 512x512 for the default Latin / Greek / Cyrillic set with one font, 2048x1024 (2 MiB) for
-the sandbox's four fonts with icons, up to `max_atlas_size` (4096, so 16 MiB) for CJK.
+**Committed:** one 14 px font, two windows of 60 rows and a 40x4 table, after 240 frames: **816 KiB** private
+working set, 256 KiB of it the cpu atlas (freed by `release_font_pixels()`). The 8-bit atlas is 512x512 for the
+default Latin / Greek / Cyrillic set, 2048x1024 (2 MiB) for the sandbox's fonts with icons, up to 4096x4096
+(16 MiB) for CJK.
 
-**Per frame**, that same UI produced 2,452 vertices, 3,702 indices, 134 commands and 21 shapes -- 38 KiB + 7 KiB +
-2 KiB to upload. The sandbox's busiest scene runs about 6,600 vertices / 10,500 indices / 31 draw calls, roughly
-124 KiB per frame, and the UI costs ~0.13 ms of CPU to build. Steady state allocates nothing: the geometry arrays,
-the animation table, the measurement cache, the rich-text runs, the bidi scratch and the log's text arena are all
-grown once and reused.
+**Per frame** that UI emits 2,452 vertices, 3,702 indices, 134 commands, 21 shapes (~47 KiB upload). The busiest
+sandbox scene: ~6,600 vertices / 10,500 indices / 31 draw calls (~124 KiB), ~0.13 ms cpu. Steady state allocates
+nothing.
 
 ### Traces
 
-What the library leaves behind, measured on the running sandbox (handle / module / file / registry checks, and a scan of
-the process memory for text typed into a field):
+Measured on the running sandbox (handles, modules, files, registry, and a memory scan for typed text):
 
-- **Disk / registry / threads / hooks:** none. Statically linked, no third-party DLLs; only system DLLs load, and each backend
-  delay-loads its own D3D DLL (`d3d11.dll` only in DX11 mode, `d3d12.dll` only in DX12 mode).
-- **Typed text:** the edit buffer is a `secure_string` (its memory is zeroed whenever it is freed or reallocated) and is wiped as soon as
-  the field loses focus, when focus moves to another field, and when the context is destroyed. Typed-character buffers (platform
-  and context), pasted text and copies inside the temporary `input_state` (`begin_frame(platform.new_frame())`) are zeroed after use.
-  The undo history of a field holds typed text too: it is kept in the same zeroed-on-free memory and dropped with the
-  edit buffer. Verified: after a field loses focus the only copy left in process memory is the application's own variable. For secrets use
-  `input_text(label, secure_string&, ...)` or the fixed-buffer overload; a plain `std::string` may leave partial copies when it grows.
-- **Geometry:** the vertex / index / shape arrays are zeroed before their pages go back to the OS; the D3D upload buffers are
-  zeroed on `destroy()` (best effort on D3D11: the driver may keep older renamed copies; on D3D12 idle the GPU first).
-- **Fonts:** the CPU bitmap is freed with `ui.release_font_pixels()` (zeroed first); font file bytes and glyph scratch buffers are
-  zeroed; a font from a file / memory is registered with GDI only while the atlas is built. No font blob is embedded.
-- **Not covered:** GPU / driver memory (the atlas texture stays until released), the application's own strings, the swap file, and
-  copies the OS clipboard holds after a copy.
-
+- **Disk / registry / threads / hooks:** none. Statically linked; each backend delay-loads only its own D3D DLL.
+- **Typed text:** edit buffers are `secure_string` (zeroed on free / realloc) and wiped on focus loss, focus change
+  and context destruction; typed-character buffers, pasted text and `input_state` copies are zeroed after use; undo
+  history uses the same memory. After focus loss only the application's own variable holds the text. For secrets use
+  the `secure_string&` or fixed-buffer overloads (a growing `std::string` may leave copies).
+- **Geometry:** vertex / index / shape arrays are zeroed before release; D3D upload buffers on `destroy()` (best
+  effort on D3D11; idle the GPU first on D3D12).
+- **Fonts:** the cpu bitmap is zeroed and freed by `release_font_pixels()`; font bytes and scratch are zeroed; file /
+  memory fonts are registered with GDI only during the build. No embedded font blob.
+- **Not covered:** GPU / driver memory, the application's strings, the swap file, the OS clipboard.
 
 ## Fonts, Unicode, kerning
 
@@ -1082,48 +924,28 @@ cfg.font.ranges       = my_ranges;                         // glyph_ranges::lati
 auto ui = strata::context::create(cfg).value();
 ```
 
-- **Multiple fonts:** `cfg.extra_fonts` adds fonts 1, 2, ...; all of them are packed into one shared atlas texture, so
-  the UI stays a single pipeline state. `ui.push_font(id)` / `pop_font()` or the scoped
-  `auto f = ui.with_font(1);` switch the font for everything submitted after it: text and widget sizes both follow
-  it. Window titles always use font 0.
-- **Custom fonts:** `.ttf` / `.otf` / `.ttc` from a file or from memory. The font is installed privately for the
-  process while the atlas is built and removed again right after; nothing is left registered.
-- **Unicode:** UTF-8 is decoded fully. You choose which blocks are baked (`font_config::ranges`, any plane: emoji and other
-  supplementary characters work, their glyphs are found through the font's cmap). The
-  atlas grows from 256x256 up to `max_atlas_size` (4096 default). Code points the font lacks or that were not baked
-  draw `?`. CJK ideographs are ~21k glyphs and need a font that has them (`--font C:\Windows\Fonts\msyh.ttc --cjk`
-  in the sandbox; ~2.7 s to build in Debug).
-- **Fallback faces and emoji:** `font_config::fallback_faces = {"Segoe UI Emoji", "Segoe UI Symbol"}` gives a text font the glyphs it
-  lacks: while baking, every requested code point the main face does not have is taken from the first fallback that has it, at the same
-  size and on the same baseline (so it costs nothing at run time). `glyph_ranges::emoji` (~1500 glyphs), `symbols`, `math_alphanumeric`.
-  Emoji are single-color (the color layers of the font are not used). Zero-width joiners, variation selectors, direction marks and
-  skin-tone modifiers take no room, so `\U0001F44D\U0001F3FD` shows a thumb, not a thumb and a box.
-- **Right-to-left text:** `glyph_ranges::hebrew`, `arabic`, `arabic_forms_a` / `arabic_forms_b` (the joined letter shapes). Whenever a
-  string has a right-to-left character, `draw_list::text` and `font_atlas::measure` reorder it (the Unicode bidi algorithm for one
-  paragraph per line: weak / neutral / number rules, bracket pairs (N0), mirrored brackets, trailing spaces) and join Arabic letters
-  (initial / medial / final / isolated forms, lam-alef ligatures, marks stay transparent; a font without the presentation forms keeps
-  the plain letters), so labels, buttons, tooltips, rich text, the log - every widget - show Hebrew and Arabic correctly, with no
-  cost for text that has none (a byte scan rejects it). The text fields keep the text in logical order and use `bidi_layout` for the caret
-  and the mouse: Home / End, clicks and selections follow the reordered letters (a selection across directions is drawn as one rectangle
-  between its ends). `strata/bidi.hpp` (`has_rtl_text`, `to_visual`, `bidi_layout`) is public. Not done: explicit embeddings /
-  isolates (U+202A-202E, U+2066-2069 are ignored), text alignment to the right edge for right-to-left paragraphs, and OpenType shaping
-  for Indic and Southeast Asian scripts (Devanagari, Thai, Tamil ... need GSUB / GPOS: a shaping engine, see the TODO).
-- **Kerning:** the font's `kern` table is applied to measuring and drawing, in integer pixels like the advances.
-  Fonts that only kern through OpenType GPOS get no kerning (`font_atlas::kerning_pair_count()` is 0 then).
-- **Icon fonts and which Windows ships what.** `strata/icons.hpp` names the code points of the two Microsoft icon
-  fonts, which share them: **Segoe MDL2 Assets** (`segmdl2.ttf`, Windows 10, and still present on Windows 11) and
-  **Segoe Fluent Icons** (`SegoeIcons.ttf`, Windows 11 only). Bake `glyph_ranges::private_use` for the icon font and
-  select it with `ui.with_font(icon_font)` or the `icon_*` widgets. A code point the font does not have draws the
-  fallback glyph silently, so **`--scene icons`** draws every `icons::` constant with its name and marks in red the
-  ones the loaded font is missing -- run it once against the font you ship with. `--scene icons --icon-page E700`
-  shows a raw page of 256 code points with their hex values, for picking a new one.
-  One caveat: `icons::eye_off` (U+ED1A, "Hide") is in Segoe Fluent Icons and in current Segoe MDL2 Assets but not in
-  the `segmdl2.ttf` that shipped with Windows 10 up to at least build 19045; use `icons::view` for the hidden state
-  if you have to support those. There is no "clear filter" glyph in either font -- draw `filter` and `cancel`
-  together. Round two added, all checked the same way: `clear` E894, `select_all` E8B3, `rename` E8AC (what F2
-  does), `document` E8A5, `layers` F156, `star_filled` E735, and `expand` E740 / `collapse` E73F for making a view
-  bigger or smaller (`expand_all` / `collapse_all` are the tree ones). Note `import` is E8B5 and `export` EDE1 --
-  E896 / E898 are Segoe's Download and Upload arrows, which are a different thing.
+- **Multiple fonts:** `cfg.extra_fonts` adds fonts 1, 2, ... into one shared atlas (one pipeline state).
+  `ui.push_font(id)` / `pop_font()` or `auto f = ui.with_font(1);` switch text and widget sizing. Titles use font 0.
+- **Custom fonts:** `.ttf` / `.otf` / `.ttc` from file or memory, registered privately only during the atlas build.
+- **Unicode:** full UTF-8; you choose the baked blocks (`font_config::ranges`, any plane). The atlas grows from
+  256x256 to `max_atlas_size` (4096). Missing glyphs draw `?`. CJK is ~21k glyphs and needs a font with them
+  (`--font C:\Windows\Fonts\msyh.ttc --cjk`; ~2.7 s to build in Debug).
+- **Fallback faces and emoji:** `font_config::fallback_faces = {"Segoe UI Emoji", "Segoe UI Symbol"}` fills missing
+  glyphs at bake time, same size and baseline. `glyph_ranges::emoji` (~1500), `symbols`, `math_alphanumeric`. Emoji
+  are single-color; joiners, variation selectors, direction marks and skin-tone modifiers take no room.
+- **Right-to-left text:** bake `glyph_ranges::hebrew`, `arabic`, `arabic_forms_a` / `_b`. Strings with rtl characters
+  are reordered (Unicode bidi per line: weak / neutral / number rules, bracket pairs, mirroring, trailing spaces) and
+  Arabic is joined (all forms, lam-alef ligatures, transparent marks) in `draw_list::text` and `font_atlas::measure`,
+  so every widget handles it; a byte scan keeps ltr text free. Text fields stay logical and use `bidi_layout` for
+  caret, clicks and selection. `strata/bidi.hpp` is public. Not done: explicit embeddings / isolates, right-aligned
+  rtl paragraphs, Indic / Southeast Asian shaping (see TODO).
+- **Kerning:** the font's `kern` table, in integer pixels. GPOS-only fonts get none (`kerning_pair_count()` is 0).
+- **Icon fonts:** `strata/icons.hpp` names the code points shared by **Segoe MDL2 Assets** (`segmdl2.ttf`, Windows 10
+  and 11) and **Segoe Fluent Icons** (`SegoeIcons.ttf`, Windows 11). Bake `glyph_ranges::private_use` and select it
+  with `ui.with_font(icon_font)` or the `icon_*` widgets. **`--scene icons`** draws every constant and flags the ones
+  the loaded font lacks; `--icon-page E700` shows a raw page for picking. `icons::eye_off` (U+ED1A) is missing from
+  Windows 10's `segmdl2.ttf` up to at least build 19045 (use `icons::view`). No "clear filter" glyph exists: combine
+  `filter` and `cancel`. `import` is E8B5 / `export` EDE1 (E896 / E898 are Download / Upload).
 
 ## UI scale at runtime
 
@@ -1136,107 +958,82 @@ strata::overlay::set_ui_scale_percent(125);          // from anywhere, at any ti
 ui.textf("ui scale {} %", ui.scale_percent());
 ```
 
-The dpi scale is the right *default* and a poor *setting*: an overlay is often wanted a little smaller or larger
-than the desktop. `context::set_scale` has always been able to change it, but it rebuilds the font atlas, and the
-host then has to hand the new atlas to its renderer (`renderer.update_atlas(ui.font())`, then
-`ui.release_font_pixels()`) -- a step that is easy to miss, and text draws from a stale texture when it is missed.
-The overlay now does that itself: `set_ui_scale()` may be called from any thread, and the change is applied at the
-start of the next frame, on the render thread, atlas re-upload included. Everything the ui draws -- text, widgets,
-padding, window sizes -- scales together; the game's own window is not touched.
+The dpi scale is a good default, not a setting: overlays are often wanted smaller or larger. `context::set_scale`
+rebuilds the atlas, which the host must hand to its renderer (`renderer.update_atlas(ui.font())`, then
+`ui.release_font_pixels()`). The overlay does this itself: `set_ui_scale()` works from any thread and applies next
+frame on the render thread. The whole UI scales; the game window is untouched.
 
-A rebuild costs tens of milliseconds per baked font, so drive it from a stepper or apply a slider when it is let go,
-not on every tick. `ui.scale_percent()` / `ui.set_scale_percent(n)` are the same thing in the units a setting shows.
+Each rebuild costs tens of ms per font: drive it from a stepper or apply sliders on release.
+`ui.scale_percent()` / `ui.set_scale_percent(n)` use percent units.
 
 ## In-game overlay (direct3d 11 and 12)
 
-`overlay/` turns strata into an in-game overlay: a dll that is loaded into a direct3d 11 program (a game, for modding tools and
-inspectors) and draws a strata ui over every frame, with the game's keyboard and mouse taken while it is open.
+`overlay/` is a dll loaded into a direct3d program (modding tools, inspectors) that draws a strata ui over every
+frame and takes keyboard and mouse while open.
 
 ```cpp
 strata::overlay::options opt;
 opt.ui = [](strata::context& ui) { if (auto w = ui.window("my tool", {40, 40}, {360, 0})) { ui.text("hello"); } };
 strata::overlay::install(opt);       // from a thread of your own, not from DllMain; F1 (opt.toggle_key) shows / hides it
 ```
-- **The hook:** a dummy swap chain gives the address of `IDXGISwapChain`'s vtable (all swap chains of that implementation share it);
-  `Present`, `Present1` and `ResizeBuffers` are replaced in it, no code is patched, and `uninstall()` puts the slots back. The dummy is
-  made with the api the game has already loaded -- direct3d 11, or direct3d 12 when only `d3d12.dll` is in the process -- so the
-  overlay never loads the other api (and its driver) into the game; `strata_overlay_host` checks that. When the game replaces
-  its swap chain (a resolution or display-mode change), the overlay follows to the new one and keeps its UI; it holds no view
-  of the game's buffers between frames, so the game can always make the new one. The first swap
-  chain that presents with a real window is the game's: the ui goes into its back buffer just before Present (the render target bindings
-  are restored, `d3d11_renderer` restores the rest), a target view is made per buffer size and released on `ResizeBuffers`. While hidden
-  nothing is drawn.
-- **Input:** the game's window is subclassed; messages go to `win32_platform`; while the overlay is open the game does not see the
-  keyboard or mouse (`options.block_game_input`, or only what the ui wants when false), raw input is drained, the cursor is shown and
-  unclipped every frame and set from `ui.cursor()`. Threads: the window thread feeds messages, the render thread reads the frame (a mutex
-  guards the platform), `ui` runs on the game's render thread.
-- **Pieces:** `strata_overlay` (static library, link it into your dll), `strata_overlay_demo` (the sample dll: tabs, a log other threads write
-  to through the C api `strata_overlay_log(level, utf8)`, a theme switcher, `strata_overlay_show / _eject / _frames`), `strata_overlay_inject`
-  (a LoadLibrary injector: `strata_overlay_inject <pid | exe> <dll>`) and `strata_overlay_host` (a stand-in game: flip-model swap chain,
-  loads the dll like an injector, sends F1 to its window and checks that frames are drawn while open and only then; ctest runs it and writes
-  a png of the frame). `STRATA_OVERLAY_SHOW=1` starts open, `STRATA_OVERLAY_CAPTURE=file.png` writes the back buffer once, `STRATA_OVERLAY_LOG=file`
-  logs what the hook does.
-- **Direct3D 12:** the same swap chain class is hooked. When the game's swap chain first presents, a queue made on the game's own
-  device gives the vtable of `ID3D12CommandQueue`, where `ExecuteCommandLists` is replaced: the direct queue that was seen executing
-  command lists is the game's. Per frame the overlay records its
-  own command list (transition of the current back buffer to render target, `d3d12_renderer::render`, transition back), runs it on that
-  queue right before Present and signals a fence, so a frame slot's allocator and upload buffers are reused only after the gpu is done
-  (waits are per back buffer index, normally free). `ResizeBuffers` waits for the overlay's work and rebuilds the render target views. The
-  first frames after injecting wait until a queue has been seen. `strata_overlay_host --d3d12` tests it.
-- **Limits:** Vulkan / OpenGL games need a hook of their own (the ui and the renderers are the same). A d3d12 game with several direct queues
-  is served by the one that ran last. A game that recenters or locks the cursor every frame for mouse-look fights for it (in Unity set
-  `Cursor.lockState = None` while the overlay is open). The overlay does not need the game's cooperation but the game's own anti-cheat
-  may not like an injected dll: do not use it in online games.
+- **The hook:** a dummy swap chain yields `IDXGISwapChain`'s shared vtable; `Present`, `Present1` and
+  `ResizeBuffers` are replaced (no code patched; `uninstall()` restores them). The dummy uses the api the game
+  already loaded, so the other api is never loaded into it. The first swap chain presenting to a real window is the
+  game's; the UI is drawn into its back buffer before Present. Replaced swap chains (resolution changes) are
+  followed; no buffer views are held between frames. Nothing is drawn while hidden.
+- **Input:** the game window is subclassed and feeds `win32_platform`. While open the game gets no keyboard / mouse
+  (`options.block_game_input`), raw input is drained, the cursor is shown, unclipped and set from `ui.cursor()`. The
+  UI runs on the game's render thread; a mutex guards the platform.
+- **Pieces:** `strata_overlay` (static lib for your dll), `strata_overlay_demo` (sample dll with tabs, a
+  thread-safe log via `strata_overlay_log(level, utf8)`, theme switcher, `strata_overlay_show / _eject / _frames`),
+  `strata_overlay_inject <pid | exe> <dll>` (LoadLibrary injector) and `strata_overlay_host` (a stand-in game that
+  ctest runs). Env: `STRATA_OVERLAY_SHOW=1`, `STRATA_OVERLAY_CAPTURE=file.png`, `STRATA_OVERLAY_LOG=file`.
+- **Direct3D 12:** a queue on the game's device gives `ID3D12CommandQueue`'s vtable; `ExecuteCommandLists` is hooked
+  and the direct queue seen executing is the game's. Per frame the overlay records its own list (barrier,
+  `d3d12_renderer::render`, barrier), submits it before Present and fences per back buffer. `ResizeBuffers` waits
+  and rebuilds the RTVs. `strata_overlay_host --d3d12` tests it.
+- **Limits:** Vulkan / OpenGL need their own hook. With several direct queues the last one is used. Mouse-look games
+  that lock the cursor fight for it (Unity: `Cursor.lockState = None`). Anti-cheat may object: not for online games.
 
 ## Hosting, state, HDR and diagnostics
 
-**`strata::app`** (target `strata::app`, `strata/app.hpp`) is a ready-made host: a per-monitor-dpi window, a flip-model
-direct3d 11 swap chain with a frame latency object, DPI changes, resizing, sleeping while nothing changes, a lost device
-(`on_device_reset` is where textures are made again), a close request that can be refused (`on_close_request`),
-following the system's dark / light mode and accent (`follow_system_theme`), and the user's arrangement kept in a file
-(`state_file`). strata itself still never creates a window or a device, so it can live inside someone else's (an overlay).
+**`strata::app`** (target `strata::app`, `strata/app.hpp`) is a ready-made host: per-monitor-dpi window, flip-model
+d3d11 swap chain with a latency object, resizing, idling, device loss (`on_device_reset`), vetoable close
+(`on_close_request`), system theme (`follow_system_theme`) and saved layout (`state_file`). strata itself never
+creates a window or device.
 
 ```cpp
 auto app = strata::app::create({.title = "tool", .follow_system_theme = true, .state_file = "tool.ini"});
 return app->run([&](strata::app&, strata::context& ui) { if (auto w = ui.window("hello", {40, 40}, 300.0f)) { ui.text("hi"); } });
 ```
 
-- **State:** `ui.save_state(config)` / `ui.load_state(config)` put the dock layout, window places / sizes / collapsed,
-  table columns, open tree nodes and scroll offsets into one config section; loading works before the UI is first shown.
-- **Ids:** 64 bit. `"Downloads (3)###dl"` shows the text before `###` and keys the item by what follows, so a title that
-  changes keeps its window. Window slots of windows no longer shown are given back when all 32 are in use.
-- **Edits:** `item_activated()`, `item_deactivated()`, `item_edited()`, `item_deactivated_after_edit()` after any value
-  widget -- one undo step per drag or text entry instead of one per frame.
-- **Input:** `input_state::presses` queues every key press between two frames with the modifiers it had (they are handled
-  one per frame, none is lost); typed text holds 1 KiB per frame (a whole IME sentence); key events carry `alt`; caret
-  blink and double-click time come from the system settings (`win32_platform` fills them).
-- **Scrolling:** one wheel notch moves as far as the user's mouse settings ask for (Windows' "lines to scroll",
-  normally 3 lines; "one screen at a time" works too), and `style::scroll_speed` scales that -- `ui.theme().scroll_speed = 2.0f`
-  scrolls twice as far, `0` stops the wheel scrolling. It applies everywhere: windows, child regions, tables, text fields,
-  dropdown lists and tab bars. It is a style member, so a theme file can carry it (`scroll_speed = 2`) and `push_var`
-  can override it for one widget. The sandbox has `--scroll-speed F` to try values.
-  **Smooth scrolling** is on (`set_scroll_smoothing(false)` for the jump).
-- **Themes** have `success`, `warning`, `error` and a six-colour chart palette `series`, in theme files too;
-  `win32_platform::appearance()` + `themes::for_appearance()` follow the system; `style::text_contrast` (0 = off, per
-  theme) thickens light text on dark backgrounds.
-- **HDR / srgb targets:** `renderer.set_output({output_space::scrgb | hdr10 | srgb_view, paper_white_nits})` encodes the
-  UI for an FP16 scRGB, a 10-bit HDR10 or a `*_SRGB` target. The overlay works it out from the game's swap chain
-  (`options::output` overrides it).
-- **Lost device:** `renderer.device_lost()`; recover with a new device, `ui.rebuild_font_atlas()`, `renderer.create()`,
-  new textures.
-- **Worker threads** log through `strata::log_queue` (`add` anywhere, `drain_into(log)` on the UI thread).
-- **Diagnostics:** `context_config::diagnostics` (or `set_diagnostics`) receives each distinct problem once -- a fixed
-  table that ran out, a duplicate id (debug builds), a draw list overflow; `frame_stats::limits_hit` counts them.
-- **D3D12 textures** are staged and copied at the start of the next `render()` (no CPU wait), and `destroy_texture()` may
-  be called any time.
-- **Tests:** `strata_render_test` (renderers on a real device: hostile pipeline state, output encodings, text contrast,
-  device recovery), `strata_app_test`, overlay runs on FP16 swap chains and across a replaced swap chain. The `x64-asan`
-  preset builds everything with AddressSanitizer plus `strata_fuzz` (libFuzzer over config, theme, dock layout, saved
-  state, rich text, key chords and text editing; ctest runs it briefly from `tests/fuzz/corpus`).
+- **State:** `ui.save_state(config)` / `ui.load_state(config)` store dock layout, windows, table columns, open tree
+  nodes and scroll offsets in one section; load any time.
+- **Ids:** 64-bit. `"Downloads (3)###dl"` shows the part before `###` and keys by what follows. Slots of windows no
+  longer shown are recycled when all 32 are used.
+- **Edits:** `item_activated()`, `item_deactivated()`, `item_edited()`, `item_deactivated_after_edit()` -- one undo
+  step per drag or entry.
+- **Input:** `input_state::presses` queues every key press between frames (one handled per frame); 1 KiB of typed
+  text per frame; `alt` on key events; caret blink and double-click time from the system.
+- **Scrolling:** a notch follows the system "lines to scroll" (or one screen), scaled by `style::scroll_speed`
+  (`0` disables) everywhere; theme files and `push_var` can set it; sandbox `--scroll-speed F`. Smooth scrolling is
+  on (`set_scroll_smoothing(false)`).
+- **Themes** have `success`, `warning`, `error` and a six-color `series` palette; `win32_platform::appearance()` +
+  `themes::for_appearance()` follow the system; `style::text_contrast` thickens light-on-dark text.
+- **HDR / srgb targets:** `renderer.set_output({output_space::scrgb | hdr10 | srgb_view, paper_white_nits})`. The
+  overlay detects it from the swap chain (`options::output` overrides).
+- **Lost device:** `renderer.device_lost()`; recover with a new device, `ui.rebuild_font_atlas()`,
+  `renderer.create()`, new textures.
+- **Worker threads** log via `strata::log_queue` (`add` anywhere, `drain_into(log)` on the UI thread).
+- **Diagnostics:** `context_config::diagnostics` (or `set_diagnostics`) reports each distinct problem once;
+  `frame_stats::limits_hit` counts them.
+- **D3D12 textures** are staged into the next `render()` (no cpu wait); `destroy_texture()` is safe any time.
+- **Tests:** `strata_render_test` (hostile pipeline state, output encodings, text contrast, device recovery),
+  `strata_app_test`, overlay runs on FP16 and replaced swap chains. The `x64-asan` preset adds AddressSanitizer and
+  `strata_fuzz` (libFuzzer over config, theme, dock layout, saved state, rich text, chords and editing; ctest runs it
+  briefly from `tests/fuzz/corpus`).
 
 ## TODO
-
-The known limitations, as a work list.
 
 **Text**
 - [ ] OpenType shaping for Indic / Southeast Asian scripts (Devanagari, Thai, Tamil, Khmer ...), color emoji, explicit bidi embeddings,
@@ -1245,12 +1042,11 @@ The known limitations, as a work list.
 **Input and windows**
 - [ ] Keyboard navigation of widgets and menus (Tab / arrows; today only text fields, combos and hotkeys take the keyboard)
 - [ ] Multi-viewport (windows outside the application window)
-- [ ] Horizontal scrolling for windows and tables themselves (today only a `child_flags::horizontal` child scrolls
-      sideways, which is enough to put a wide table in but does not give the table its own bar)
+- [ ] Horizontal scrolling for windows and tables themselves (today only a `child_flags::horizontal` child scrolls sideways)
 
 ## Ideas
 
-Things that would fit, not promised. Not on the TODO list.
+Would fit, not promised.
 
 **Widgets**
 - Radio buttons and a list box

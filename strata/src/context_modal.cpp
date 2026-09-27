@@ -53,7 +53,7 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     a.toggle = approach(a.toggle, 1.0f, m_->style_.anim_speed * 0.9f);
     const f32 t = std::clamp(a.toggle, 0.0f, 1.0f);
 
-    // Esc, or a click on the dimmed area, closes it (unless something inside it is using the key / click)
+    // Esc or a click on the dim closes it (unless something inside uses the key / click)
     const rect prev = window_rect(title);
     if (top) {
         const bool busy = m_->focus_id_ != 0 || m_->hotkey_capture_ != 0 || m_->popup_id_ != 0 || m_->menu_open_[0].key != 0;
@@ -82,10 +82,9 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
         switch_run(previous_owner);
     }
 
-    // centered on the display, using the size it had last frame (the first frame it is invisible anyway)
+    // centred using last frame's size (the first frame is invisible anyway)
     const vec2 win{prev.width() > 0.0f ? prev.width() : size.x, prev.height() > 0.0f ? prev.height() : (size.y > 0.0f ? size.y : 160.0f)};
-    // the resting place is on whole pixels (crisp text); the slide-in on top of it is not rounded, or it would move in
-    // one-pixel jumps and the last one would look like a snap
+    // rest on whole pixels for crisp text; the slide-in stays unrounded to avoid one-pixel jumps and a final snap
     const vec2 pos{std::round((m_->display_.x - win.x) * 0.5f), std::round((m_->display_.y - win.y) * 0.42f) + (1.0f - t) * 12.0f};
     if (window_state* st = window_for(wid, pos, size.x)) {
         st->pos = pos;
@@ -161,13 +160,11 @@ int context::dialog(std::string_view title, std::string_view message, std::initi
     return result;
 }
 
-// a confirmation that owns its own open / closed state and remembers what it was asked about, so a caller needs
-// neither a "which object" member nor an "is it open" one. ask_confirm() opens it (or answers straight away when the
-// user has ticked "don't ask again"), confirm() draws it and reports the button.
+// self-contained confirmation holding its open state and subject. ask_confirm() opens it (or answers at once if
+// "don't ask again" is ticked), confirm() draws it and reports the button.
 void context::ask_confirm(std::string_view id_label, std::string_view message, u64 user_data)
 {
-    // like a modal title, the id is global: ask_confirm() is usually called from inside a window and confirm()
-    // from outside one, and both have to mean the same dialog
+    // the id is global like a modal title: ask_confirm() inside a window and confirm() outside must match
     const id key = hash_id(id_label, 0);
     m_->confirm_key_      = key;
     m_->confirm_data_     = user_data;

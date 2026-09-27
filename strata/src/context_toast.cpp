@@ -141,7 +141,7 @@ void context::toast_end_frame()
         const bool  plain     = !has_bar && !has_acts && t.sticky == false;
         const f32  inner_w = width - 2.0f * pad - 6.0f;
         const vec2 body_size = t.text.empty() ? vec2{} : rich_layout(t.text, f, m_->style_.text, inner_w, false);
-        // (rich_layout leaves its lines behind: the body is drawn right after measuring, before the next toast)
+        // (rich_layout's lines are drawn right after measuring, before the next toast)
         const f32 title_h = t.title.empty() ? 0.0f : lh;
         f32 height  = pad * 2.0f + title_h + (t.title.empty() || t.text.empty() ? 0.0f : 3.0f) + body_size.y + 3.0f;
         if (has_bar)  { height += 9.0f; }

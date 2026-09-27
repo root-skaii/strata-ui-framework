@@ -225,7 +225,7 @@ private:
         list_->ResourceBarrier(1, &b);
     }
 
-    // records a copy of the target into a readback buffer (the target must be in the render target state)
+    // records a copy of the target into a readback buffer (target must be in RENDER_TARGET state)
     bool record_capture(ID3D12Resource* target)
     {
         const D3D12_RESOURCE_DESC td = target->GetDesc();

@@ -48,7 +48,7 @@ constexpr std::size_t max_file_bytes = std::size_t{4} << 20;
     return out;
 }
 
-// a key that would be read back as something else (a comment, a "key = value" split, a header) is made harmless
+// neutralise keys that would read back differently (comment, "key = value" split, header)
 [[nodiscard]] std::string clean_key(std::string_view k)
 {
     std::string out{trim(k)};

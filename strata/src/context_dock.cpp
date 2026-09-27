@@ -1,9 +1,8 @@
-// docking: dock spaces (the main area, named areas, edge docks, floating docks), each a tree of nodes over a region.
-// leaves hold windows as tabs, splits divide their area between two children.
-//
-// per frame: dock_area / dock_edge / floating_dock give every space its rectangle and lay its tree out; windows in a leaf
-// take its content rectangle (begin_window). dock_end_frame() draws the tab bars and splitters, handles their input,
-// previews the drop target of a dragged window and applies a drop.
+// docking: dock spaces (main, named, edge, floating), each a node tree over a region; leaves hold tabbed windows,
+// splits divide their area between two children.
+// per frame: dock_area / dock_edge / floating_dock place and lay out each space; docked windows take their leaf's
+// content rect (begin_window). dock_end_frame() draws tab bars and splitters, handles their input, previews and
+// applies drops.
 
 #include "strata/context.hpp"
 
@@ -64,7 +63,7 @@ u8 context::dock_space_at(id key) noexcept
 void context::dock_set_space(u8 space, const rect& area, const rect& drop, const rect& panel) noexcept
 {
     dock_space& sp = m_->dock_->spaces[space];
-    // a floating dock that is dragged carries its panes along rigidly: only changes of the layout itself animate
+    // a dragged floating dock moves its panes rigidly: only layout changes animate
     if (sp.owner != 0 && sp.root != no_node && sp.last_frame + 1 >= m_->frame_ && sp.last_frame != 0) {
         const vec2 delta = area.min - sp.area.min;
         if (delta.x != 0.0f || delta.y != 0.0f) {
@@ -497,7 +496,7 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
     const dock_space& sp = m_->dock_->spaces[static_cast<u32>(best)];
     t.valid = true;
     t.space = static_cast<u8>(best);
-    if (sp.root == no_node) { // nothing docked yet: the window would fill the space (an edge dock: the whole panel)
+    if (sp.root == no_node) { // empty space: the window would fill it (edge dock: the whole panel)
         t.preview = sp.panel;
         return t;
     }
@@ -515,8 +514,8 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
     }
     if (found != exclude_leaf) { t.leaf = found; }
 
-    // the part of `whole` the new pane would take on side `z`: about the size the window has (so a small window does not
-    // grab half of a big pane), within limits; without a size, half of a pane and a quarter of a space
+    // share of `whole` a new pane on side `z` takes: about the window's size (small windows do not grab half a big
+    // pane), within limits; without a size, half a pane or a quarter of a space
     const rect& a = sp.area;
     const auto share_of = [want](dock_zone z, bool outer, const rect& whole) -> f32 {
         const bool horizontal = z == dock_zone::left || z == dock_zone::right;
@@ -557,7 +556,7 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
         return t;
     }
 
-    // near the border of the space: split its whole tree (the tab bar of a pane at the top is for tabs, the guide has the top border)
+    // near the space border: split the whole tree (a top pane's tab bar is for tabs; the guide owns the top border)
     const f32 tab_h   = m_->font_.line_height(0) + 10.0f;
     const bool on_bar = t.leaf != no_node && pointer.y < m_->dock_->nodes[t.leaf].area.min.y + tab_h;
     const f32 dl = pointer.x - a.min.x;
@@ -614,7 +613,7 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
     return t;
 }
 
-// the drop guides for a pane (a cross of five buttons in the middle of its body) and for the borders of the space
+// drop guides: a five-button cross in the pane body, plus the space borders
 u32 context::dock_guides(const dock_space& sp, u8 leaf, std::array<dock_guide, 9>& out) const noexcept
 {
     u32 n = 0;
@@ -703,8 +702,8 @@ void context::dock_end_frame()
     const f32 lh    = m_->font_.line_height(0);
     const f32 tab_h = lh + 10.0f;
 
-    // chrome is not part of any window: it may only be touched when no floating window covers the pointer
-    // (a floating dock's own window does not count: its tab bars sit on its body)
+    // dock chrome belongs to no window: usable only when no floating window covers the pointer (a floating dock's own
+    // window excepted: its tab bars sit on its body)
     const bool free_pointer = m_->hovered_window_prev_ == 0 || m_->hovered_docked_prev_;
 
     for (u32 ni = 0; ni < max_dock_nodes; ++ni) {
@@ -821,7 +820,7 @@ void context::dock_end_frame()
                     }
                     if (want != i) { dock_move_tab(w, want); }
                 } else if (dot(d, d) > 36.0f) {
-                    // ... pulled away from it, it leaves the dock: it floats under the pointer and keeps following it
+                    // ... pulled away, it undocks and floats under the pointer
                     const f32 fw = w.float_size.x > 0.0f ? w.float_size.x : 320.0f;
                     dock_detach(w);
                     w.pos = {m_->mouse_.x - std::min(fw * 0.25f, 80.0f), m_->mouse_.y - tab_h * 0.5f};
@@ -852,7 +851,7 @@ void context::dock_end_frame()
             m_->dl_.pop_clip();
         }
 
-        // what is left of the bar is a grip: dragging it moves the whole pane, all its tabs, to another place
+        // the rest of the bar is a grip that drags the whole pane with all its tabs
         const rect grip = {{x, bar.min.y}, bar.max};
         if (grip.width() >= 16.0f) {
             const interaction in = chrome(hash_id("##dgrip", static_cast<id>(ni + 1)), grip);
@@ -1016,7 +1015,7 @@ void context::dock_end_frame()
 
 // layout text ------------------------------------------------------------------------------------
 //   strata-dock 2
-//   space <key> <edge size>        one per space that has panes (or is an edge dock); the tree follows in pre-order:
+//   space <key> <edge size>        per space with panes (or edge dock); its tree follows in pre-order:
 //   S <v|h> <ratio>                a split (v = stacked), then its two children
 //   L <active> <n>                 a leaf with n tabs, then n lines
 //   W <key> <title>

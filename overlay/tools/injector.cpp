@@ -1,6 +1,6 @@
-// a small dll injector for testing the overlay:  strata_overlay_inject.exe <process id | exe name> <path to dll>
-// (LoadLibraryW in the target through a remote thread; the bitness of the target must match this exe: x64.)
-// only use it on programs you are allowed to modify: never on online games with anti-cheat.
+// test dll injector:  strata_overlay_inject.exe <process id | exe name> <path to dll>
+// (LoadLibraryW via a remote thread; target bitness must match: x64.)
+// only for programs you may modify: never online games with anti-cheat.
 
 #include <windows.h>
 #include <tlhelp32.h>

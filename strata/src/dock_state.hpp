@@ -1,7 +1,7 @@
 #pragma once
 
-// internal (not installed): the state of the docking system. context keeps it behind a pointer (context::dock_), so this can
-// change without recompiling everything that includes strata/context.hpp; only context_dock.cpp and context.cpp include it.
+// internal: docking state, behind context::dock_ so it can change without recompiling context.hpp users.
+// included only by context_dock.cpp and context.cpp.
 
 #include "strata/context.hpp"
 
@@ -11,7 +11,7 @@ inline constexpr u32 max_dock_nodes  = 32;
 inline constexpr u32 max_dock_spaces = 8;
 inline constexpr u8  no_node         = 0xff; // (context::no_node is the same)
 
-// dock tree: leaves hold windows as tabs, split nodes divide their area between two children
+// dock tree: leaves hold tabbed windows, splits divide their area between two children
 struct dock_node {
     bool used{};
     u8   parent{no_node};
@@ -19,48 +19,48 @@ struct dock_node {
     bool vertical{};   // false: children side by side, true: stacked
     f32  ratio{0.5f};  // share of the first child
     id   active{};     // leaf: the selected tab (window key)
-    rect area;         // this frame: the whole node (the layout's target)
+    rect area;         // this frame's full node rect (layout target)
     rect content;      // this frame, leaf: below the tab bar
-    rect shown_area;   // what is drawn: follows `area`, animated when dock animation is on
+    rect shown_area;   // drawn rect: follows `area`, animated if enabled
     rect shown_content;
     bool fresh{true};  // no shown_* yet
     u8   space{0};     // the dock space this node belongs to
     [[nodiscard]] bool leaf() const noexcept { return child[0] == no_node; }
 };
 
-// where a dragged window would go
+// drop target of a dragged window
 struct dock_target {
     bool      valid{};
     u8        space{no_node};
     u8        node{no_node}; // no_node: the space is empty
     dock_zone zone{dock_zone::center};
-    bool      outer{};       // splits the root instead of the node under the pointer
+    bool      outer{};       // split the root, not the hovered node
     rect      preview;
-    f32       share{};       // splits: the part of the pane / space the new window takes
-    u8        leaf{no_node}; // the pane under the pointer (its drop guides are shown), even when nothing can be dropped there
+    f32       share{};       // splits: share taken by the new window
+    u8        leaf{no_node}; // hovered pane (guides shown), even if nothing can drop
     bool      on_guide{};    // the pointer is on one of the drop guides
-    int       tab{-1};       // joining a pane's tabs: the place among them (-1 = last)
+    int       tab{-1};       // tab join position (-1 = last)
     rect      marker;        // ... and where that is in the tab bar
 };
 
-// the buttons shown while a window is dragged over a pane: a cross in its middle, and one per border of the space
+// drop guides while dragging over a pane: centre cross plus one per space border
 struct dock_guide {
     dock_zone zone{dock_zone::center};
     bool      outer{};
     rect      r;
 };
 
-// a dock space: one tree of panes over a region. the main area, named areas, edge docks and floating docks are all spaces
+// a dock space: one pane tree over a region (main, named, edge and floating docks alike)
 struct dock_space {
     id   key{};          // 0 = free slot
     u8   root{no_node};
     rect area;           // where its panes are laid out this frame
-    rect drop;           // where a dragged window is accepted (a strip for an empty edge dock)
-    rect panel;          // the whole panel an empty edge dock would take: the drop preview
+    rect drop;           // accepting area (a strip for an empty edge dock)
+    rect panel;          // full panel of an empty edge dock: the drop preview
     f32  edge_size{};    // edge docks: their width / height
     id   owner{};        // a floating dock: the key of its window
     bool set{};          // given a rectangle this frame
-    bool hidden{};       // a collapsed floating dock: what is docked in it is hidden
+    bool hidden{};       // collapsed floating dock hides its contents
     bool edge{};
     u64  last_frame{};
 };
@@ -72,16 +72,16 @@ struct dock_state {
     u32         counter{};
     dock_target target_cur{};
     dock_target target_prev{};
-    id          drag_win{};       // the floating dockable window being dragged this frame
-    id          drag_prev{};      // ... and in the previous one (a drop happens on the release frame)
+    id          drag_win{};       // floating dockable window dragged this frame
+    id          drag_prev{};      // ... and last frame (drops happen on release)
     vec2        press_pos{};
-    u8          group_src{no_node}; // a whole pane (its tabs) is being dragged by the grip of its tab bar
+    u8          group_src{no_node}; // a whole pane dragged by its tab-bar grip
     bool        group_moved{};
-    id          void_key{};       // a drag that Esc cancelled (window) or a double click replaced (splitter): does nothing until the button is up
-    id          click_key{};      // last press on a splitter / tab, for double clicks
+    id          void_key{};       // drag cancelled by Esc / replaced by a double click: inert until release
+    id          click_key{};      // last splitter / tab press, for double clicks
     f64         click_time{-10.0};
     vec2        click_pos{};
-    bool        splitting{};      // a splitter is being dragged: panes follow the pointer without easing
+    bool        splitting{};      // splitter drag: panes follow without easing
 };
 
 } // namespace strata::internal

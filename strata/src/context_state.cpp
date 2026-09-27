@@ -43,14 +43,14 @@ constexpr std::size_t      tree_chunk    = 96; // tree nodes per config line
 
 void context::save_state(config& cfg, std::string_view section) const
 {
-    // the section is replaced, not merged: a table or window that is gone must not come back from an old line
+    // replaced, not merged: gone tables / windows must not return from stale lines
     std::vector<std::string> old;
     for (const config::entry& e : cfg.entries(section)) { old.push_back(e.key); }
     for (const std::string& k : old) { (void)cfg.erase(section, k); }
 
     cfg.set(section, "version", state_version);
 
-    // the dock layout (which also has every window's place, size and collapsed state): a line of it per key
+    // the dock layout (includes every window's place, size and collapse), one line per key
     const std::string dock = dock_save_layout();
     std::size_t line_no = 0;
     for (std::size_t i = 0; i < dock.size();) {

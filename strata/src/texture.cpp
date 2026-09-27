@@ -108,7 +108,7 @@ bool texture_image::create(const texture_desc& desc, std::span<const u8> pixels)
     return true;
 }
 
-// a 2x2 box filter; colors are weighted by alpha so transparent texels do not darken the edges of a shape
+// 2x2 box filter, alpha-weighted so transparent texels do not darken shape edges
 void texture_image::build_level(u32 k, u32 x0, u32 y0, u32 x1, u32 y1)
 {
     const level& src = levels_[k - 1];

@@ -1,5 +1,4 @@
-// the members of strata::context that were inline in context.hpp and read its state: out of line now that the state
-// lives in context::impl (context_impl.hpp)
+// formerly inline members of strata::context that read its state, now in context::impl (context_impl.hpp)
 
 #include "context_impl.hpp"
 

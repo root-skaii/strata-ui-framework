@@ -16,19 +16,17 @@ namespace strata {
 
 enum class log_level : u8 { trace, debug, info, warn, error };
 
-// the text of a console / log window: a ring of lines that context::log_view() draws with filtering, colors, a follow
-// mode and row selection. one buffer is one view: the view's state (filter, level, follow) lives in `view`.
+// console / log text: a ring of lines that context::log_view() draws with filter, colours, follow mode and selection.
+// one buffer = one view; view state lives in `view`.
 class log_buffer {
 public:
-    // the text of the lines lives in one arena, not in a std::string per line: a log is written to at whatever rate
-    // the program produces events, and a string per line means an allocation per line plus the deque's own churn.
-    // `text()` is a view into that arena, valid until the next add() / clear().
+    // line text lives in one arena (no allocation per line). `text()` is valid until the next add() / clear().
     struct line {
         log_level   level{};
-        f64         time{}; // seconds of ui time (context::time()) when the line was added; log_view stamps lines that had none
-        u64         seq{};  // grows with every line, so a selection survives old lines falling out of the ring
-        i64         wall_ms{}; // the clock when it was added: milliseconds since 1970-01-01 (utc)
-        f32         wrap_w{-1.0f}; // (log_view's cache: the wrap width the height below was measured for)
+        f64         time{}; // ui time (context::time()) when added; log_view stamps unset lines
+        u64         seq{};  // monotonic, so selections survive ring eviction
+        i64         wall_ms{}; // wall clock when added: ms since 1970-01-01 utc
+        f32         wrap_w{-1.0f}; // (log_view cache: wrap width `height` was measured for)
         f32         wrap_h{};
 
         [[nodiscard]] std::string_view text() const noexcept { return {arena->data() + off, len}; }
@@ -40,22 +38,21 @@ public:
         std::size_t              len{};
     };
 
-    // what the view shows and how; edit these from code or let the toolbar do it
+    // view state; set from code or via the toolbar
     struct view_state {
         std::string filter;                 // case-insensitive substring
         log_level   min_level{log_level::trace};
-        bool        follow{true};           // stick to the newest line; scrolling up turns it off, reaching the bottom back on
+        bool        follow{true};           // stick to the newest line; scrolling up / reaching the bottom toggles it
         bool        show_time{};
-        bool        clock{};                // show_time: the wall clock (HH:MM:SS.mmm, local time) instead of ui seconds
-        bool        wrap{};                 // long lines (and lines with line breaks) take as many rows as they need
-        u64         sel_anchor{};           // selected lines: [min, max] of these two seq numbers (0 = none)
+        bool        clock{};                // show_time as local wall clock (HH:MM:SS.mmm) instead of ui seconds
+        bool        wrap{};                 // long / multi-line entries take several rows
+        u64         sel_anchor{};           // selection: [min, max] of these seq numbers (0 = none)
         u64         sel_cursor{};
     };
 
     explicit log_buffer(std::size_t max_lines = 5000) : max_lines_{max_lines} {}
 
-    // every line points at this buffer's arena for its text, so a copy or a move has to reseat them -- otherwise the
-    // copy's lines would read the original's bytes, and a moved-from buffer's would dangle
+    // lines point into this buffer's arena, so copy / move must reseat them
     log_buffer(const log_buffer& o) : max_lines_{o.max_lines_} { assign_from(o); }
     log_buffer(log_buffer&& o) noexcept : max_lines_{o.max_lines_} { assign_from(std::move(o)); }
     log_buffer& operator=(const log_buffer& o)
@@ -70,7 +67,7 @@ public:
     }
     ~log_buffer() = default;
 
-    // "HH:MM:SS.mmm" in local time for a line's wall_ms (what the view shows with `clock`)
+    // "HH:MM:SS.mmm" local time for a wall_ms
     [[nodiscard]] static std::string clock_text(i64 wall_ms)
     {
         const std::time_t secs = static_cast<std::time_t>(wall_ms / 1000);
@@ -86,8 +83,7 @@ public:
         return buf;
     }
 
-    // `time` < 0 (the default): the log view stamps the line with the ui time the first time it draws it
-    // `wall_ms` < 0 stamps the line with the system clock now; pass a value to replay lines with the times they had
+    // `time` < 0: stamped with ui time when first drawn. `wall_ms` < 0: stamped with the clock now; pass one to replay.
     void add(log_level level, std::string_view text, f64 time = -1.0, i64 wall_ms = -1)
     {
         if (wall_ms < 0) {
@@ -134,12 +130,9 @@ public:
 private:
     friend class context;
 
-    // the arena only ever grows at the back, so the bytes of lines that fell out of the ring pile up at the front.
-    // once they are more than half of it, the live bytes move down to 0 and every offset shifts with them: one
-    // memmove per half-arena of text, which amortises to a byte moved about once per byte logged, and the arena
-    // settles at roughly the size of the lines the ring holds. no reallocation after that.
-    // shared by the copy / move constructors and assignments: take everything over, then point every line's `arena`
-    // at *this* buffer's arena
+    // the arena grows at the back; once dead bytes at the front exceed half, live bytes move down (amortised ~1 byte
+    // moved per byte logged) and the arena settles near the ring's size.
+    // shared by copy / move: take everything, then reseat every line's `arena` to *this*
     template <class Self>
     void assign_from(Self&& o)
     {
@@ -165,14 +158,14 @@ private:
 
     std::deque<line>  lines_;
     std::vector<char> arena_;   // the text of every live line, back to back
-    std::size_t       dead_{};  // bytes at the front belonging to lines that are gone
+    std::size_t       dead_{};  // dead bytes at the front
     std::size_t      max_lines_;
     u64              next_seq_{1};
     u64              version_{};
 
-    // indices of the lines the filter lets through, rebuilt when the buffer or the filter changes
+    // filtered line indices, rebuilt when the buffer or filter changes
     std::vector<u32> visible_;
-    std::vector<f32> row_top_;      // wrapping: where each visible row starts (one more entry than rows)
+    std::vector<f32> row_top_;      // wrapping: first row of each visible line (+1 entry)
     u64              visible_version_{~u64{0}};
     std::string      visible_filter_;
     log_level        visible_level_{};

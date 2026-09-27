@@ -1,9 +1,6 @@
-// keyboard navigation of a list or tree, and the scroll control the rows need to keep the cursor in view.
-//
-// a nav scope collects every row submitted inside it -- culled ones too, since the cursor has to be able to walk
-// past what is off-screen -- and resolves the keys once, at nav_end(), when the whole sequence is known. moving the
-// cursor therefore takes effect on the next frame, which is also when the row draws its focus ring and reports the
-// Enter as a press: one frame of lag that no one can see, in exchange for not needing a second pass.
+// keyboard navigation of lists / trees, and the scroll control that keeps the cursor in view.
+// a nav scope collects every row inside it (culled ones too, so the cursor can move off-screen) and resolves keys
+// at nav_end(). the move shows next frame (focus ring, Enter as a press): invisible lag instead of a second pass.
 
 #include "strata/context.hpp"
 
@@ -83,7 +80,7 @@ void context::nav_end()
         return;
     }
 
-    // where the cursor is in this frame's sequence; a cursor whose row is gone starts at the top again
+    // the cursor's index in this frame's sequence; a vanished row resets it to the top
     std::size_t at    = 0;
     bool        found = false;
     for (std::size_t i = 0; i < items.size(); ++i) {
@@ -154,8 +151,7 @@ void context::nav_end()
 
 // scrolling -----------------------------------------------------------------------------------
 
-// the scroll offset and the visible rectangle of the innermost region that scrolls: the child region being built,
-// otherwise the window. nullptr when neither scrolls.
+// scroll offset and visible rect of the innermost scrolling region (child being built, else window); nullptr if none.
 f32* context::scroll_slot(rect& view) noexcept
 {
     if (m_->child_depth_ > 0) {
@@ -191,7 +187,7 @@ f32 context::scroll_max_y() const noexcept
     if (self.scroll_slot(view) == nullptr) {
         return 0.0f;
     }
-    // what the region reported at the end of the last frame: this frame's content is not finished yet
+    // last frame's value: this frame's content is not finished yet
     const f32 content = m_->child_depth_ > 0 ? m_->child_stack_[m_->child_depth_ - 1].state->content_h
                                          : m_->cur_->content_h + 2.0f * (m_->cur_->menubar ? 0.0f : m_->style_.padding);
     return std::max(0.0f, content - view.height());
@@ -205,8 +201,7 @@ void context::set_scroll_y(f32 y) noexcept
     }
 }
 
-// horizontal scrolling only exists inside a child region that asked for it, so there is no slot to look up: the
-// innermost such child is the one that owns an x offset
+// only child_flags::horizontal children scroll sideways: the innermost one owns the x offset
 context::child_state* context::horizontal_child() const noexcept
 {
     for (u32 d = m_->child_depth_; d-- > 0;) {
@@ -229,7 +224,7 @@ f32 context::scroll_max_x() const noexcept
     if (st == nullptr) {
         return 0.0f;
     }
-    // what the region reported last frame, like scroll_max_y: this frame's content is not laid out yet
+    // last frame's value, like scroll_max_y
     for (u32 d = m_->child_depth_; d-- > 0;) {
         if (m_->child_stack_[d].state == st) {
             return std::max(0.0f, st->content_w - m_->child_stack_[d].inner.width());
@@ -245,8 +240,8 @@ void context::set_scroll_x(f32 x) noexcept
     }
 }
 
-// scrolls the least it has to (or centres, with `center`). the content of this frame is already laid out, so the new
-// offset is what the next frame draws with -- which is why "reveal the selection" is called every frame it holds
+// scrolls minimally (or centres). this frame is laid out already, so the next frame shows it -- hence callers
+// revealing a selection call it every frame
 void context::scroll_reveal_rect(const rect& item, bool center) noexcept
 {
     rect view;

@@ -112,7 +112,7 @@ void test_nested_tables()
     CHECK(opened >= 5 && opened <= 10);
 }
 
-// more editing: mouse selection, wheel, history limits, read-only ------------------------------------------------------
+// more editing: mouse selection, wheel, history limits, read-only ------------------------------------------------
 
 void test_texture_image()
 {
@@ -228,7 +228,7 @@ void test_texture_image()
     }
 }
 
-// text fields: triple click, styled contents, input methods --------------------------------------------------------------
+// text fields: triple click, styled contents, input methods ------------------------------------------------------
 
 void test_charts()
 {
@@ -359,7 +359,7 @@ void test_charts()
     }, 3);
 }
 
-// acrylic: saturation / brightness of the blurred frame, glass popups ---------------------------------------------------
+// acrylic: blurred-frame saturation / brightness, glass popups ---------------------------------------------------
 
 void test_plots()
 {
@@ -395,7 +395,7 @@ void test_plots()
     h.frames(build, 3);
     CHECK(h.ui.render_data().vertices.size() > base_vertices);
 
-    // ring buffer offset and the other kinds must not crash; a huge series is decimated to about a vertex per pixel
+    // ring offsets and other plot kinds must not crash; huge series decimate to about a vertex per pixel
     offset = 57;
     h.frames(build, 2);
     which = 1;
@@ -533,7 +533,7 @@ void test_number_widgets()
     h.frames(build, 2);
     CHECK(near_eq(vec[0], 0.0f) && near_eq(vec[1], 0.5f - 20.0f / comp_w, 0.02f) && near_eq(vec[2], 1.0f));
 
-    // typed number fields: half-written text leaves the value alone, a parsed number sets it, the buttons step it
+    // number fields: partial text leaves the value, a parsed number sets it, the buttons step it
     which = 3;
     h.frames(build, 2);
     h.click({100.0f, mid.y}, build);
@@ -621,7 +621,7 @@ void test_tabs()
         CHECK(adds == 1);
     }
 
-    // the x closes: the tab is gone from the list once the events are applied, and the selection stays on Gamma
+    // the x closes the tab once events are applied; the selection stays on Gamma
     h.click(close_center(1), build); // Beta
     CHECK((names == std::vector<std::string>{"Alpha", "Gamma", "Delta"}) && names[static_cast<std::size_t>(sel)] == "Gamma");
 
@@ -754,7 +754,7 @@ void test_datetime_pickers()
         const f32 cw    = w / 7.0f;
         const f32 top   = day_box.max.y + 4.0f + pad;                // the header row
         const f32 grid0 = top + head + 2.0f + (lh + 4.0f) + 2.0f;    // the first week
-        // 1 September is a Tuesday (column 1) of the first row: the 9th is the second Wednesday (row 1, column 2)
+        // 1 September is a Tuesday (column 1) of row 0: the 9th is the second Wednesday (row 1, column 2)
         h.click({gx + cw * 2.5f, grid0 + (ch + 2.0f) * 1.5f}, build);
         h.frames(build, 2);
         CHECK(day_changed && day == date{2026, 9, 9});
@@ -775,7 +775,7 @@ void test_datetime_pickers()
         h.click(next, build);
         h.click(next, build);
         CHECK(!day_changed && h.ui.popup_open()); // moving through months changes nothing
-        // now October, then November 2026: 1 November is a Sunday, so it is the last column of the first row
+        // October, then November 2026: 1 November is a Sunday, the last column of row 0
         const f32 lh    = h.ui.font().line_height(0);
         const f32 ch    = fh - 6.0f;
         const f32 cw    = w / 7.0f;
@@ -837,7 +837,7 @@ void test_lists_and_tables()
 {
     std::fprintf(stderr, "[list clipper, table extras, tree tables]\n");
 
-    // a long list in a fixed-height window: only the visible rows are submitted, and the scroll range is the whole list
+    // a long list in a fixed-height window: only visible rows are submitted, the scroll range covers the whole list
     {
         harness h;
         int first = 1 << 30, last = -1, submitted = 0;
@@ -1085,8 +1085,8 @@ void test_scrollbar_drag()
         return t;
     };
 
-    // drag down and back: the thumb moves exactly as far as the pointer, whatever the size of the list, and comes back to
-    // where it started. `build` draws one scrolling area with a thumb
+    // drag down and back: the thumb tracks the pointer exactly regardless of list size and returns to its start.
+    // `build` draws one scrolling area with a thumb
     const auto drag_test = [&](harness& h, const auto& build, const char* what, bool expect_min_thumb) {
         h.frames(build, 4);
         h.move({100.0f, 100.0f}); // (over the content: the wheel is not used here)

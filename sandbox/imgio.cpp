@@ -380,7 +380,7 @@ bool write_png(std::string_view path, std::span<const u8> rgba, u32 width, u32 h
 {
     if (width == 0 || height == 0 || rgba.size() < static_cast<std::size_t>(width) * height * 4) { return false; }
 
-    // rgb rows, each with the "sub" filter (the difference to the pixel on the left): flat areas turn into zeros
+    // rgb rows with the "sub" filter (difference to the left pixel): flat areas become zeros
     const std::size_t row = static_cast<std::size_t>(width) * 3;
     std::vector<u8> raw((row + 1) * height);
     for (u32 y = 0; y < height; ++y) {

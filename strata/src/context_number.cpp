@@ -52,7 +52,7 @@ namespace {
 
 } // namespace
 
-// one number box: dragging changes the value, a click without dragging starts typing. `box` is the rectangle it owns
+// one number box: drag changes the value, a click without drag starts typing. `box` is its rect
 bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f32 speed, f32 lo, f32 hi, int decimals,
                        std::string_view suffix, bool integer)
 {
@@ -98,8 +98,8 @@ bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f
     if (in.hovered || in.held) { m_->cursor_ = cursor_kind::resize_ew; }
 
     if (in.held) {
-        // a press only starts something: nothing changes until the pointer has left a small dead zone around the
-        // spot (so a click never nudges the value), then the distance already travelled is applied at once
+        // nothing changes until the pointer leaves a small dead zone (clicks never nudge the value); then the distance
+        // travelled applies at once
         f32 dx = 0.0f;
         if (m_->mouse_pressed_) {
             m_->drag_frac_  = 0.0f;

@@ -1,5 +1,5 @@
-// checks for the production-hardening batch: 64-bit ids and "###", window slots that are given back, the diagnostics hook,
-// input that no longer drops keys or text, and the idle deadline.
+// 64-bit ids and "###", recycled window slots, the diagnostics hook, input that keeps every key and character,
+// and the idle deadline.
 
 #include "selftest_common.hpp"
 
@@ -63,8 +63,8 @@ void test_window_recycling()
     cfg.diagnostics = {&diag_collect, &log};
     harness h{cfg};
 
-    // 100 different windows over time, 5 at a time: once all 32 slots have been used, the ones shown longest ago make
-    // room. every window still opens
+    // 100 windows over time, 5 at a time: once all 32 slots were used, the least recently shown make room. every
+    // window still opens
     int opened = 0;
     for (int round = 0; round < 20; ++round) {
         h.frames([&] {
@@ -83,7 +83,7 @@ void test_window_recycling()
     // a window that was recycled starts over where its code puts it
     CHECK(h.ui.window_rect("inspector 0").width() == 0.0f);
 
-    // more than 32 on screen at once is still a limit: reported once through the hook, counted in the stats
+    // more than 32 on screen at once is still a limit: reported once via the hook, counted in stats
     h.frames([&] {
         for (int k = 0; k < 40; ++k) {
             if (auto w = h.ui.window(std::format("crowd {}", k), {0, 0}, 100.0f)) { h.ui.text("x"); }
@@ -143,7 +143,7 @@ void test_input_not_dropped()
     h.in.ctrl = false;
     CHECK(saves == 2);
 
-    // a whole confirmed IME sentence in one frame (60 CJK characters = 180 bytes; the old buffer held 64)
+    // a whole confirmed IME sentence in one frame (60 CJK characters = 180 bytes)
     std::string text;
     std::string sentence;
     for (int i = 0; i < 60; ++i) { sentence += "\xe6\xbc\xa2"; } // U+6F22
@@ -184,7 +184,7 @@ void test_next_wake()
     CHECK(h.ui.can_idle());
     CHECK(h.ui.next_wake_seconds() == never); // nothing will change until there is input
 
-    // a toast that stays until closed does not keep the ui awake once it has slid in (it used to, forever)
+    // a sticky toast does not keep the ui awake once it has slid in
     const toast_handle sticky = h.ui.toast({.text = "stays", .seconds = 0.0f});
     h.frames(build, 40);
     CHECK(h.ui.can_idle());
@@ -192,8 +192,8 @@ void test_next_wake()
     h.ui.toast_close(sticky);
     h.frames(build, 40);
 
-    // a timed toast draws its countdown bar shrinking: it needs frames until it is gone, which its whole-delta timer
-    // gets to after 2 s of real time however few frames that took
+    // a timed toast's bar shrinks, so it needs frames until gone; its whole-delta timer finishes after 2 s of real
+    // time however few frames that took
     h.ui.toast({.text = "timed", .seconds = 2.0f});
     h.frames(build, 40); // slid in
     CHECK(h.ui.next_wake_seconds() == 0.0);
@@ -562,12 +562,12 @@ void test_smooth_scroll()
 void test_fast_math_nan()
 {
     std::fprintf(stderr, "[fp:fast: the plot_auto NaN still reads as \"automatic\"]\n");
-    // plot_auto is a quiet NaN; /fp:fast lets the compiler assume there are none, which would silently turn every
-    // automatic axis into a fixed one. read through a volatile so the check cannot be folded away at compile time
+    // plot_auto is a quiet NaN; /fp:fast may assume none exist and turn auto axes fixed. read via volatile so the check
+    // is not folded at compile time
     volatile f32 v = plot_auto;
     CHECK(std::isnan(v));
 
-    // and end to end: an automatic range fits the data -- a line from 100 to 200 spans the plot's height
+    // end to end: an auto range fits the data (a line from 100 to 200 spans the plot height)
     harness h;
     const std::array<f32, 3> values{100.0f, 150.0f, 200.0f};
     rect plot_r{};
@@ -577,7 +577,7 @@ void test_fast_math_nan()
             plot_r = h.ui.item_rect();
         }
     }, 2);
-    // every vertex of the line lies inside the plot rectangle (a NaN range would put them at infinity or nowhere)
+    // every line vertex lies inside the plot rect (a NaN range would put them anywhere)
     const draw_data d = h.ui.render_data();
     bool finite = !d.vertices.empty();
     for (const vertex& vx : d.vertices) { finite = finite && std::isfinite(vx.pos.x) && std::isfinite(vx.pos.y); }

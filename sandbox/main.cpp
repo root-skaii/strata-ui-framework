@@ -34,16 +34,16 @@ struct options {
     int            theme      = 0;      // index into strata::themes::names()
     std::string    theme_file;          // a theme file applied on top of the theme
     float          scale      = 0.0f;   // ui scale; 0 = the monitor's dpi scale
-    float          rescale    = 0.0f;   // > 0: switch to this scale after a few frames (exercises the atlas re-upload)
+    float          rescale    = 0.0f;   // > 0: switch to this scale after a few frames (tests atlas re-upload)
     float          scroll_speed = 1.0f; // how far a wheel notch scrolls, as a multiple of the mouse settings' lines
     std::string    scene;               // start with one scene: default, features, visuals, ...
-    int            icon_page  = -1;     // --scene icons: show this 256-code-point page (hex) instead of the named set
+    int            icon_page  = -1;     // --scene icons: show this 256-code-point page (hex)
     std::string    shot;                // write a screenshot (png) of the last frame and exit
     std::string    golden;              // compare the last frame with this png and exit (0 = same)
-    std::string    artifacts;           // where a failed comparison writes its .actual / .diff images (default: the temp folder)
+    std::string    artifacts;           // where failed comparisons write .actual / .diff (default: temp)
     bool           update_golden = false;
     strata::u32    golden_tolerance = 6;    // per channel, out of 255: gpus round a little differently
-    double         golden_allowed   = 0.3;  // percent of the pixels that may be further off than that (other fonts move glyphs)
+    double         golden_allowed   = 0.3;  // percent of pixels allowed beyond that (fonts shift glyphs)
     strata::i32    shot_frames = 24;    // frames rendered (fixed 1/60 s steps) before the screenshot
     const wchar_t* log_path   = nullptr; // redirect stderr (debug layer output, frame report) to a file
     bool           metrics    = false;  // strata's own inspector windows (frame stats, live draw commands)
@@ -65,7 +65,7 @@ struct options {
     bool           kerning    = true;
 
     bool           selftest   = false; // run the headless checks of the ui logic and exit
-    bool           features   = false; // start with only the docked feature windows (editor, rich text, images, tables)
+    bool           features   = false; // only the docked feature windows (editor, rich text, images, tables)
     bool           menu_only  = false; // show only the sidebar settings-menu example
     bool           show_help  = false;
     std::wstring   bad_flag;
@@ -122,7 +122,7 @@ constexpr const wchar_t* usage_text =
     return out;
 }
 
-// a value that has a path separator or an extension is a font file, otherwise an installed family
+// a path separator or extension means a font file, otherwise an installed family
 [[nodiscard]] bool looks_like_path(std::string_view s) noexcept
 {
     return s.find_first_of("\\/") != std::string_view::npos || s.find('.') != std::string_view::npos;
@@ -267,7 +267,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     return static_cast<double>(t.QuadPart) * inv_freq;
 }
 
-// waits until an absolute time (seconds_now() clock): high-resolution timer for the bulk, a short spin for the rest
+// waits until an absolute time (seconds_now()): high-resolution timer, then a short spin
 class frame_limiter {
 public:
     frame_limiter() noexcept
@@ -633,8 +633,8 @@ void data_views(strata::context& ui, demo_state& s)
     }
 }
 
-// a sidebar settings menu: borderless window you can drag anywhere, icon tab strip on the left,
-// a page on the right that fades in on every tab change. the pages are placeholders for your own options.
+// sidebar settings menu: borderless draggable window, icon tab strip, a page that fades in on tab change.
+// the pages are placeholders.
 void menu_demo(strata::context& ui, demo_state& s)
 {
     using namespace strata;
@@ -742,7 +742,7 @@ void menu_demo(strata::context& ui, demo_state& s)
     }
 }
 
-// a procedural test picture: a round, soft-edged disc (transparent corners) with rings, a crosshair and a dot
+// procedural test picture: soft-edged disc (transparent corners) with rings, a crosshair and a dot
 std::vector<strata::u8> make_demo_image(strata::u32 w, strata::u32 h)
 {
     std::vector<strata::u8> px(static_cast<std::size_t>(w) * h * 4);
@@ -774,8 +774,8 @@ std::vector<strata::u8> make_demo_image(strata::u32 w, strata::u32 h)
     return px;
 }
 
-// docking, multi-line input with undo, rich text and rich labels, images, nested tables. the four windows are dockable:
-// drag one by its title bar over the dock area (the whole client area here) and drop it on a pane's centre or edge.
+// docking, multi-line input with undo, rich text and labels, images, nested tables. the four windows are dockable:
+// drag one by its title onto a pane's centre or edge.
 void feature_windows(strata::context& ui, demo_state& s)
 {
     using namespace strata;
@@ -921,9 +921,8 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
     demo2_update(ui, s.x, 0.0f);
     if (s.x.art) { demo2_art(ui, s.x); }
 
-    // the windows flagged `dockable` dock into dock spaces. with the feature windows on there are three edge docks
-    // (left / right / bottom of the client area, below the menu bar when there is one; they take room only while
-    // something is docked in them), the main area in what is left, and a floating dock you can move around.
+    // dockable windows dock into three edge docks (left / right / bottom, below the menu bar; sized only while
+    // occupied), the main area, and a movable floating dock.
     const float dock_top = s.x.show_menus ? ui.main_menu_bar_height() : 0.0f;
     rect client{{0.0f, dock_top}, ui.display_size()};
     if (s.show_features) {
@@ -934,7 +933,7 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
     ui.dock_area(client);
     if (s.show_features) {
         (void)ui.floating_dock("Tools", {330.0f, 80.0f}, {360.0f, 330.0f});
-        if (s.dock_pending) { // a default layout: scene | editor | rich text, images at the bottom, tables in the floating dock
+        if (s.dock_pending) { // default layout: scene | editor | rich text, images below, tables floating
             s.dock_pending = false;
             (void)ui.dock_window("editor", dock_zone::center);
             (void)ui.dock_window("scene", dock_zone::center, {}, 0.5f, "explorer");
@@ -1000,7 +999,7 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
         ui.checkbox("long lists and tables", s.x.d3.show_lists);
         ui.checkbox("code editor, passwords, masks", s.x.d3.show_editor);
         if (ui.checkbox("dock animation", s.x.dock_anim)) { ui.set_dock_animation(s.x.dock_anim); }
-        if (s.show_features) { // the arrangement of the docks as text: keep it, change things around, bring it back
+        if (s.show_features) { // dock layout as text: save, rearrange, restore
             if (ui.button("save layout")) { s.saved_layout = ui.dock_save_layout(); }
             ui.same_line();
             if (ui.button("restore layout")) { (void)ui.dock_load_layout(s.saved_layout); }
@@ -1185,7 +1184,7 @@ void apply_scene(demo_state& s, const std::string& name)
     }
 }
 
-// where a failed comparison leaves its images: <artifacts>/<golden name>.<kind>.png; the folder is created on demand
+// failed comparison images: <artifacts>/<golden name>.<kind>.png (folder created on demand)
 std::string artifact_path(const options& opt, const char* kind)
 {
     const std::filesystem::path dir = opt.artifacts.empty() ? std::filesystem::temp_directory_path() / "strata_tests"
@@ -1287,7 +1286,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 
     std::vector<strata::codepoint_range> ranges(strata::glyph_ranges::default_set.begin(),
                                                 strata::glyph_ranges::default_set.end());
-    // right-to-left scripts (with the joined forms of Arabic), symbols and emoji (from the fallback faces below)
+    // rtl scripts (with Arabic joined forms), symbols and emoji (from the fallback faces below)
     for (const strata::codepoint_range& r : {strata::glyph_ranges::hebrew, strata::glyph_ranges::arabic, strata::glyph_ranges::arabic_forms_a,
                                               strata::glyph_ranges::arabic_forms_b, strata::glyph_ranges::symbols, strata::glyph_ranges::emoji}) {
         ranges.push_back(r);
@@ -1346,8 +1345,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         config.extra_fonts = extras;
     };
 
-    // icon font candidates, tried in order; the last (empty) entry means "no icon font".
-    // the strings must outlive create(): font_config only holds views.
+    // icon font candidates in order; the last (empty) means none.
+    // strings must outlive create() (font_config holds views).
     std::vector<std::string> icon_candidates;
     if (opt.icons) {
         icon_candidates.push_back(opt.icon_face);
@@ -1398,7 +1397,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&self));
     self.platform.attach(hwnd);
 
-    // the ui scale: --scale, else the monitor's dpi (a fixed 1.0 for screenshots, which must not depend on the machine)
+    // ui scale: --scale, else the monitor dpi (fixed 1.0 for screenshots, which must be machine-independent)
     const bool shot_mode = !opt.shot.empty() || !opt.golden.empty();
     const float start_scale = opt.scale > 0.0f ? opt.scale : (shot_mode ? 1.0f : self.platform.dpi_scale());
     if (start_scale != 1.0f) {
@@ -1406,7 +1405,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             std::fprintf(stderr, "[sandbox] set_scale(%.2f) failed (font_error %d)\n", start_scale, static_cast<int>(r.error()));
         }
     }
-    {   // --width / --height are logical pixels: the window is that many times the scale
+    {   // --width / --height are logical: the window is scaled
         RECT want{0, 0, static_cast<LONG>(std::lround(opt.width * ui.scale())), static_cast<LONG>(std::lround(opt.height * ui.scale()))};
         ::AdjustWindowRectEx(&want, WS_OVERLAPPEDWINDOW, FALSE, 0);
         ::SetWindowPos(hwnd, nullptr, 0, 0, want.right - want.left, want.bottom - want.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1510,16 +1509,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
                 self.pending_dpi = 0.0f;
             }
             if (state.x.pending_scale > 0.0f) {
-                // the "ui scale" combo of the main window keeps the *logical* client size, so the os window grows
-                // and shrinks with the scale. that is a sandbox convenience (the layout stays put between shots),
-                // not what an app wants: see the +/- buttons of --scene app for the other behaviour.
+                // the "ui scale" combo keeps the *logical* client size, so the os window resizes with the
+                // scale (a sandbox convenience for stable shots; see --scene app's +/- for in-place scaling)
                 want = state.x.pending_scale;
                 state.x.pending_scale = 0.0f;
                 resize_window = true;
             }
             if (state.x.d4.pending_scale_percent > 0) {
-                // scaling the ui in place: the window keeps the size it has and the ui inside it gets bigger or
-                // smaller, which is what a "ui scale" setting is expected to do
+                // in-place scaling: the window keeps its size and the ui grows / shrinks, as a "ui scale" setting should
                 want = static_cast<float>(state.x.d4.pending_scale_percent) / 100.0f;
                 state.x.d4.pending_scale_percent = 0;
             }
@@ -1572,12 +1569,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         }
         ui.begin_frame(std::move(input));
         build_ui(ui, state, *host, last_data);
-        if (opt.metrics) { // strata inspecting itself; submitted last so it sees the whole frame's commands
+        if (opt.metrics) { // strata inspecting itself; last, so it sees every command
             ui.debug_draw_list_window(state.show_cmds);
             ui.debug_metrics_window(state.show_metrics);
         }
         ui.end_frame();
-        // debug builds count widgets that share an id; report the worst frame once at the end rather than spamming
+        // debug builds count shared ids; report the worst frame once at the end
         if (ui.stats().id_collisions > worst_collisions) {
             worst_collisions = ui.stats().id_collisions;
             worst_collision_label.assign(ui.id_collision_label());
@@ -1592,10 +1589,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         last_data = ui.render_data();
         const bool shot_frame = shot_mode && ++shot_counter >= opt.shot_frames;
         if (shot_frame) { host->request_capture(); }
-        // --idle: an untouched ui produces the same geometry frame after frame, and this window belongs to us -- what
-        // is on the screen is already right, so there is nothing to draw and nothing to present (and below, the loop
-        // sleeps until there is input or ui.next_wake_seconds() comes). never while a screenshot is being taken, which
-        // needs the frame rendered.
+        // --idle: an untouched ui repeats its geometry and the window is ours, so skip drawing and presenting (the loop
+        // below sleeps until input or ui.next_wake_seconds()). never while capturing a screenshot.
         const bool skip = opt.idle && !shot_mode && !shot_frame && ui.frame_unchanged();
         if (skip) {
             ++frames_idled;
@@ -1624,8 +1619,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         }
 
         if (opt.idle && !shot_mode) {
-            // sleep until a message arrives or the ui's next deadline (a caret blink, a tooltip, a toast). with --frames
-            // the wait is at most a frame, so the run still ends after that many frames
+            // sleep until a message or the ui's next deadline (caret blink, tooltip, toast). with --frames the wait
+            // is at most a frame so the run still ends on time
             double wait = ui.next_wake_seconds();
             if (opt.max_frames > 0) { wait = std::min(wait, 1.0 / refresh); }
             if (wait > 0.0) {

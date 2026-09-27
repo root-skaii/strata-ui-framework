@@ -123,7 +123,7 @@ bool context::begin_drag_source()
     }
     m_->cursor_ = cursor_kind::arrow;
 
-    // the preview: a small panel in the overlay layer that follows the pointer. its size is the content's of last frame
+    // the drag preview: an overlay panel following the pointer, sized by last frame's content
     m_->dd_saved_overlay_ = m_->in_overlay_;
     m_->dd_saved_layout_  = m_->layout_;
     m_->dd_prev_owner_    = m_->run_owner_;

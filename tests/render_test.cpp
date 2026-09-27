@@ -1,6 +1,6 @@
-// checks of the renderers against a real direct3d 11 device (hardware, or WARP when there is none), drawing offscreen:
-// the ui must come out whatever state the caller left bound, and that state must be given back afterwards.
-//   strata_render_test.exe            exit code 0 = everything passed
+// renderer checks on a real d3d11 device (hardware or WARP), offscreen: the ui must draw whatever state is bound,
+// and that state must be restored afterwards.
+//   strata_render_test.exe            exit code 0 = passed
 
 #include <strata/strata.hpp>
 #include <strata/backend/d3d11.hpp>
@@ -176,8 +176,7 @@ void test_hostile_state(gpu& g)
     return std::pow((c1 + c2 * p) / (1.0f + c3 * p), m2);
 }
 
-// renders the window with an opaque body colour into a `format` target encoded as `space`; returns the raw texel at a spot of
-// the body with no text on it
+// renders the window with an opaque body into a `format` target encoded as `space`; returns a text-free body texel
 [[nodiscard]] std::vector<u8> body_texel(gpu& g, DXGI_FORMAT format, output_space space, f32 nits, u32 bytes_per_pixel)
 {
     std::vector<u8> texel;
@@ -220,8 +219,8 @@ void test_output_spaces(gpu& g)
     const std::vector<u8> plain = body_texel(g, DXGI_FORMAT_R8G8B8A8_UNORM, output_space::srgb, 200.0f, 4);
     CHECK(plain.size() == 4 && plain[0] == 200 && plain[1] == 100 && plain[2] == 50);
 
-    // an srgb view encodes on write: the shader writes linear, and the stored bytes are the colour again. (written as it
-    // is, the hardware would encode it a second time: 200 would come out near 228)
+    // an srgb view encodes on write, so the shader writes linear and the bytes round-trip (unconverted, the hardware
+    // would encode twice: 200 -> ~228)
     const std::vector<u8> view = body_texel(g, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, output_space::srgb_view, 200.0f, 4);
     CHECK(view.size() == 4 && std::abs(view[0] - 200) <= 1 && std::abs(view[1] - 100) <= 1 && std::abs(view[2] - 50) <= 1);
 
@@ -250,7 +249,7 @@ void test_output_spaces(gpu& g)
             const f32 want = pq_encode((m[c][0] * l[0] + m[c][1] * l[1] + m[c][2] * l[2]) * 200.0f / 10000.0f);
             CHECK(std::abs(got[c] - want) < 2.5f / 1023.0f);
         }
-        CHECK(got[0] < 0.75f); // (written as plain srgb it would be 200/255 = 0.78: garish on an hdr display)
+        CHECK(got[0] < 0.75f); // (as plain srgb it would be 200/255 = 0.78: garish on hdr)
     } else {
         CHECK(pq.size() == 4);
     }
@@ -272,7 +271,7 @@ void test_text_contrast(gpu& g)
         g.clear(black);
         renderer.render(data);
         const std::vector<u8> px = g.read();
-        u64 sum = 0; // the title bar's text, light on dark: what it adds above the bar's own colour
+        u64 sum = 0; // title text (light on dark): its contribution over the bar colour
         if (px.empty()) { return sum; }
         const int bar = px[(static_cast<std::size_t>(30) * g.w + 212) * 4 + 1]; // (right of the title, in the bar)
         for (u32 y = 22; y < 42; ++y) {

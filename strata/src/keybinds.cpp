@@ -81,7 +81,7 @@ bool keybinds::pressed(const context& ui, std::string_view name) const
     if (a == nullptr || !a->chord.bound() || !available(*a)) {
         return false;
     }
-    if (a->context.empty()) { // a context action on the same chord that is on takes the key from a global one
+    if (a->context.empty()) { // an active context action on the same chord overrides a global one
         for (const action& o : actions_) {
             if (!o.context.empty() && available(o) && o.chord == a->chord) { return false; }
         }
@@ -227,7 +227,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         return chosen;
     }
 
-    // the keys go first: the search field uses up the ones it knows, and Esc would only leave the field
+    // keys first: the search field consumes the ones it knows, and Esc would only leave the field
     const bool esc  = ui.key_pressed(key::escape);
     const int  move = (ui.key_pressed(key::down) ? 1 : 0) - (ui.key_pressed(key::up) ? 1 : 0);
     if (just_opened_) {

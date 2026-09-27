@@ -11,8 +11,7 @@ using namespace strata;
 
 namespace {
 
-// the tree is generated once: 8 top-level namespaces, each with 8 children, each with 8 of their own and each of
-// those with 10 leaves -- 5 192 rows over 4 levels, which is what the acceptance case asks for
+// generated once: 8 namespaces x 8 children x 8 grandchildren x 10 leaves = 5 192 rows over 4 levels
 constexpr int level_fanout[4] = {8, 8, 8, 10};
 
 void build_tree(demo4_state& s)
@@ -120,7 +119,7 @@ void demo4_icons(context& ui, demo4_state& s)
 
 namespace {
 
-// one subtree. the row's identity is its index, not its name, so nothing has to be concatenated per row
+// one subtree; rows are identified by index, so nothing is concatenated per row
 void draw_subtree(context& ui, demo4_state& s, int index)
 {
     const demo4_state::tree_node_data& n = s.nodes[static_cast<std::size_t>(index)];
@@ -189,8 +188,8 @@ void demo4_app(context& ui, demo4_state& s)
     const font_id icon_font  = static_cast<font_id>(have_icons ? s.font_icons : 0);
 
     if (auto w = ui.window("scene", {24.0f, 24.0f}, {420.0f, 600.0f}, window_flags::resizable)) {
-        // shortcuts scoped to this window: Delete destroys, F2 renames, Ctrl+D duplicates. They only fire while the
-        // user is actually looking at this panel, and never while a text field has the keyboard.
+        // window-scoped shortcuts: Delete destroys, F2 renames, Ctrl+D duplicates; only while this panel is focused and
+        // no text field has the keyboard.
         if (ui.window_focused()) {
             if (ui.key_pressed(VK_DELETE) && !s.sel.empty()) {
                 ui.ask_confirm("destroy", std::format("Destroy {} object(s)?", s.sel.size()),
@@ -269,8 +268,7 @@ void demo4_app(context& ui, demo4_state& s)
                  ui.content_rect().width(), ui.content_rect().height(), strata::context::scrollbar_width());
     }
 
-    // the confirmation owns its own state: no "which object" member, no "is it open" flag, and the
-    // "don't ask again" tick is stored for the caller
+    // the confirmation owns its state; the "don't ask again" tick is stored for the caller
     switch (ui.confirm("destroy", {"Destroy", "Cancel"}, {.title = "Destroy?", .remember = &s.never_ask, .danger = 1})) {
     case 1:  s.status = std::format("destroyed {}", ui.confirm_data()); break;
     case 2:  s.status = "cancelled"; break;
@@ -296,8 +294,7 @@ void demo4_rows(context& ui, demo4_state& s)
             demo4_state::component& c = s.components[i];
             ui.push_id(&c); // the row is identified by the object it shows
 
-            // the header row keeps a gutter free on the right for the switch and the remove button, so its own
-            // label is laid out (and ellipsized) inside what is left instead of running under them
+            // the header keeps a right gutter for the switch and remove button, so its label is ellipsized before them
             const float gutter = 76.0f;
             item_result row;
             bool        row_right = false;

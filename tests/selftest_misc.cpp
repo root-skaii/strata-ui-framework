@@ -27,7 +27,7 @@ void test_acrylic_extras()
         CHECK(themes::glass().popup_acrylic > 0.0f && themes::midnight().popup_acrylic == 0.0f);
     }
 
-    // menus, dropdowns and tooltips are frosted glass when asked to be: the popup becomes a backdrop command
+    // popups become backdrop commands when popup_acrylic is set
     const auto blur_commands = [](const harness& h) {
         int n = 0;
         for (const draw_cmd& c : h.ui.render_data().commands) { n += c.blur > 0.0f ? 1 : 0; }
@@ -123,9 +123,8 @@ void test_draw_list_extras()
     const std::array<vec2, 4> pts = {{{10, 10}, {50, 40}, {90, 10}, {130, 40}}};
     dl.polyline(pts, color{255, 255, 255, 255}, 3.0f);
     CHECK(dl.data().vertices.size() == 16 && dl.data().indices.size() == 3 * 18);
-    // closed: one more segment, and one more point's worth of vertices -- the strip is walked as segs + 1 positions
-    // (the last repeating the first) so that it can be split across draw commands, which costs the 4 vertices of the
-    // repeat instead of indexing back to position 0. same segments, same pixels.
+    // closed: one more segment and one more point of vertices (segs + 1 positions, last = first, so it can split
+    // across commands). same segments, same pixels.
     dl.polyline(pts, color{255, 255, 255, 255}, 3.0f, true);
     CHECK(dl.data().vertices.size() == 16 + 20 && dl.data().indices.size() == 3 * 18 + 4 * 18);
     const std::array<vec2, 2> dup = {{{5, 5}, {5, 5}}};
@@ -327,8 +326,8 @@ void test_key_sequences()
         CHECK(!h.ui.sequence_pressed({})); // unbound
     }
 
-    // hotkey_sequence: click the field, then press one chord after another. each step commits right away (like
-    // hotkey_chord for a single step), but the field keeps listening a little longer in case of an extension
+    // hotkey_sequence: click the field, press chords in turn. each step commits at once (like hotkey_chord) but the
+    // field keeps listening briefly for an extension
     {
         harness h;
         key_sequence chord;
@@ -433,8 +432,7 @@ void test_keybinds()
     other.reset_all();
     CHECK((other.find("open")->chord == key_chord{'O', true, false, false}));
 
-    // a multi-key chord as an action's default, and firing it, round trip through pressed() and a config file just
-    // like a single-key one
+    // a multi-key default chord fires and round-trips through pressed() and a config file like a single-key one
     {
         keybinds seq_binds;
         CHECK(seq_binds.add("quick_open", "Ctrl+K, Ctrl+O") == 0);

@@ -1,5 +1,5 @@
-// the framework's own inspector windows: what stats() measured, and the draw commands the renderer is about to run.
-// everything here reads state that is already collected, so a build that never calls these pays nothing for them.
+// the framework's inspector windows: stats() and the pending draw commands. reads existing state only, so unused
+// means free.
 
 #include "strata/context.hpp"
 
@@ -11,7 +11,7 @@ namespace strata {
 
 namespace {
 
-// "12.3 k" / "1.20 M": the counts here span four orders of magnitude and the exact digits rarely matter
+// "12.3 k" / "1.20 M": the counts span four orders of magnitude and exact digits rarely matter
 [[nodiscard]] std::string big(u32 n)
 {
     if (n < 10'000) { return std::format("{}", n); }
@@ -28,8 +28,7 @@ void context::debug_metrics_window(bool& open)
     }
     const frame_stats& st = m_->stats_prev_;
 
-    // its own id scope: the labels in here are common words ("vertices", "frame") and would otherwise be a
-    // collision report of their own the moment an application uses the same ones
+    // own id scope: common labels ("vertices", "frame") would otherwise collide with the app's
     push_id("##strata_metrics");
     if (auto w = window("strata metrics", {40.0f, 40.0f}, {330.0f, 0.0f},
                         window_flags::resizable | window_flags::drag_by_body)) {
@@ -48,8 +47,7 @@ void context::debug_metrics_window(bool& open)
         row_num("vertices", st.vertices);
         row_num("indices", st.indices);
         row_num("draw calls", st.draw_calls);
-        // 16 bytes a vertex, 2 an index: what the frame costs to hand to the gpu, which is the number the idle
-        // path below is trying to avoid paying
+        // 16 bytes per vertex, 2 per index: the per-frame gpu upload the idle path avoids
         row("upload", std::format("{:.1f} KiB", static_cast<f64>(st.vertices * 16 + st.indices * 2) / 1024.0));
         separator();
 
@@ -77,8 +75,7 @@ void context::debug_metrics_window(bool& open)
             text_colored(idle ? kind_color(toast_kind::success, m_->style_) : m_->style_.text, v);
         }
 
-        // the quiet failures. nothing is shown while there are none, so a clean window stays short and anything
-        // appearing here is worth reading.
+        // silent failures; hidden while there are none, so anything here is worth reading.
         const bool trouble = st.draw_overflow != 0 || st.clip_overflows != 0 || st.alpha_overflows != 0 ||
                              st.id_collisions != 0;
         if (trouble) {
@@ -114,8 +111,7 @@ void context::debug_draw_list_window(bool& open)
     if (!open) {
         return;
     }
-    // the commands of the frame being built right now, which is everything submitted before this window. that is
-    // the honest thing to show: this window's own commands do not exist yet.
+    // commands of the frame being built (everything before this window; its own do not exist yet).
     const draw_data dd = m_->dl_.data();
 
     push_id("##strata_cmds");

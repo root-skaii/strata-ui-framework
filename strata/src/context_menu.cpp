@@ -120,7 +120,7 @@ bool chord_from_string(std::string_view text, key_chord& out) noexcept
         out = c;
         return true;
     }
-    for (;;) { // modifiers, in any order; what is left is the key, which may itself contain a '+' ("Num +")
+    for (;;) { // modifiers in any order; the rest is the key (may contain '+', "Num +")
         const std::size_t plus = rest.find('+');
         if (plus == std::string_view::npos) { break; }
         const std::string_view head = trim_spaces(rest.substr(0, plus));
@@ -200,10 +200,9 @@ bool context::sequence_pressed(const key_sequence& seq) const
     if (seq.count == 0) {
         return false;
     }
-    // does this frame continue the prefix that is already pending? (a different sequence sharing that same prefix
-    // asked about first is fine: only the steps matter, not which action they belong to. two sequences can also share
-    // a prefix and diverge at this very step - the one this frame's key does not complete just returns false below;
-    // begin_frame() is what clears a prefix that nothing continued, once every candidate has had a chance to)
+    // does this frame continue the pending prefix? only the steps matter, not which action asked first. sequences
+    // diverging at this step just return false below; begin_frame() clears a prefix nothing continued, after every
+    // candidate had its chance
     const bool continues = m_->seq_pending_count_ > 0 && m_->seq_pending_count_ <= seq.count &&
                             std::equal(m_->seq_pending_.begin(), m_->seq_pending_.begin() + m_->seq_pending_count_, seq.steps.begin()) &&
                             m_->time_ - m_->seq_pending_time_ <= key_sequence_timeout;
@@ -211,7 +210,7 @@ bool context::sequence_pressed(const key_sequence& seq) const
     if (!chord_pressed(seq.steps[at])) {
         return false;
     }
-    m_->seq_pending_touched_ = true; // this frame's key correctly advanced (or completed) a sequence sharing this prefix
+    m_->seq_pending_touched_ = true; // this key advanced / completed a sequence with this prefix
     if (at + 1 == seq.count) {   // that was the last step
         m_->seq_pending_count_ = 0;
         return true;
@@ -621,7 +620,7 @@ bool context::begin_context_menu(std::string_view id_label, const rect& area)
     return begin_popup_menu(id_label);
 }
 
-// the main menu bar -----------------------------------------------------------------------------------------------
+// the main menu bar -----------------------------------------------------------------------------------------
 
 bool context::begin_main_menu_bar()
 {

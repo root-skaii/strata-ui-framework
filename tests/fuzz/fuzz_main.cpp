@@ -1,8 +1,8 @@
-// libFuzzer over everything in strata that reads text it did not write, and over text editing. the first byte of an input
-// picks the target; the rest is its input. built by the x64-asan preset (STRATA_BUILD_FUZZERS, with AddressSanitizer):
-//   strata_fuzz corpus_dir -max_len=4096            (fuzz until stopped; a crash leaves crash-<hash> with the input)
-//   strata_fuzz crash-<hash>                        (run one input again)
-// what counts as a failure: a crash, an asan report, or a property that does not hold (a failed check aborts).
+// libFuzzer over every strata parser of foreign text, and over text editing. the first byte picks the target.
+// built by the x64-asan preset (STRATA_BUILD_FUZZERS, AddressSanitizer):
+//   strata_fuzz corpus_dir -max_len=4096            (fuzz until stopped; crashes leave crash-<hash>)
+//   strata_fuzz crash-<hash>                        (replay one input)
+// failures: a crash, an asan report, or a violated property (checks abort).
 
 #include <strata/strata.hpp>
 
@@ -139,7 +139,7 @@ void fuzz_chords(std::string_view text)
     }
 }
 
-// the bytes drive a text-editing session: typing, keys (with modifiers), clipboard shortcuts, clicks
+// bytes drive an editing session: typing, keys with modifiers, clipboard shortcuts, clicks
 void fuzz_editing(std::string_view ops)
 {
     context& ui = shared_ui();

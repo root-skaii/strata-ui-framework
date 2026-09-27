@@ -1,4 +1,4 @@
-// text editing engine shared by the text fields (undo / redo, clipboard shortcuts) and the multi-line input
+// text editing engine for the text fields (undo / redo, clipboard shortcuts) and the multi-line input
 
 #include "strata/context.hpp"
 
@@ -31,8 +31,8 @@ void wipe_tail(secure_string& s, std::size_t from) noexcept
     s.resize(from);
 }
 
-// the bracket at the caret (or just before it) and the one it pairs with; only brackets of the same kind count, so a
-// bracket inside a string or comment can mislead it. false when there is none (or no partner within a few hundred KB)
+// the bracket at / before the caret and its partner (same kind only; strings and comments can mislead it).
+// false if none, or no partner within a few hundred KB
 [[nodiscard]] bool find_bracket_pair(std::string_view t, std::size_t caret, std::size_t& first, std::size_t& second) noexcept
 {
     constexpr std::string_view opens  = "([{";
@@ -99,8 +99,8 @@ void context::edit_history_add(edit_history& h, const edit_op& op, std::string_v
     }
 }
 
-// replaces [pos, pos + len) of the edit buffer with `with`, puts the caret after it and remembers the change.
-// consecutive typing / backspacing / deleting within a second merges into one undo step.
+// replaces [pos, pos + len) with `with`, puts the caret after it and records undo. typing / deleting within a
+// second merges into one step.
 bool context::edit_replace(std::size_t pos, std::size_t len, std::string_view with, edit_kind kind)
 {
     pos = std::min(pos, m_->edit_buf_.size());
@@ -170,7 +170,7 @@ bool context::edit_delete_selection()
     return edit_replace(lo, hi - lo, {}, edit_kind::other);
 }
 
-// typed / pasted text replaces the selection; cut at the field's byte limit on a code point boundary
+// typed / pasted text replaces the selection; cut at the byte limit on a code point boundary
 bool context::edit_insert(std::string_view s, bool typed)
 {
     if (m_->edit_readonly_) {
@@ -310,7 +310,7 @@ std::size_t context::ml_line_of(std::size_t index) const noexcept
     return it == m_->ml_lines_.begin() ? 0 : static_cast<std::size_t>(it - m_->ml_lines_.begin()) - 1;
 }
 
-// splits the text into display lines: at every '\n' and, with `wrap`, at word boundaries once a line is wider than `width`
+// splits into display lines at '\n' and, with `wrap`, at word boundaries past `width`
 void context::ml_layout(std::string_view t, f32 width, font_id f, bool wrap)
 {
     u64 h = 1469598103934665603ull; // fnv-1a over the text, so an unchanged text keeps its lines
@@ -495,7 +495,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     ml_layout(text_now(), view_w, fnt, wrap);
 
     // caret geometry --------------------------------------------------------------------------------
-    // a line with right-to-left text puts its caret and hits where the reordered letters are
+    // lines with rtl text place the caret and hits on the reordered letters
     bidi_layout line_bidi;
     std::size_t line_bidi_for = ~std::size_t{0};
     u64         line_bidi_version = ~u64{0};
@@ -776,7 +776,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     const f32 max_scroll = std::max(0.0f, content_h - view_h);
     st->content_h = content_h;
     st->overflow  = max_scroll > 0.0f;
-    if (code_on && code.goto_offset != npos) { // a jump to a match / line (the caret follows, below, when the field has focus)
+    if (code_on && code.goto_offset != npos) { // jump to a match / line (the caret follows below if focused)
         const std::size_t gl = ml_line_of(std::min(code.goto_offset, text_now().size()));
         st->scroll = std::max(0.0f, static_cast<f32>(gl) * lh - view_h * 0.35f);
     }
@@ -948,8 +948,7 @@ void context::input_spans(std::span<const text_span> spans)
     m_->edit_spans_pending_.assign(spans.begin(), spans.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(spans.size(), 4096)));
 }
 
-// takes the spans given for this field: sorted, clamped to the text, without overlaps; the line gets as high as the
-// tallest font in them
+// takes this field's spans: sorted, clamped, non-overlapping; the line grows to the tallest font
 void context::ed_prepare_spans(std::size_t text_size, font_id base, f32& line_h, f32& ascent, bool ignore)
 {
     m_->edit_spans_.clear();
@@ -1035,7 +1034,7 @@ void context::ed_draw(vec2 pos, f32 line_ascent, color col, std::string_view t, 
     run(at, b, base, col, text_flags::none);
 }
 
-// the composition of an input method in a multi-line field: a small box at the caret (the text below is not reflowed)
+// IME composition in a multi-line field: a small box at the caret (text is not reflowed)
 void context::draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f)
 {
     const std::string_view comp{m_->ime_text_.data(), m_->ime_len_};

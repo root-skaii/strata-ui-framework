@@ -12,10 +12,10 @@
 namespace strata {
 
 struct glyph {
-    // quad relative to the pen position at the top of the line
+    // quad relative to the pen at the top of the line
     f32  x0{}, y0{}, x1{}, y1{};
     f32  advance{};
-    // atlas coordinates in 1/32767 units (bit 15 is reserved as the shape flag)
+    // atlas coordinates in 1/32767 units (bit 15 = shape flag)
     u16  u0{}, v0{}, u1{}, v1{};
     bool visible{}; // has pixels (false for whitespace)
     bool present{}; // the font has this code point at all
@@ -35,8 +35,7 @@ struct codepoint_range {
     char32_t last{};
 };
 
-// unicode blocks to bake, from any plane. cjk / hangul need a font that has them and grow the atlas a lot
-// (cjk_unified alone is ~21k glyphs).
+// unicode blocks to bake, any plane. cjk / hangul need a font with them and grow the atlas a lot (cjk_unified ~21k).
 namespace glyph_ranges {
 inline constexpr codepoint_range latin{0x0020, 0x024f};          // ascii, latin-1, latin extended-a/b
 inline constexpr codepoint_range greek{0x0370, 0x03ff};
@@ -56,40 +55,40 @@ inline constexpr codepoint_range private_use{0xe000, 0xf8ff};    // icon fonts l
 inline constexpr codepoint_range hebrew{0x0590, 0x05ff};
 inline constexpr codepoint_range arabic{0x0600, 0x06ff};
 inline constexpr codepoint_range arabic_supplement{0x0750, 0x077f};
-inline constexpr codepoint_range arabic_forms_a{0xfb50, 0xfdff};  // presentation forms: what the shaper picks the letters from
+inline constexpr codepoint_range arabic_forms_a{0xfb50, 0xfdff};  // presentation forms (the shaper's source)
 inline constexpr codepoint_range arabic_forms_b{0xfe70, 0xfeff};
 inline constexpr codepoint_range hebrew_forms{0xfb1d, 0xfb4f};
-inline constexpr codepoint_range symbols{0x2600, 0x27bf};         // misc symbols and dingbats (BMP "emoji": sun, heart, star ...)
-inline constexpr codepoint_range emoji{0x1f300, 0x1faff};         // pictographs, emoticons, transport, supplemental symbols (~1500 glyphs)
+inline constexpr codepoint_range symbols{0x2600, 0x27bf};         // misc symbols and dingbats (BMP "emoji")
+inline constexpr codepoint_range emoji{0x1f300, 0x1faff};         // pictographs, emoticons, transport, ... (~1500)
 inline constexpr codepoint_range math_alphanumeric{0x1d400, 0x1d7ff};
 
 inline constexpr std::array default_set{latin, greek, cyrillic, punctuation, currency};
 } // namespace glyph_ranges
 
 struct font_config {
-    // an installed font, by family name. ignored when `file` or `data` is set.
+    // installed font family; ignored when `file` or `data` is set.
     std::string_view face = "Segoe UI";
-    // path (utf-8) to a .ttf / .otf / .ttc, loaded privately for this process only
+    // utf-8 path to a .ttf / .otf / .ttc, loaded privately for this process
     std::string_view file{};
-    // or the same bytes already in memory (embedded resource); must outlive build()
+    // or the bytes in memory; must outlive build()
     std::span<const u8> data{};
 
-    f32  pixel_height = 14.0f; // logical pixels: at a ui scale of 1.5 the glyphs are baked 1.5x bigger
+    f32  pixel_height = 14.0f; // logical pixels (baked at size * ui scale)
     bool bold         = false;
-    bool kerning      = true; // apply the font's kerning pairs (integer pixels, like the advances)
-    // fail with font_unavailable instead of letting gdi substitute another face when `face` is not installed
+    bool kerning      = true; // apply kerning pairs (integer pixels)
+    // fail with font_unavailable instead of letting gdi substitute a missing `face`
     bool exact_face   = false;
-    // faces to take missing glyphs from, in order: {"Segoe UI Emoji", "Segoe UI Symbol"}. baked at the same size and
-    // baseline; color layers are not used (emoji are single-color)
+    // fallback faces for missing glyphs, in order: {"Segoe UI Emoji", "Segoe UI Symbol"}. same size and baseline;
+    // single-color only
     std::span<const std::string_view> fallback_faces{};
 
     std::span<const codepoint_range> ranges = glyph_ranges::default_set;
 };
 
-// index of a font inside a font_atlas: the order the configs were given to build()
+// font index inside a font_atlas, in build() order
 using font_id = u32;
 
-// decodes one utf-8 code point and advances the view; malformed input yields U+FFFD
+// decodes one utf-8 code point and advances; malformed input yields U+FFFD
 [[nodiscard]] constexpr char32_t decode_utf8(std::string_view& s) noexcept
 {
     const auto b0 = static_cast<u8>(s.front());
@@ -111,11 +110,9 @@ using font_id = u32;
     return cp;
 }
 
-// one 8-bit coverage texture shared by every font (keeps the whole ui in one pipeline state), rasterised through gdi.
-// code points a font lacks draw its fallback glyph: '?', else U+FFFD, else the first glyph that exists.
-//
-// metrics: measure, line_height, ascent, kerning and advance are in logical pixels (the ui's units); the *_px ones and
-// find() (whose quads go straight to the screen) are in physical pixels, logical * scale().
+// one 8-bit coverage texture for all fonts (one pipeline state), rasterised through gdi. missing code points draw
+// '?', else U+FFFD, else the first existing glyph.
+// measure, line_height, ascent, kerning and advance are logical; *_px and find() quads are physical (logical * scale()).
 class font_atlas {
 public:
     font_atlas() = default;
@@ -125,8 +122,8 @@ public:
     font_atlas(font_atlas&&) noexcept            = default;
     font_atlas& operator=(font_atlas&&) noexcept = default;
 
-    // the atlas grows from 256x256 up to `max_atlas_size` (power of two, <= 16384)
-    // `scale` multiplies every font's pixel height: glyphs are rasterised at that size (dpi scaling)
+    // the atlas grows from 256x256 up to `max_atlas_size` (power of two, <= 16384).
+    // `scale` multiplies every font's pixel height (dpi scaling)
     [[nodiscard]] static std::expected<font_atlas, font_error> build(std::span<const font_config> fonts,
                                                                       u32 max_atlas_size = 4096, f32 scale = 1.0f);
     [[nodiscard]] static std::expected<font_atlas, font_error> build(const font_config& font = {},
@@ -135,7 +132,7 @@ public:
         return build(std::span<const font_config>{&font, 1}, max_atlas_size, scale);
     }
 
-    // physical pixels per logical pixel the atlas was baked for
+    // physical pixels per logical pixel baked for
     [[nodiscard]] f32 scale() const noexcept { return scale_; }
 
     [[nodiscard]] std::size_t font_count() const noexcept { return fonts_.size(); }
@@ -143,7 +140,7 @@ public:
     [[nodiscard]] const glyph& find(font_id f, char32_t cp) const noexcept
     {
         const font_data& fd = fonts_[f];
-        // hot path: the first (lowest) range is normally latin
+        // hot path: the lowest range is normally latin
         if (!fd.ranges.empty()) {
             const range_entry& r0 = fd.ranges.front();
             if (cp >= r0.first && cp <= r0.last) {
@@ -154,17 +151,17 @@ public:
         return lookup_slow(fd, cp);
     }
     [[nodiscard]] const glyph& find(char32_t cp) const noexcept { return find(0, cp); }
-    // does the font really have a glyph for this code point (find() returns the fallback glyph when it does not)
+    // the font really has this glyph (find() falls back otherwise)
     [[nodiscard]] bool has_glyph(font_id f, char32_t cp) const noexcept;
 
-    // pen adjustment (usually <= 0) between two adjacent code points; _px in physical pixels
+    // pen adjustment (usually <= 0) between two code points; _px is physical
     [[nodiscard]] f32 kerning_px(font_id f, char32_t left, char32_t right) const noexcept
     {
         const font_data& fd = fonts_[f];
         if (fd.kern.empty() || left > 0xffff || right > 0xffff) {
             return 0.0f;
         }
-        if (left < 128 && right < 128) { // the common case, every glyph of plain text: one table read
+        if (left < 128 && right < 128) { // common case: one table read
             const std::int8_t k = fd.kern_ascii[left * 128 + right];
             if (k != kern_ask) { return static_cast<f32>(k); }
         }
@@ -172,18 +169,18 @@ public:
     }
     [[nodiscard]] f32 kerning(font_id f, char32_t left, char32_t right) const noexcept { return kerning_px(f, left, right) * inv_scale_; }
     [[nodiscard]] f32 kerning(char32_t left, char32_t right) const noexcept { return kerning(0, left, right); }
-    // how far the pen moves after a code point, logical
+    // pen advance after a code point, logical
     [[nodiscard]] f32 advance(font_id f, char32_t cp) const noexcept { return find(f, cp).advance * inv_scale_; }
     [[nodiscard]] std::size_t kerning_pair_count(font_id f = 0) const noexcept { return fonts_[f].kern.size(); }
 
-    // width of the widest line and total height of the text (logical); _px in physical pixels
+    // widest line and total height (logical); _px is physical
     [[nodiscard]] vec2 measure_px(font_id f, std::string_view text) const noexcept;
     [[nodiscard]] vec2 measure(font_id f, std::string_view text) const noexcept { return measure_px(f, text) * inv_scale_; }
     [[nodiscard]] vec2 measure(std::string_view text) const noexcept { return measure(0, text); }
 
     [[nodiscard]] f32 line_height_px(font_id f = 0) const noexcept { return fonts_[f].line_height; }
     [[nodiscard]] f32 line_height(font_id f = 0) const noexcept { return fonts_[f].line_height * inv_scale_; }
-    // distance from the top of a line to the baseline; used to align runs of different fonts
+    // top of line to baseline; aligns runs of different fonts
     [[nodiscard]] f32 ascent_px(font_id f = 0) const noexcept { return fonts_[f].ascent; }
     [[nodiscard]] f32 ascent(font_id f = 0) const noexcept { return fonts_[f].ascent * inv_scale_; }
     [[nodiscard]] u32 width() const noexcept { return width_; }
@@ -192,11 +189,11 @@ public:
     [[nodiscard]] std::size_t glyph_count() const noexcept;
     [[nodiscard]] std::span<const u8> pixels() const noexcept { return pixels_; }
 
-    // zeroes and frees the cpu-side bitmap; call once every renderer has been created (the gpu keeps its own copy).
-    // a renderer created afterwards needs a rebuilt atlas. also done on destruction.
+    // frees the cpu bitmap; call after all renderers exist (the gpu keeps a copy). later renderers need a rebuilt atlas.
+    // also done on destruction.
     void discard_pixels() noexcept;
 
-    // center of a 2x2 white block, used to draw untextured geometry
+    // centre of a 2x2 white block for untextured geometry
     [[nodiscard]] std::array<u16, 2> white_uv() const noexcept { return white_uv_; }
 
 private:
@@ -215,8 +212,8 @@ private:
         std::vector<range_entry> ranges; // sorted, disjoint
         std::vector<glyph>       glyphs;
         std::vector<kern_pair>   kern;   // sorted by key
-        // the pairs of ascii characters, [left * 128 + right], whole pixels; kern_ask: not representable, look in `kern`.
-        // filled whenever `kern` is not empty
+        // ascii kerning pairs [left * 128 + right] in whole pixels; kern_ask = look in `kern`.
+        // filled when `kern` is not empty
         std::vector<std::int8_t> kern_ascii;
         std::size_t              fallback{};
         f32                      line_height{};

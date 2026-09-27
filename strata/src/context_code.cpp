@@ -66,8 +66,8 @@ struct mask_slot {
     return c;
 }
 
-// the characters of `text` that fit the mask, in order (the fixed characters of the mask are skipped, anything that does
-// not fit is dropped), and how many of them lie before byte `caret`
+// the characters of `text` that fit the mask, in order (mask literals skipped, misfits dropped), and how many lie
+// before byte `caret`
 [[nodiscard]] std::string mask_extract(const std::vector<mask_slot>& slots, std::string_view text, std::size_t caret,
                                        std::size_t& raw_before_caret)
 {
@@ -92,8 +92,8 @@ struct mask_slot {
     return raw;
 }
 
-// the characters laid into the mask: fixed characters appear once something follows them, so a half-typed value
-// has no dangling ") " and can be erased down to nothing. `caret` gets the position after `raw_before_caret` of them
+// lays the characters into the mask. literals appear only once something follows them, so partial values have no
+// dangling ") " and can be erased to nothing. `caret` lands after `raw_before_caret` of them
 [[nodiscard]] std::string mask_format(const std::vector<mask_slot>& slots, std::string_view raw, std::size_t raw_before_caret,
                                       std::size_t& caret)
 {
@@ -165,7 +165,7 @@ bool context::input_masked(std::string_view label, std::string& value, std::stri
     m_->edit_mask_ = mask;
     bool changed = input_core(label, value, hint, flags, mask.size() + 8);
     m_->edit_mask_ = {};
-    if (changed) { // characters the mask refuses are dropped again, which can leave the text as it was
+    if (changed) { // refused characters are dropped, possibly leaving the text unchanged
         changed = std::string_view{m_->edit_buf_} != std::string_view{value};
         if (changed) { value.assign(m_->edit_buf_.data(), m_->edit_buf_.size()); }
     }

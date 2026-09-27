@@ -76,9 +76,8 @@ void draw_list::set_clip(const rect& logical) noexcept
 
 void draw_list::push_alpha(f32 a) noexcept
 {
-    // past the capacity the push is counted, not stored, and the new alpha is not applied either: the matching
-    // pop then skips, so the levels that did fit keep their own values. (storing nothing but still multiplying
-    // made a later pop restore the alpha of a shallower level, and everything after it was drawn too opaque.)
+    // past capacity the push is counted, not stored, and the alpha is not applied, so the matching pop skips and
+    // the levels that fit keep their values
     if (alpha_depth_ >= alpha_stack_.size()) {
         ++alpha_dropped_;
         ++alpha_overflows_;
@@ -99,10 +98,8 @@ void draw_list::pop_alpha() noexcept
     }
 }
 
-// a push past the capacity is counted rather than stored and leaves the clip alone, so the matching pop skips
-// instead of restoring the rect of a shallower level -- which used to leave every later primitive clipped by the
-// wrong rectangle for the rest of the frame, one level too shallow (content that should have been cut showed).
-// keeping the outer clip is the safe direction to fail: the innermost level is not cut, nothing bleeds outward.
+// past capacity the push is counted, not stored, and the clip is unchanged, so the matching pop skips instead of
+// restoring a shallower level's rect. failing this way leaves the innermost level uncut; nothing bleeds outward.
 void draw_list::push_clip(const rect& r) noexcept
 {
     if (clip_depth_ >= max_clip_depth) {
@@ -143,15 +140,15 @@ draw_data draw_list::data() const noexcept
 
 bool draw_list::reserve(u32 vertex_count, u32 index_count, prim& out) noexcept
 {
-    // a single primitive that cannot be addressed by one command's 16-bit indices at all. the callers whose size
-    // follows their input chunk themselves, so reaching this means a new one forgot to.
+    // a primitive too big for one command's 16-bit indices: input-sized callers chunk themselves, so a new caller
+    // forgot to
     assert(vertex_count <= max_command_vertices && "primitive larger than one draw command can index");
     if (vertex_count > max_command_vertices) {
         overflow_ = true;
         return false;
     }
-    // ... and a primitive that does not fit in what is left of the current command's 16-bit index space starts a
-    // new one, the same way a clip or texture change does. splitting costs one more draw call, never correctness.
+    // ... and one that does not fit the rest of the current command starts a new command, like a clip or texture
+    // change (one more draw call, never incorrect)
     const bool full = !commands_.empty() &&
                       static_cast<u32>(vertices_.size()) - commands_.back().vtx_offset + vertex_count > max_command_vertices;
     if (commands_.empty() || force_new_command_ || full || commands_.back().clip != phys_clip_ ||
@@ -561,8 +558,7 @@ void draw_list::area_fill(std::span<const vec2> top, f32 base_y, color top_col, 
     const color ct = fade(top_col);
     const color cb = fade(base_col);
 
-    // 2 vertices per column, emitted in runs that fit one command's 16-bit indices. consecutive runs repeat the
-    // column where they meet, so the strip has no gap at a seam (the duplicated vertices sit on the same x).
+    // 2 vertices per column, in runs that fit 16-bit indices. runs repeat the seam column so the strip has no gap.
     constexpr u32 run_columns = max_command_vertices / 2;
     u32 first = 0;
     while (first + 1 < static_cast<u32>(top.size())) {
@@ -598,8 +594,8 @@ void draw_list::polygon_filled(std::span<const vec2> points, color col)
     fill_convex_aa(points, col);
 }
 
-// a strip of four vertices per point: [outer fringe | solid | solid | outer fringe] across the line, mitred where
-// segments meet. the fringe is one physical pixel wide and fades to nothing, which is what antialiases the edge.
+// four vertices per point across the line: [fringe | solid | solid | fringe], mitred at joins. the fringe is one
+// physical pixel fading to nothing: the antialiasing.
 void draw_list::polyline(std::span<const vec2> points, color col, f32 thickness, bool closed)
 {
     if (col.a == 0 || points.size() < 2 || thickness <= 0.0f) {
@@ -644,8 +640,7 @@ void draw_list::polyline(std::span<const vec2> points, color col, f32 thickness,
     const f32   inner = std::max(half - 0.5f, 0.0f);
     const f32   outer = half + 0.5f;
 
-    // the mitre at point i, which depends only on the two segments meeting there: a point emitted by two runs gets
-    // the same four vertices from both, so a seam between runs is invisible.
+    // the mitre at point i depends only on its two segments, so a point emitted by two runs is identical in both
     const auto mitre = [&](u32 i) noexcept {
         const vec2 n_prev = (i > 0 || closed) ? poly_nrm_[(i + segs - 1) % segs] : poly_nrm_[0];
         const vec2 n_next = i < segs ? poly_nrm_[i] : poly_nrm_[segs - 1];
@@ -654,11 +649,9 @@ void draw_list::polyline(std::span<const vec2> points, color col, f32 thickness,
         return m * k;
     };
 
-    // 4 vertices per point, in runs that fit one command's 16-bit indices. the strip is walked as segs + 1
-    // positions where position j is point j % n, so a closed line's wrap-around is just its last step and every run
-    // is a plain open strip. a run ends on the position the next one starts from: that point's four vertices are
-    // written twice (its mitre depends only on its two segments, so both copies are identical) and no segment is
-    // lost or doubled. one duplicated point is also what a closed line costs over the old modulo indexing.
+    // 4 vertices per point, in runs that fit 16-bit indices. positions 0..segs map to point j % n, so a closed line's
+    // wrap-around is just its last step and every run is an open strip. adjacent runs share their boundary point
+    // (written twice, identically): no segment is lost or doubled.
     constexpr u32 run_points  = max_command_vertices / 4;
     const u32     positions   = segs + 1;
     u32           first       = 0;
@@ -793,8 +786,7 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
         return;
     }
 
-    // right-to-left text is drawn in visual order, letters joined. into the reused scratch: this used to be a local
-    // std::string, so every label with a Hebrew or Arabic character allocated (several times, inside to_visual).
+    // rtl text is drawn in visual order with joined letters, via reused scratch (no per-label allocation)
     if (has_rtl_text(s)) {
         to_visual_into(rtl_scratch_, bidi_scratch_, s, atlas_, font);
         s = rtl_scratch_;
@@ -803,14 +795,13 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
     c = fade(c);
     const f32 lh = atlas_->line_height_px(font);
     const vec2 p0 = pos * scale_;
-    // text that starts past the clip rectangle -- and, just as often, text scrolled off the top or the left of it --
-    // has nothing to contribute: leave before reserving 4 vertices per glyph and walking the string. the width is
-    // unknown until the glyphs are measured, so the left-hand test uses only where the run starts: one line of text
-    // cannot reach back to the left of its own origin.
+    // text starting past the clip rect (or scrolled off above / left of it) contributes nothing: leave before
+    // reserving vertices and walking the string. the width is unknown yet, so the left test uses only the start x:
+    // a line cannot reach left of its origin.
     if (p0.y > phys_clip_.max.y || p0.x > phys_clip_.max.x) {
         return;
     }
-    {   // how tall the run is: a byte scan, against a glyph walk plus 4 vertices per character
+    {   // run height: a byte scan, cheaper than a glyph walk
         const f32 lines = 1.0f + static_cast<f32>(std::count(s.begin(), s.end(), '\n'));
         if (p0.y + lines * lh < phys_clip_.min.y) {
             return;
@@ -827,10 +818,8 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
 
     const u32 quads = bold ? 2u : 1u;
 
-    // glyphs are emitted in chunks, each its own reservation: one command indexes at most max_command_vertices with
-    // its 16-bit indices, and a single string (a whole wrapped paragraph, a log line) can ask for more than that.
-    // a chunk of 4096 glyphs is 32768 vertices at worst (bold draws two quads), comfortably inside one command, and
-    // long enough that ordinary labels still take exactly one.
+    // glyphs are emitted in chunks, each its own reservation, since one string (a paragraph, a log line) can exceed
+    // max_command_vertices. 4096 glyphs = at most 32768 vertices (bold draws two quads), so ordinary labels take one.
     constexpr u32 glyph_chunk = 4096;
     prim p;
     u32  cap_v = 0; // vertices this reservation holds ...
@@ -838,8 +827,7 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
     u32  nv    = 0; // ... and what has been written into it
     u32  ni    = 0;
 
-    // hand back what culling and whitespace did not use. valid because this reservation is the tail of the arrays:
-    // nothing else reserves between open and close.
+    // return what culling and whitespace left unused; valid because this reservation is the arrays' tail.
     const auto close_chunk = [&]() noexcept {
         vertices_.shrink(cap_v - nv);
         indices_.shrink(cap_i - ni);
@@ -853,7 +841,7 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
         return reserve(cap_v, cap_i, p);
     };
 
-    // the lines underline / strike-through are drawn along (physical pixels), collected while the vertices are the tail
+    // underline / strike lines (physical pixels), collected while the glyph vertices are the tail
     text_spans_.clear();
     const auto close_line = [&](f32 x0, f32 x1, f32 base) {
         if ((underline || strike) && x1 > x0) { text_spans_.push_back({x0, x1, base}); }

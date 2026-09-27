@@ -155,7 +155,7 @@ struct d3d11_renderer::impl {
     };
     std::vector<texture_slot> textures; // texture_id - 1
 
-    // backdrop blur: the frame is copied to snap_tex, boxed down into blur_tex[0] and blurred back and forth
+    // backdrop blur: frame copied to snap_tex, boxed down into blur_tex[0], blurred back and forth
     ComPtr<ID3D11VertexShader>       vs_fullscreen;
     ComPtr<ID3D11PixelShader>        ps_backdrop;
     ComPtr<ID3D11PixelShader>        ps_blur_down;
@@ -193,7 +193,7 @@ struct d3d11_renderer::impl {
         }
     }
 
-    // (re)creates the snapshot and the two low-resolution blur targets for a render target of this size / format
+    // (re)creates the snapshot and both low-res blur targets for this target size / format
     [[nodiscard]] bool ensure_blur_targets(ID3D11Texture2D* target, DXGI_FORMAT view_format) noexcept
     {
         D3D11_TEXTURE2D_DESC rd{};
@@ -249,7 +249,7 @@ struct d3d11_renderer::impl {
         return true;
     }
 
-    // one full-screen triangle into `dst`, written only inside the plan's low-resolution region (the scissor)
+    // one full-screen triangle into `dst`, scissored to the plan's low-res region
     void blur_pass(ID3D11RenderTargetView* dst, UINT vw, UINT vh, ID3D11ShaderResourceView* src, const blur_constants& c,
                    ID3D11PixelShader* shader, const internal::blur_plan& plan) noexcept
     {
@@ -267,8 +267,8 @@ struct d3d11_renderer::impl {
         context->Draw(3, 0);
     }
 
-    // blurs what the target holds right now around `panel` (physical pixels); on success blur_srv[0] has the result in its
-    // top-left (vw, vh) part, exact inside `out_exact`
+    // blurs the current target around `panel` (physical); on success blur_srv[0] holds the result in its top-left
+    // (vw, vh), exact inside `out_exact`
     [[nodiscard]] bool run_blur(ID3D11RenderTargetView* host_rtv, ID3D11DepthStencilView* host_dsv, float radius_px, const rect& panel,
                                 const D3D11_VIEWPORT& main_vp, UINT& out_vw, UINT& out_vh, rect& out_exact) noexcept
     {
@@ -342,12 +342,11 @@ struct d3d11_renderer::impl {
     UINT                             vb_capacity{};
     UINT                             ib_capacity{};
     UINT                             shape_capacity{};
-    // what the dynamic buffers currently hold (draw_data::content_hash), so an untouched ui does not re-upload
-    // identical bytes every frame. 0 = unknown / nothing uploaded yet, which is also what a reallocation resets it to.
+    // content hash of the dynamic buffers, to skip identical uploads. 0 = unknown / reset by reallocation.
     u64                              uploaded_hash{};
     bool                             restore_state{true};
 
-    // best effort: overwrite the dynamic buffers before they are released (the driver may still hold older renamed copies)
+    // best effort: overwrite dynamic buffers before release (the driver may still hold renamed copies)
     void wipe() noexcept
     {
         for (texture_slot& t : textures) { t.image.wipe(); } // (the copies kept for update_texture)
@@ -725,10 +724,8 @@ void d3d11_renderer::render(const draw_data& data)
     }
 
     D3D11_MAPPED_SUBRESOURCE map{};
-    // an untouched ui produces the same bytes every frame. the buffers still hold last frame's copy, so when the
-    // hash says the contents match there is nothing to send: three Map(WRITE_DISCARD) + memcpy of the whole frame
-    // saved, which is most of what rendering a static panel costs on the cpu side. the draw calls still happen --
-    // the render target was cleared, or belongs to a game that redrew it.
+    // unchanged hash: the buffers already hold this frame, so skip three Map(WRITE_DISCARD) + memcpy (most of a static
+    // panel's cpu cost). the draws still happen: the target was cleared or redrawn by a game.
     const bool have_geometry = data.content_hash != 0 && data.content_hash == s.uploaded_hash;
     if (!have_geometry) {
         if (FAILED(ctx->Map(s.vb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
@@ -747,7 +744,7 @@ void d3d11_renderer::render(const draw_data& data)
 
         s.uploaded_hash = data.content_hash;
     }
-    // the transform and the output encoding: apart from the geometry, since either can change while it does not
+    // transform and output encoding are separate from the geometry: either can change without it
     const internal::ui_constants constants = internal::make_ui_constants(data, s.output);
     if (!s.cb_valid || std::memcmp(&constants, &s.cb_written, sizeof constants) != 0) {
         if (FAILED(ctx->Map(s.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
@@ -757,7 +754,7 @@ void d3d11_renderer::render(const draw_data& data)
         s.cb_valid   = true;
     }
 
-    // the state guard is what an overlay needs and an owner of the device does not; see set_state_restore
+    // the state guard is for overlays; device owners can skip it (see set_state_restore)
     std::optional<state_guard> guard;
     if (s.restore_state) {
         guard.emplace(ctx);
@@ -780,8 +777,8 @@ void d3d11_renderer::render(const draw_data& data)
 
     ctx->VSSetShader(s.vs.Get(), nullptr, 0);
     ctx->VSSetConstantBuffers(0, 1, s.cb.GetAddressOf());
-    // stages the ui does not use but a game may have left bound (tessellation, a geometry shader, stream output, a
-    // predicate): any of them would bend, drop or divert the ui's triangles
+    // stages the ui does not use but a game may leave bound (tessellation, GS, stream output, predicate) would bend,
+    // drop or divert its triangles
     ctx->GSSetShader(nullptr, nullptr, 0);
     ctx->HSSetShader(nullptr, nullptr, 0);
     ctx->DSSetShader(nullptr, nullptr, 0);

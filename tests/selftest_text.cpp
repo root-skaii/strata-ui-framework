@@ -130,7 +130,7 @@ void test_multiline()
     h.frame(build);
     CHECK(text == "abX\ncd");
 
-    h.key(key::down); // the caret is behind "abX": the closest spot of the shorter line below is its end
+    h.key(key::down); // caret after "abX": nearest spot on the shorter line below is its end
     h.frame(build);
     h.type("Y");
     h.frame(build);
@@ -263,7 +263,7 @@ void test_editing_extra()
     std::fprintf(stderr, "[mouse selection, wheel, history limits]\n");
     harness h;
 
-    // double-click selects a word, dragging selects a range (multi-line field at (12, 12), text starts at (22, 17))
+    // double-click selects a word, drag selects a range (field at (12, 12), text from (22, 17))
     std::string text = "hello world\nsecond line";
     const auto build = [&] {
         if (auto w = h.ui.window("t", {0, 0}, {400, 0}, plain_window)) {
@@ -291,7 +291,7 @@ void test_editing_extra()
     h.frame(build);
     CHECK(text.starts_with("X") && text.find('\n') == std::string::npos && text.size() < 12);
 
-    // the wheel scrolls a field that has more lines than fit, and clicks then land on the lines that are shown
+    // the wheel scrolls an overfull field, and clicks land on the shown lines
     std::string many;
     for (int i = 0; i < 40; ++i) { many += "line " + std::to_string(i) + "\n"; }
     const auto build_many = [&] {
@@ -354,7 +354,7 @@ void test_editing_extra()
     h.frame(build_line);
     CHECK(line == "abcdef");
 
-    // the history is capped at 256 steps: undoing all of them stops at the state before the oldest kept step
+    // history is capped at 256 steps: undoing all stops at the state before the oldest kept step
     std::string many_edits;
     const auto build_edits = [&] {
         if (auto w = h.ui.window("t", {0, 0}, {400, 0}, plain_window)) {
@@ -374,7 +374,7 @@ void test_editing_extra()
         h.key(key::z, true);
         h.frame(build_edits);
     }
-    // ops are: (replace the selection with a letter) x 300, the first over an empty field; 256 are kept
+    // ops: replace the selection with a letter x 300, starting empty; 256 are kept
     CHECK(many_edits == std::string(1, static_cast<char>('a' + (300 - 256 - 1) % 26)));
     // ... and redo walks forward again, through the same letters
     for (int i = 0; i < 400; ++i) {
@@ -538,7 +538,7 @@ void test_text_styles()
     CHECK(unknown_x > plain_x + 20.0f); // "<bold>" is not a tag: it is shown
 }
 
-// docking: saving / restoring a layout, dragging a whole pane by its grip --------------------------------------------
+// docking: saving / restoring a layout, dragging a pane by its grip --------------------------------------------
 
 void test_text_field_extras()
 {
@@ -606,7 +606,7 @@ void test_text_field_extras()
         CHECK(value == "one\nX");
     }
 
-    // styled contents: another font in a span makes the text wider, lines as high as the tallest font
+    // styled contents: a wider font in a span widens the text; lines take the tallest font's height
     {
         font_config big;
         big.pixel_height = 30.0f;
@@ -740,7 +740,7 @@ void test_text_field_extras()
     }
 }
 
-// toasts with buttons and progress, the log with wrapping and clock times -------------------------------------------------
+// toasts with buttons and progress, log wrapping and clock times -------------------------------------------------
 
 void test_rtl_and_emoji()
 {
@@ -766,23 +766,23 @@ void test_rtl_and_emoji()
         // left-to-right paragraph with a hebrew word: only the word turns around
         const std::string mixed = "abc " + hebrew + " def";
         CHECK(to_visual(mixed) == "abc " + std::string{cps_of(to_visual(hebrew)).empty() ? "" : to_visual(hebrew)} + " def");
-        // right-to-left paragraph with digits: the number keeps its direction and moves to the left of the word
+        // rtl paragraph with digits: the number keeps its direction and moves left of the word
         CHECK(to_visual(hebrew + " 123") == "123 " + to_visual(hebrew));
         // brackets are mirrored in right-to-left runs
         const std::string in_brackets = "(" + hebrew + ")";
         CHECK(to_visual(in_brackets) == "(" + to_visual(hebrew) + ")");
         // a bracketed word inside a right-to-left paragraph: the brackets close around it, mirrored
         CHECK(to_visual(hebrew + " (" + hebrew + ")") == "(" + to_visual(hebrew) + ") " + to_visual(hebrew));
-        // and after a number inside a left-to-right paragraph, a bracketed hebrew word is reversed as a unit with its brackets
+        // after a number in an ltr paragraph, a bracketed hebrew word reverses as a unit with its brackets
         CHECK(to_visual("x " + hebrew + " 5 (" + hebrew + ") y").find("(" + to_visual(hebrew) + ")") != std::string::npos);
         // lines are paragraphs of their own
         CHECK(to_visual(hebrew + "\nabc") == to_visual(hebrew) + "\nabc");
-        // trailing spaces stay at the end of the line: the right end in a left-to-right paragraph, the left side of a right-to-left one
+        // trailing spaces stay at the line end: right in ltr, left in rtl
         CHECK(to_visual("abc " + hebrew + "  ").ends_with("  ") && to_visual(hebrew + "  ").starts_with("  "));
         // explicit direction
         CHECK(to_visual("abc", nullptr, 0, text_direction::rtl) == "abc"); // no rtl characters: untouched
     }
-    // arabic joining: initial / final forms, isolated letters, lam-alef ligatures, marks do not break a join
+    // arabic joining: initial / final forms, isolated letters, lam-alef ligatures, marks do not break joins
     {
         const auto v = [&](std::string_view s) { return cps_of(to_visual(s)); };
         // beh beh: initial then final (shown right to left, so final comes first in the visual order)
@@ -832,7 +832,7 @@ void test_rtl_and_emoji()
     CHECK(atlas.measure(0, hebrew).x > 15.0f && atlas.measure(0, arabic).x > 15.0f);
     CHECK(near_eq(atlas.measure(0, hebrew).x, atlas.measure(0, to_visual(hebrew, &atlas)).x, 0.01f));
 
-    // drawing right-to-left text puts glyphs on the screen (and the reordered order is what comes out)
+    // drawing rtl text emits glyphs in the reordered order
     {
         draw_list dl;
         dl.begin({800, 600}, atlas, 1.0f);
@@ -842,7 +842,7 @@ void test_rtl_and_emoji()
         CHECK(dl.data().vertices.size() == 16 + 20);
     }
 
-    // a text field: the caret sits where the letters are. in a hebrew word the start of the text is on the right
+    // text field caret follows the letters: in a hebrew word the text starts on the right
     {
         std::string value = hebrew;
         const auto build = [&] {
@@ -857,7 +857,7 @@ void test_rtl_and_emoji()
         h.frames(build, 2);
         const f32 at_end = h.ui.ime_position().x;
         CHECK(at_start > at_end + 10.0f); // first letter is the rightmost: the end of the text is on the left
-        // typing at the end appends (logical order); the text grows to the right of the left edge, where its end is
+        // typing at the end appends (logical order); the end is at the left edge, so text grows rightwards from it
         h.type(hebrew);
         h.frames(build, 2);
         CHECK(value == hebrew + hebrew);
@@ -953,7 +953,7 @@ void test_password_masks_and_code()
 {
     std::fprintf(stderr, "[password reveal, input masks, code editor]\n");
 
-    // the eye button shows the text: the caret sits where the letters end instead of where the bullets end
+    // with the eye on, the caret sits after the letters, not after the bullets
     {
         harness h;
         std::string pw = "iiiiiiii";
@@ -1084,8 +1084,8 @@ void test_password_masks_and_code()
         h.frames(build, 2);
         CHECK(src == "fn main() {\n    x = 1;\n}");
 
-        // Tab goes to the next tab stop; with a selection over several lines it indents them all, Shift+Tab takes it back
-        h.click({700.0f, 500.0f}, build); // (a focused field shows its own copy of the text: let go before changing it)
+        // Tab goes to the next tab stop; over a multi-line selection it indents every line, Shift+Tab unindents
+        h.click({700.0f, 500.0f}, build); // (a focused field shows its own copy: release it before changing the text)
         src = "ab\nc";
         h.frames(build, 40); // (a second click at the same place soon after would be a double click)
         h.click({500.0f, line1_y}, build);

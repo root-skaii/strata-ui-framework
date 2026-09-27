@@ -1,5 +1,4 @@
-// rich text: markup parsing, multi-line word-wrapped layout with mixed fonts and colors, and the label routing that lets
-// every widget draw its caption as markup
+// rich text: markup parsing, wrapped multi-font layout, and label routing so every widget caption can be markup
 
 #include "strata/context.hpp"
 
@@ -36,9 +35,8 @@ constexpr std::size_t max_rich_runs = 4096;
 
 } // namespace
 
-// splits the markup into runs of one font, color and style. tags: <f=N> </f>, <c=rrggbb[aa]> </c>, and the styles
-// <b> bold, <i> italic, <u> underline, <s> strike-through (each closed by </b> ...; they nest and combine);
-// "<<" is a literal '<' (the run before it ends with that '<'); anything that is not a known tag stays text.
+// splits markup into runs of one font, colour and style. tags: <f=N> </f>, <c=rrggbb[aa]> </c>, <b> <i> <u> <s>
+// (nest and combine); "<<" is a literal '<'; unknown tags stay text.
 template <class Run>
 static void parse_rich_runs(std::string_view s, font_id base_font, color base_col, std::size_t font_count, std::vector<Run>& runs)
 {
@@ -50,8 +48,7 @@ static void parse_rich_runs(std::string_view s, font_id base_font, color base_co
     colors[0] = base_col;
     std::array<u32, 4> style_depth{}; // b, i, u, s
     constexpr std::array<text_flags, 4> style_bits{text_flags::bold, text_flags::italic, text_flags::underline, text_flags::strike};
-    // the enclosing <a=href> tags. a link inside a link is not a thing, but the stack keeps the nesting honest when
-    // markup is generated rather than written by hand.
+    // enclosing <a=href> tags; nested links are meaningless, but generated markup may nest them
     std::array<std::string_view, 4> links{};
     u32 ld = 0;
     u32 link_colors = 0; // how deep the colour stack was when the innermost link opened
@@ -137,8 +134,8 @@ static void parse_rich_runs(std::string_view s, font_id base_font, color base_co
     flush(s.size());
 }
 
-// lays runs out on lines. with wrap_width > 0 a line ends before the word that would not fit; '\n' always ends one.
-// the runs of a line share a baseline (the tallest ascent), and the line is as high as its tallest run.
+// lays runs out on lines. with wrap_width > 0 a line breaks before a word that would not fit; '\n' always breaks.
+// runs share a baseline (tallest ascent); the line is as tall as its tallest run.
 vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f32 wrap_width, bool markup)
 {
     m_->rich_runs_.clear();
@@ -150,7 +147,7 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
         m_->rich_runs_.push_back({text, base, base_col, text_flags::none, {}, false});
     }
 
-    f32 x = 0.0f;                 // pen position on the current line (approximate while wrapping, exact once a line is closed)
+    f32 x = 0.0f;                 // pen on the current line (approximate while wrapping)
     u32 line_first = 0;
     f32 asc = 0.0f;
     f32 desc = 0.0f;
@@ -187,7 +184,7 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
         x = 0.0f;
         asc = desc = 0.0f;
     };
-    // appends text[a, b) of a run to the line, extending the previous segment when it is the same run
+    // appends text[a, b) of a run, extending the previous segment when it is the same run
     const auto add = [&](const rich_run& run, std::size_t a, std::size_t b, f32 w) {
         if (b <= a) { return; }
         const std::string_view piece = run.text.substr(a, b - a);
@@ -257,8 +254,7 @@ void context::rich_draw(vec2 pos)
             text_flags style = seg.style;
 
             if (!seg.link.empty()) {
-                // the accent colour unless the markup picked one, and always underlined: a link has to be
-                // recognisable without hovering it
+                // accent colour unless the markup chose one, always underlined so links are visible without hovering
                 if (!seg.own_col) { col = m_->style_.accent; }
                 style = style | text_flags::underline;
                 if (m_->rich_links_live_) {

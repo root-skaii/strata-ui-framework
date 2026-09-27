@@ -1,6 +1,6 @@
 #pragma once
 
-// shared by the selftest_*.cpp files: the check macro and the harness that feeds a strata::context scripted input
+// shared by selftest_*.cpp: the check macro and a harness feeding strata::context scripted input
 
 #include <strata/strata.hpp>
 
@@ -83,10 +83,10 @@ struct harness {
     void move(vec2 p) { in.mouse_pos = p; }
     void down() { in.mouse_down[0] = true; }
     void up() { in.mouse_down[0] = false; }
-    // the other two buttons, so right-click menus and middle-click paths can be scripted like the left one
+    // right / middle buttons, scripted like the left one
     void down(int button) { in.mouse_down[static_cast<std::size_t>(button)] = true; }
     void up(int button) { in.mouse_down[static_cast<std::size_t>(button)] = false; }
-    // wheel notches for this frame (positive = away from the user / scroll up), and sideways for a tilt wheel
+    // wheel notches this frame (positive = scroll up), and sideways for a tilt wheel
     void wheel(f32 notches) { in.wheel = notches; }
     void wheel_x(f32 notches) { in.wheel_x = notches; }
     void modifiers(bool ctrl = false, bool shift = false, bool alt = false)
@@ -132,8 +132,8 @@ struct harness {
         frame(build);
     }
 
-    // one wheel gesture over a point: hover first (scrollers test the pointer against last frame's rectangle),
-    // then the notches, then a frame without them so the scroll is not applied twice
+    // one wheel gesture over a point: hover first (scrollers use last frame's rects), then notches, then a frame
+    // without them so the scroll is not applied twice
     template <class F>
     void scroll(vec2 p, f32 notches, F&& build)
     {

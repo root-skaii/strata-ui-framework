@@ -1,12 +1,9 @@
 #pragma once
 
-// internal (not installed): what the d3d11 and d3d12 renderers share about a backdrop blur -- how far the frame is scaled
-// down, the gaussian's weights, and which part of the frame has to be copied and blurred at all.
-//
-// the frame is copied into a snapshot, boxed down by `ds` into a low-resolution target and blurred there by a separable
-// gaussian, `iterations` times horizontally and vertically. only the panels that show it need it: everything is limited to
-// the panel's rectangle grown by how far the passes reach (a full-screen copy and blur per panel used to be the cost of
-// every acrylic window, menu and tooltip).
+// internal: backdrop-blur planning shared by the d3d11 / d3d12 renderers -- downscale, gaussian weights, and the
+// region that needs copying and blurring.
+// the frame is snapshotted, box-downscaled by `ds` and blurred by a separable gaussian `iterations` times per axis,
+// limited to each panel's rect plus the passes' reach.
 
 #include "strata/draw_list.hpp"
 
@@ -19,19 +16,18 @@ namespace strata::internal {
 struct blur_plan {
     u32 ds{2};            // downsample factor
     int iterations{1};    // horizontal + vertical pass pairs
-    // the gaussian of one pass as 7 bilinear taps: the centre texel, then 3 pairs of neighbours (each pair is two texels
-    // read by one filtered tap between them), on both sides. weights sum to 1
+    // one pass as 7 bilinear taps: centre, then 3 pair-taps per side (one filtered read per texel pair). sum = 1
     f32 w0{1.0f};
     f32 w[3]{};
     f32 o[3]{};
-    // the low-resolution texels every pass writes (half-open), and the part of the target that feeds them
+    // low-res texels each pass writes (half-open), and the target area feeding them
     u32 lx0{}, ly0{}, lx1{}, ly1{};
     u32 x0{}, y0{}, x1{}, y1{};
-    // where in the target the result is exact: a later panel inside it can reuse this blur
+    // where the result is exact: later panels inside it can reuse this blur
     rect exact;
 };
 
-// the rectangle (physical pixels) a backdrop command draws: the bounds of its vertices, inside its clip
+// a backdrop command's drawn rect (physical): vertex bounds within its clip
 [[nodiscard]] inline rect backdrop_bounds(const draw_data& data, const draw_cmd& cmd) noexcept
 {
     u32 top = 0;
@@ -53,7 +49,7 @@ struct blur_plan {
     p.iterations          = sigma_total > 3.5f ? (sigma_total > 8.0f ? 3 : 2) : 1;
     const f32 sigma       = sigma_total / std::sqrt(static_cast<f32>(p.iterations));
 
-    // 13 taps (-6 .. 6), as before; the pairs (1, 2), (3, 4), (5, 6) each become one filtered read
+    // 13 taps (-6 .. 6); pairs (1, 2), (3, 4), (5, 6) each become one filtered read
     f32 g[7];
     f32 sum = 0.0f;
     for (int k = 0; k <= 6; ++k) {
@@ -68,8 +64,8 @@ struct blur_plan {
         p.o[i] = wp > 0.0f ? (static_cast<f32>(a) * g[a] + static_cast<f32>(b) * g[b]) / wp : static_cast<f32>(a);
     }
 
-    // the passes read up to 6 texels on each side, `iterations` times per axis: a margin that wide (and a texel for the
-    // backdrop's own filtered read) keeps what the panel samples free of the stale texels outside the region
+    // passes read 6 texels per side, `iterations` times per axis: that margin (+1 for the backdrop's own filtered read)
+    // keeps stale texels out of what the panel samples
     const u32  vw     = std::max(1u, (target_w + p.ds - 1) / p.ds);
     const u32  vh     = std::max(1u, (target_h + p.ds - 1) / p.ds);
     const auto margin = static_cast<f32>(6 * p.iterations + 2);
@@ -79,13 +75,12 @@ struct blur_plan {
     p.ly0 = clamp_to(std::floor(panel.min.y * inv - margin), vh);
     p.lx1 = clamp_to(std::ceil(panel.max.x * inv + margin), vw);
     p.ly1 = clamp_to(std::ceil(panel.max.y * inv + margin), vh);
-    // the box filter reads a texel's own block and half a target pixel around it
+    // the box filter reads a texel's block plus half a target pixel around it
     p.x0 = std::min(target_w, p.lx0 * p.ds > p.ds ? p.lx0 * p.ds - p.ds : 0u);
     p.y0 = std::min(target_h, p.ly0 * p.ds > p.ds ? p.ly0 * p.ds - p.ds : 0u);
     p.x1 = std::min(target_w, p.lx1 * p.ds + p.ds);
     p.y1 = std::min(target_h, p.ly1 * p.ds + p.ds);
-    // exact where the margin is whole: inside the region shrunk by it again (at the target's own edges the clamp to the
-    // edge is what the full-frame blur did too, so there nothing needs to be shrunk)
+    // exact inside the region shrunk by the margin (not at target edges, where clamping matches the full-frame blur)
     const auto inner = [&](u32 lo, u32 hi, u32 full, f32 m, bool low_side) {
         if (low_side) { return lo == 0 ? 0.0f : (static_cast<f32>(lo) + m) * static_cast<f32>(p.ds); }
         return hi >= full ? 1.0e9f : (static_cast<f32>(hi) - m) * static_cast<f32>(p.ds);
@@ -95,7 +90,7 @@ struct blur_plan {
     return p;
 }
 
-// b0 of the ui shader: the transform to clip space, then the output encoding (see ui.hlsl)
+// ui shader b0: clip-space transform, then output encoding (see ui.hlsl)
 struct ui_constants {
     float transform[4]{};
     float output[4]{};
@@ -115,8 +110,7 @@ struct ui_constants {
     return c;
 }
 
-// the blur's own low-resolution targets: 8 bits per channel for an 8-bit target, half floats for anything wider (an
-// scRGB target goes past 1, and 8 bits of PQ would band)
+// blur targets: 8-bit for 8-bit targets, half float otherwise (scRGB exceeds 1, 8-bit PQ bands)
 [[nodiscard]] inline bool wide_format(int dxgi_format) noexcept
 {
     switch (dxgi_format) {

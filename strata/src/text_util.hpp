@@ -1,6 +1,6 @@
 #pragma once
 
-// internal (not installed): utf-8 helpers shared by the text-editing code. byte offsets always sit on code point boundaries.
+// internal: utf-8 helpers for text editing. byte offsets always sit on code point boundaries.
 
 #include "strata/types.hpp"
 
@@ -9,7 +9,7 @@
 
 namespace strata::internal {
 
-// finds the persistent state slot of a widget, or takes a free / stale one (slots untouched for two frames are stale)
+// a widget's persistent slot, or a free / stale one (untouched for two frames)
 template <class T, std::size_t N>
 [[nodiscard]] T* state_for(std::array<T, N>& slots, id key, u64 frame) noexcept
 {
@@ -70,7 +70,7 @@ namespace strata::text {
     return i;
 }
 
-// ctrl+left: skips separators, then the word before the caret. newlines stop the jump so lines stay distinct
+// ctrl+left: skips separators, then the word before the caret; stops at newlines
 [[nodiscard]] inline std::size_t prev_word(std::string_view s, std::size_t i) noexcept
 {
     while (i > 0 && !is_word_char(s[prev_boundary(s, i)]) && s[prev_boundary(s, i)] != '\n') { i = prev_boundary(s, i); }

@@ -1,6 +1,5 @@
-// checks for the machinery added alongside the draw-list index change: the clip / alpha stacks failing safely, text
-// long enough to need several draw commands, horizontal scrolling, rich-text links, duplicate-id detection and the
-// idle predicates.
+// clip / alpha stacks failing safely, text needing several draw commands, horizontal scrolling, rich-text links,
+// duplicate-id detection and the idle predicates.
 
 #include "selftest_common.hpp"
 
@@ -15,9 +14,8 @@ void test_stack_overflow()
     draw_list  dl;
     dl.begin({800, 600}, atlas, 1.0f);
 
-    // the clip stack holds a fixed number of levels. pushing past it must not corrupt the levels that did fit: the
-    // bug this replaces stored nothing but applied the new rect anyway, so every later pop restored the rect of a
-    // shallower level and the rest of the frame was clipped wrongly.
+    // pushing past the fixed clip stack must not corrupt the levels that fit
+    // (every later pop must restore the right rect).
     const rect outer{{100, 100}, {400, 400}};
     dl.push_clip(outer);
     const rect at_one = dl.clip();
@@ -57,13 +55,11 @@ void test_long_text_chunks()
     h.frames([&] {}, 1);
     font_atlas atlas = font_atlas::build().value();
     draw_list  dl;
-    // tall and wide enough that nothing is clipped away: the point is how many glyphs are emitted, not culling
+    // big enough that nothing is clipped: this measures emitted glyphs, not culling
     dl.begin({20000, 20000}, atlas, 1.0f);
 
-    // one command can only index 65536 vertices, which is 16384 glyphs at 4 each. a string past that has to be split
-    // across commands, and every glyph must still come out. laid out as many short lines: a single 30000-character
-    // line would run off the right of the clip rectangle and most of it would be culled, which is not what is
-    // being measured here.
+    // one command indexes at most 65536 vertices (16384 glyphs), so longer text must split across commands without
+    // losing glyphs. many short lines, because one long line would mostly be culled off the right.
     constexpr std::size_t per_line = 40;
     constexpr std::size_t lines    = 750;
     constexpr std::size_t glyphs   = per_line * lines; // 30000
@@ -78,8 +74,7 @@ void test_long_text_chunks()
     CHECK(dd.indices.size() == glyphs * 6);
     CHECK(dd.commands.size() >= 2); // it did split
 
-    // every command's indices stay inside the 16-bit range, relative to its own vtx_offset -- which is the whole
-    // reason for the split. a command that indexed past its slice would draw garbage.
+    // every command's indices stay within 16 bits relative to its own vtx_offset (the point of splitting)
     bool in_range = true;
     std::size_t total = 0;
     for (const draw_cmd& c : dd.commands) {
@@ -183,7 +178,7 @@ void test_rich_links()
     h.frames(build, 2);
     CHECK(clicked.empty() && hovered.empty()); // nothing under the pointer yet
 
-    // find the link: the window's content starts one padding in, and the link follows "go to " on the first line
+    // the link: content starts one padding in, after "go to " on the first line
     const f32 pad = h.ui.theme().padding;
     const f32 pre = h.ui.font().measure(0, "go to ").x;
     const f32 mid = pad + pre + h.ui.font().measure(0, "the manual").x * 0.5f;
@@ -222,7 +217,7 @@ void test_id_collisions()
 {
     std::fprintf(stderr, "[duplicate widget ids are reported]\n");
     harness h;
-    // two buttons with the same label in the same scope: the same id, so they share hover / press state
+    // two same-label buttons in one scope share an id, hence hover / press state
     h.frames([&] {
         if (auto w = h.ui.window("t", {0, 0}, {300, 200}, plain_window)) {
             h.ui.button("save");
@@ -286,8 +281,7 @@ void test_idle_predicates()
     h.frames(steady, 1);
     CHECK(h.ui.frame_unchanged());
 
-    // a live toast keeps asking for frames: it has a timer to run down, which produces no new geometry while it
-    // sits there but does change what should be on screen later
+    // a live toast keeps requesting frames: its timer runs even though the geometry does not change
     h.ui.toast("hello");
     h.frames(steady, 3);
     CHECK(h.ui.animations_settling());

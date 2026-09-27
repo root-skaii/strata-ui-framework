@@ -1,5 +1,5 @@
-// tab bars: a row of tabs with a sliding highlight; optionally closable, reorderable, with an add button, and scrolling
-// (plus a list of all tabs) when they do not fit
+// tab bars: tabs with a sliding highlight; optionally closable, reorderable, an add button, and scrolling with a
+// list of all tabs when they overflow
 
 #include "strata/context.hpp"
 
@@ -50,12 +50,12 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     const f32 content_w = x - 2.0f - row.min.x;
     const bool overflow = content_w + (add_tab ? add_w + 2.0f : 0.0f) > row.width() + 0.5f;
 
-    // when they do not fit the tabs scroll inside `region`; the add button and a list of every tab stay at the right end
+    // overflowing tabs scroll inside `region`; the add and list buttons stay at the right end
     const rect region = overflow ? rect{row.min, {row.max.x - list_w - 2.0f - (add_tab ? add_w + 2.0f : 0.0f), row.max.y}} : row;
     const f32  view_w = region.width();
     const f32  max_scroll = overflow ? std::max(0.0f, content_w - view_w) : 0.0f;
 
-    // scroll: `active` is where it wants to be, `toggle` what is shown, `custom` the tab that was in view last
+    // scroll: `active` = target, `toggle` = shown, `custom` = last tab in view
     anim_slot& sc = anim_for(widget_id("##tscroll"));
     if (!sc.custom_init) {
         sc.custom_init = true;
@@ -85,7 +85,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     std::vector<rect>& cells = m_->tab_cells_;
     for (rect& c : cells) { c = {{c.min.x + shift, c.min.y}, {c.max.x + shift, c.max.y}}; }
 
-    // the tab being dragged follows the pointer; the others stay in their slots until the caller applies the move
+    // the dragged tab follows the pointer; the others keep their slots until the caller applies the move
     rect  drag_rect{};
     int   drag_index = -1;
     for (std::size_t i = 0; i < n; ++i) {
@@ -149,7 +149,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     }
 
     const rect sel  = drag_index >= 0 && drag_index == selected ? drag_rect : cells[static_cast<std::size_t>(selected)];
-    // (relative to the row and unscrolled: moving or scrolling the window must not make the highlight lag)
+    // (row-relative and unscrolled, so moving / scrolling the window does not make the highlight lag)
     const f32  ix   = row.min.x + animate("tab_x", sel.min.x - shift - row.min.x, 20.0f) + shift;
     const f32  iw   = animate("tab_w", sel.width(), 20.0f);
     f32 pill_x = ix;

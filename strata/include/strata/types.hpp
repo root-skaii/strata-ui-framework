@@ -72,7 +72,7 @@ struct rect {
     }
 };
 
-// straight-alpha rgba8, byte layout matches DXGI_FORMAT_R8G8B8A8_UNORM
+// straight-alpha rgba8, same bytes as DXGI_FORMAT_R8G8B8A8_UNORM
 struct color {
     u8 r{};
     u8 g{};
@@ -109,16 +109,14 @@ namespace literals {
 }
 } // namespace literals
 
-// widget identity. 0 is reserved for "none". 64 bits: state that outlives a frame (tree nodes, tables, windows) is keyed by
-// it, and with 32 bits a big tree has even odds of two nodes sharing an id somewhere past ~77k of them
+// widget identity; 0 = none. 64 bits because 32 would give a big tree even odds of a collision past ~77k nodes
 using id = u64;
 
-// a texture owned by a renderer backend (create_texture); 0 means "none" / the font atlas
+// renderer-owned texture (create_texture); 0 = none / the font atlas
 using texture_id = u32;
 
-// fnv-1a (64 bit), continuing from `seed` (the id of the scope the label is in).
-// "text###key" hashes only "###key": the id stays the same while the text before it changes, so a window titled
-// "Downloads (3)###downloads" keeps its position, size, dock place and scroll when the count changes
+// fnv-1a 64 continuing from `seed` (the scope's id). "text###key" hashes only "###key", so a window titled
+// "Downloads (3)###downloads" keeps its state when the count changes
 [[nodiscard]] constexpr id hash_id(std::string_view s, id seed = 0) noexcept
 {
     if (const auto at = s.find("###"); at != std::string_view::npos) {
@@ -131,7 +129,7 @@ using texture_id = u32;
     return h != 0 ? h : 1u;
 }
 
-// "label##hidden" shows "label" but hashes the whole string ("label###key" shows "label" and hashes only "###key")
+// "label##hidden" shows "label", hashes all; "label###key" shows "label", hashes "###key"
 [[nodiscard]] constexpr std::string_view visible_label(std::string_view s) noexcept
 {
     const auto pos = s.find("##");

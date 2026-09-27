@@ -1,5 +1,5 @@
-// headless self-test: drives strata::context with scripted input (no window, no gpu) and checks the behaviour of the
-// ui logic. the checks live in selftest_<area>.cpp; strata_sandbox --selftest
+// headless self-test: drives strata::context with scripted input (no window, no gpu). checks live in
+// selftest_<area>.cpp; run with strata_sandbox --selftest
 
 #include "selftest.hpp"
 #include "selftest_common.hpp"

@@ -95,7 +95,7 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
     const int hits = static_cast<int>(m_->combo_filter_hits_.size());
     m_->combo_filter_hover_ = hits == 0 ? 0 : std::clamp(m_->combo_filter_hover_, 0, hits - 1);
 
-    // the keys are read before the search field is submitted, because the field uses its own up on the way past
+    // read the keys before the search field is submitted, since it consumes Up on the way
     int  want_pick = -1;
     bool close_now = false;
     for (u32 i = 0; i < m_->key_count_; ++i) {
@@ -232,7 +232,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
         return false;
     }
 
-    // --- the popup: rows with check boxes; clicking a row toggles it and keeps the list open ---------------------
+    // --- the popup: rows with check boxes; a click toggles and keeps it open ---------------------
     bool changed = false;
     const f32 item_h   = frame_height() - 4.0f;
     const bool toolbar = count > 4; // "all" / "none"

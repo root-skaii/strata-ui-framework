@@ -1,4 +1,4 @@
-// color picker, trees, selectable rows and tables: the heavier composite widgets of strata::context
+// color picker, trees, selectable rows and tables: the heavier composite widgets
 
 #include "strata/context.hpp"
 
@@ -125,8 +125,7 @@ bool context::pointer_over(const rect& r) const noexcept
 
 // generic popup ----------------------------------------------------------------------
 
-// draws the popup frame in the overlay layer (above all windows) and redirects the layout into it,
-// so ordinary widgets can be submitted until end_popup(). returns false while the popup is closed.
+// draws the popup frame in the overlay layer and redirects layout into it until end_popup(). false while closed.
 bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
 {
     if (m_->popup_id_ != key) {
@@ -366,7 +365,7 @@ bool context::color_picker(std::string_view label, color& c, color_flags flags)
     }
     push_id(label);
     const bool changed = picker_body(key, c, flags);
-    // being edited: one of its parts is held, or its hex field has the keyboard (the parts are keyed in this scope)
+    // being edited: a part is held or the hex field has the keyboard (parts are keyed in this scope)
     const id   seed    = current_seed();
     const bool engaged = (m_->active_ != 0 && (m_->active_ == hash_id("##sv", seed) || m_->active_ == hash_id("##hue", seed) ||
                                            m_->active_ == hash_id("##alpha", seed))) ||
@@ -448,8 +447,7 @@ bool& context::tree_open_state(id key, bool default_open)
     auto it = std::lower_bound(m_->tree_states_.begin(), m_->tree_states_.end(), key,
                                [](const tree_state& s, id k) { return s.key < k; });
     if (it == m_->tree_states_.end() || it->key != key) {
-        // a node that first appears while an open-all is running starts open, so expanding a whole tree does not
-        // have to be driven one level per frame from the outside
+        // nodes appearing during an open-all start open, so a whole tree expands without per-level driving
         bool start_open = default_open;
         if (m_->tree_bulk_ != 0 && id_in_scope(m_->tree_bulk_seed_)) {
             start_open = m_->tree_bulk_ == 1;
@@ -461,7 +459,7 @@ bool& context::tree_open_state(id key, bool default_open)
     return it->open;
 }
 
-// is `seed` one of the id scopes the item being submitted sits in? 0 is the root scope: everything is in it
+// is `seed` one of the id scopes enclosing the current item? 0 is the root: always true
 bool context::id_in_scope(id seed) const noexcept
 {
     if (seed == 0) {
@@ -473,9 +471,9 @@ bool context::id_in_scope(id seed) const noexcept
     return false;
 }
 
-// the id scope a node was submitted in, 0 when it has no state (and so no parent we know of)
-// sets a node's open state without touching the scope it was submitted in (the keyboard acts on it from outside
-// that scope, so tree_open_state would record the wrong parent)
+// the id scope a node was submitted in, 0 when it has no state
+// sets a node's open state without touching its scope (the keyboard acts from outside it, so tree_open_state
+// would record the wrong parent)
 void context::tree_open_set(id key, bool open) noexcept
 {
     const auto it = std::lower_bound(m_->tree_states_.begin(), m_->tree_states_.end(), key,
@@ -506,9 +504,8 @@ bool context::tree_under(id node, id root) const noexcept
     return false;
 }
 
-// open / close every node under `seed` -- the ones that exist right now by walking their scopes, and the ones that
-// only appear as their parents open through the pending request, which lives long enough for a tree of the maximum
-// depth to unfold
+// open / close every node under `seed`: existing ones by walking scopes, later ones via the pending request, which
+// lives long enough for a maximum-depth tree to unfold
 void context::tree_set_bulk(id seed, bool open) noexcept
 {
     for (tree_state& st : m_->tree_states_) {
@@ -516,8 +513,7 @@ void context::tree_set_bulk(id seed, bool open) noexcept
     }
     m_->tree_bulk_        = open ? u8{1} : u8{2};
     m_->tree_bulk_seed_   = seed;
-    // opening unfolds one level per frame, so the request has to live long enough for the deepest tree; closing
-    // hides everything below at once and needs no more than the frame it was asked on
+    // opening unfolds a level per frame, so the request must outlive the deepest tree; closing needs only this frame
     m_->tree_bulk_frames_ = open ? max_tree_depth : 1;
 }
 
@@ -526,15 +522,15 @@ void context::tree_set_recursive(id key, bool open) noexcept
     tree_set_bulk(key, open);
 }
 
-// set_next_item_open() and a running bulk / recursive request, applied on top of the stored state
+// set_next_item_open() and bulk / recursive requests, applied over the stored state
 bool& context::tree_open_resolved(id key, bool default_open, bool& recursive_out) noexcept
 {
     const u8 next = m_->next_open_;
     m_->next_open_    = 0;
     recursive_out = next >= 3;
 
-    // nodes that already exist were set by tree_set_bulk's walk; the pending request only catches the ones that
-    // appear later, as their parents open, which tree_open_state applies when it creates their state
+    // existing nodes were set by tree_set_bulk's walk; the pending request catches nodes created later
+    // (tree_open_state applies it)
     bool& open = tree_open_state(key, default_open);
     if (next != 0) {
         open = next == 1 || next == 3;
@@ -549,7 +545,7 @@ bool context::row_item(id key, std::string_view shown, bool selected, f32 text_i
     const font_id f = current_font();
     const f32 gutter = std::exchange(m_->next_gutter_, 0.0f); // room set_next_item_gutter() reserved for accessories
     const rect row = layout_place({m_->layout_.width, row_height});
-    // inside a table cell the highlight reaches over the cell padding so text lines up with its neighbours
+    // in a table cell the highlight covers the cell padding so text aligns with neighbours
     const rect hit = m_->table_.active ? rect{{row.min.x - m_->table_.pad_x + 2.0f, row.min.y - 2.0f}, {row.max.x + m_->table_.pad_x - 2.0f, row.max.y + 2.0f}}
                                    : row;
     // a row that is scrolled out of view costs nothing beyond the place it takes in the layout
@@ -583,7 +579,7 @@ bool context::row_item(id key, std::string_view shown, bool selected, f32 text_i
         bg.fill_top    = selected ? m_->style_.accent.scaled_alpha(0.28f + 0.1f * hover)
                                   : m_->style_.widget_hover.scaled_alpha(0.75f * hover);
         bg.fill_bottom = bg.fill_top;
-        if (focused) { // the keyboard cursor: an outline, so it reads on a selected or hovered row too
+        if (focused) { // keyboard cursor: an outline, visible on selected / hovered rows
             bg.border       = m_->style_.accent_hover;
             bg.border_width = std::max(m_->style_.border_width, 1.0f);
         }
@@ -593,8 +589,7 @@ bool context::row_item(id key, std::string_view shown, bool selected, f32 text_i
     const vec2  tsize  = label_size(f, shown);
     const vec2  at{row.min.x + indent, row.min.y + (row.height() - tsize.y) * 0.5f};
     const color col = selected ? m_->style_.accent_hover : m_->style_.text;
-    // the label stops at the end of the row, minus whatever the row reserved for its accessories, instead of running
-    // out from under it: item_truncated() then says whether it was cut
+    // the label stops before the row's accessory gutter; item_truncated() reports a cut
     label_clipped(at, std::max(row.max.x - gutter - at.x, 0.0f), col, shown, f);
     return activated;
 }
@@ -657,8 +652,7 @@ bool context::tree_node(std::string_view label, std::string_view id_extra, tree_
     bool& open      = tree_open_resolved(key, has_flag(flags, tree_flags::default_open), recursive);
 
     constexpr f32 indent = 18.0f;
-    // a node that is scrolled out of view still owns its open / closed state and its place in the layout; only the
-    // hit test, the animation slot, the measuring and the geometry go away
+    // a culled node keeps its open state and layout slot; only hit test, animation, measuring and geometry are skipped
     note_row_anchor(key, row);
     if (item_culled(row)) {
         note_culled_item(key, row);
@@ -815,8 +809,8 @@ context::table_state* context::table_for(id key) noexcept
 
 bool context::begin_table(std::string_view id_label, u32 columns, table_flags flags, f32 height)
 {
-    // a table inside a cell of another one is fine: the outer frame is parked on a stack until end_table().
-    // tables repeated in rows need distinct ids (push_id(row)) to keep separate column widths and scroll positions
+    // nested tables are fine (the outer frame is stacked until end_table()). tables repeated per row need distinct
+    // ids (push_id(row)) for separate widths and scroll
     if (m_->cur_ != nullptr && columns > max_table_columns) {
         report_limit("table columns (max_table_columns)", max_table_columns);
     }
@@ -871,7 +865,7 @@ void context::table_setup_column(std::string_view label, f32 fixed_width, f32 st
     m_->table_.cols[m_->table_.setup_count++] = {label, fixed_width, stretch_weight, flags};
 }
 
-// where every column is: hidden ones take no room, the visible ones share the width by their fractions
+// column rects: hidden ones take no room, visible ones share the width by fraction
 void context::table_recompute_x() noexcept
 {
     const table_state& st = *m_->table_.state;
@@ -903,7 +897,7 @@ void context::table_recompute_x() noexcept
 
 namespace {
 
-// "order=2,0,1;hidden=1;widths=0.3,0.3,0.4" (column indexes and the widths as fractions); false if it does not fit `ncols`
+// "order=2,0,1;hidden=1;widths=0.3,0.3,0.4" (indices and width fractions); false if it does not fit `ncols`
 [[nodiscard]] bool parse_table_layout(std::string_view text, u32 ncols, std::array<u8, 16>& order, u16& hidden, std::array<f32, 16>& frac)
 {
     std::array<u8, 16>  o{};
@@ -1301,7 +1295,7 @@ bool context::table_next_column()
     m_->layout_.origin = {m_->table_.x0[c] + m_->table_.pad_x, m_->table_.row_top + m_->table_.pad_y};
     m_->layout_.width  = std::max(m_->table_.x1[c] - m_->table_.x0[c] - 2.0f * m_->table_.pad_x, 1.0f);
 
-    // cell content never spills into the neighbouring column (a hidden column has no width: nothing shows)
+    // cell content never spills into the next column (hidden columns show nothing)
     const rect outer_clip = m_->dl_.clip();
     m_->dl_.push_clip({{m_->table_.x0[c], outer_clip.min.y}, {m_->table_.x1[c], outer_clip.max.y}});
     m_->table_.cell_clip = true;
@@ -1328,7 +1322,7 @@ void context::end_table()
         }
         total_h = m_->table_.body_top - m_->table_.origin.y + m_->table_.body_h;
 
-        // the wheel goes to the innermost scroller under the pointer: tables nested in this one finished before it
+        // the wheel goes to the innermost scroller under the pointer; nested tables already had their turn
         const rect region = {{m_->table_.origin.x, m_->table_.body_top}, {m_->table_.origin.x + m_->table_.width, m_->table_.body_top + m_->table_.body_h}};
         if (m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(region)) {
             st.scroll -= wheel_scroll(st.row_hint, m_->table_.body_h);

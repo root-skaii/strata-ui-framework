@@ -1,5 +1,5 @@
-// strata::app against a real window and device: frames, quitting, the device-reset path, a vetoed close, idling and the
-// state file.   strata_app_test.exe     exit code 0 = everything passed
+// strata::app with a real window and device: frames, quitting, device reset, vetoed close, idling, state file.
+//   strata_app_test.exe     exit code 0 = passed
 
 #include <strata/app.hpp>
 #include <strata/config.hpp>

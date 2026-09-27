@@ -137,7 +137,7 @@ void test_dock_spaces()
         // empty edge docks take no room
         CHECK(near_eq(main_rect.min.x, 0.0f) && near_eq(main_rect.max.x, 800.0f) && near_eq(main_rect.max.y, 600.0f));
 
-        // a window docked in the left dock: the dock appears and the main area shrinks by its width and the handle
+        // docking into the left edge dock shrinks the main area by its width plus the handle
         CHECK(h.ui.dock_window("A", dock_zone::center, {}, 0.5f, "left"));
         h.frames(build, 3);
         CHECK(near_eq(main_rect.min.x, 254.0f, 1.0f));
@@ -196,7 +196,7 @@ void test_dock_spaces()
         CHECK(near_eq(d2.min.x, d.min.x + 80.0f, 2.0f) && near_eq(d2.min.y, d.min.y + 40.0f, 2.0f));
         CHECK(h.ui.is_docked("D"));
 
-        // a window that stops being submitted leaves its space, and an emptied edge dock gives its room back
+        // a window no longer submitted leaves its space; an emptied edge dock gives its room back
         h.ui.undock_window("A");
         h.frames(build, 4);
         CHECK(!h.ui.is_docked("A"));
@@ -315,7 +315,7 @@ void test_dock_layout()
     h.frames(build, 3);
 }
 
-// docking comfort: tabs (drop on the bar, reorder, double click), drop guides, Shift / Esc, resetting a splitter ----------------
+// docking comfort: tabs (bar drop, reorder, double click), drop guides, Shift / Esc, splitter reset ----------------
 
 void test_dock_comfort()
 {
@@ -398,7 +398,7 @@ void test_dock_comfort()
     h.up();
     h.frames(build, 2);
 
-    // a window dropped on the tab bar of a pane joins its tabs (even at the very top of the area), at the place it was dropped
+    // a window dropped on a pane's tab bar joins its tabs at the drop position (even at the area's very top)
     rect alpha = h.ui.window_rect("Alpha");
     grab_title("Delta", {24.0f, tab_h * 0.5f}, false, false);
     release();
@@ -439,7 +439,7 @@ void test_dock_comfort()
     h.ui.undock_window("Delta");
     h.frames(build, 2);
 
-    // the guide left of the centre of a pane is a big target for splitting it, where the middle of the pane would only add a tab
+    // the guide left of a pane's centre is a large split target, where the middle would only add a tab
     alpha = h.ui.window_rect("Alpha");
     const vec2 c = alpha.center();
     const f32 step = 28.0f + 4.0f;
@@ -589,7 +589,7 @@ void test_dock_group_drag()
     };
 
     {
-        // A and B are tabs of the left pane, C is the right one: the pane A+B is dropped on the right one
+        // A and B are tabs of the left pane, C the right: pane A+B is dropped on the right one
         harness h;
         const auto build = make(h);
         h.frames(build, 3);
@@ -758,7 +758,7 @@ void test_dock_animation_and_combo_multi()
 }
 
 
-// the sliding highlight of tab bars and strips is part of the widget: moving the window moves it rigidly
+// tab bar / strip highlights move rigidly with the window
 void test_tab_highlight_follows_window()
 {
     std::fprintf(stderr, "[tab highlight follows a moved window]\n");
@@ -784,7 +784,7 @@ void test_tab_highlight_follows_window()
     h.down();
     h.frame(build);
     h.move({grab.x + 70.0f, grab.y + 40.0f});
-    h.frame(build); // one frame after the jump: an absolute animation would still be at the old place
+    h.frame(build); // a frame after the jump: an absolute animation would lag behind
     const rect r1 = h.ui.window_rect("w");
     const vec2 delta{r1.min.x - r0.min.x, r1.min.y - r0.min.y};
     CHECK(delta.x > 30.0f && delta.y > 20.0f);

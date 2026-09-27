@@ -16,12 +16,11 @@ inline constexpr std::size_t vmem_chunk = 64 * 1024;
 [[nodiscard]] void* vmem_reserve(std::size_t bytes) noexcept;
 [[nodiscard]] bool  vmem_commit(void* address, std::size_t bytes) noexcept;
 void                vmem_release(void* base) noexcept;
-// overwrites memory with zeros in a way the optimiser may not drop
+// zeroes memory in a way the optimiser cannot drop
 void                secure_wipe(void* p, std::size_t bytes) noexcept;
 } // namespace detail
 
-// allocator that zeroes memory before handing it back, so text that lived in a std::basic_string never
-// lingers in freed heap (including the copies left behind when a string grows).
+// allocator that zeroes on free, so string contents (and growth leftovers) never linger in the heap.
 template <class T>
 struct wiping_allocator {
     using value_type = T;
@@ -43,9 +42,8 @@ struct wiping_allocator {
 
 using secure_string = std::basic_string<char, std::char_traits<char>, wiping_allocator<char>>;
 
-// a contiguous array backed by reserved address space. memory is committed in
-// 64 KiB chunks as the array grows, so the base pointer never moves, growth
-// never copies and steady state (clear() + refill) never touches the heap.
+// contiguous array over reserved address space, committed in 64 KiB chunks: the base never moves, growth never
+// copies, and clear() + refill never touches the heap.
 template <class T>
     requires std::is_trivially_copyable_v<T>
 class vmem_array {
@@ -82,7 +80,7 @@ public:
         return *this;
     }
 
-    // appends n uninitialised elements; nullptr when the reservation is exhausted
+    // appends n uninitialised elements; nullptr when the reservation is full
     [[nodiscard]] T* grow(std::size_t n) noexcept
     {
         const std::size_t need = (size_ + n) * sizeof(T);
@@ -116,7 +114,7 @@ public:
     [[nodiscard]] std::span<const T> view() const noexcept { return {base_, size_}; }
 
 private:
-    // the committed pages are zeroed before they go back to the os
+    // committed pages are zeroed before release
     void release() noexcept
     {
         if (base_ != nullptr) {
