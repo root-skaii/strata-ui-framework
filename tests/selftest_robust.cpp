@@ -542,11 +542,12 @@ void test_smooth_scroll()
     h.wheel(-1.0f);
     h.frame(build);
     h.frame(build);
+    const f32 notch     = 3.0f * h.ui.font().line_height(0); // one wheel notch (see test_scroll_speed)
     const f32 after_one = top - first_y;
-    CHECK(after_one > 0.0f && after_one < 48.0f); // part of the way
-    CHECK(h.ui.next_wake_seconds() == 0.0);        // and asking for the next frame
+    CHECK(after_one > 0.0f && after_one < notch); // part of the way
+    CHECK(h.ui.next_wake_seconds() == 0.0);       // and asking for the next frame
     h.frames(build, 40);
-    CHECK(near_eq(top - first_y, 48.0f, 0.01f)); // the whole notch, as without smoothing
+    CHECK(near_eq(top - first_y, notch, 0.01f)); // the whole notch, as without smoothing
     CHECK(h.ui.can_idle());
 
     // a turn the other way drops what was left of the first
@@ -555,7 +556,7 @@ void test_smooth_scroll()
     h.wheel(1.0f);
     h.frames(build, 40);
     const f32 net = top - first_y;
-    CHECK(net < 48.0f + 2.0f * 48.0f); // not all of the 2 notches went out
+    CHECK(net < 3.0f * notch); // not all of the 2 notches went out
 }
 
 void test_fast_math_nan()
@@ -584,10 +585,77 @@ void test_fast_math_nan()
     CHECK(plot_r.height() > 0.0f);
 }
 
+void test_scroll_speed()
+{
+    std::fprintf(stderr, "[scrolling: style::scroll_speed and the system's lines-per-notch]\n");
+    harness h;
+    f32 first_y = 0.0f;
+    const auto build = [&] {
+        if (auto w = h.ui.window("s", {0, 0}, {300, 200}, window_flags::no_title_bar)) {
+            for (int i = 0; i < 200; ++i) {
+                h.ui.textf("row {}", i);
+                if (i == 0) { first_y = h.ui.item_rect().min.y; }
+            }
+        }
+    };
+    // how far one notch moves the content, with the settings as they are
+    const auto notch = [&]() {
+        h.ui.set_scroll_y(0.0f);
+        h.frames(build, 2);
+        const f32 before = first_y;
+        h.scroll({150, 100}, -1.0f, build);
+        return before - first_y;
+    };
+    h.move({150, 100});
+    h.frames(build, 2);
+
+    const f32 normal = notch();
+    CHECK(normal > 0.0f);
+    // three lines of text, which is what the mouse settings ask for by default
+    CHECK(near_eq(normal, 3.0f * h.ui.font().line_height(0), 0.5f));
+
+    h.ui.theme().scroll_speed = 2.0f;
+    CHECK(near_eq(notch(), normal * 2.0f, 0.5f));
+    h.ui.theme().scroll_speed = 0.5f;
+    CHECK(near_eq(notch(), normal * 0.5f, 0.5f));
+    h.ui.theme().scroll_speed = 0.0f; // the wheel scrolls nothing
+    CHECK(near_eq(notch(), 0.0f, 0.01f));
+    h.ui.theme().scroll_speed = 1.0f;
+
+    // the user set their mouse to scroll more lines per notch
+    h.in.wheel_lines = 6.0f;
+    CHECK(near_eq(notch(), normal * 2.0f, 0.5f));
+    // ... or a screenful (0), which is the window's body less a little
+    h.in.wheel_lines = 0.0f;
+    CHECK(notch() > normal * 3.0f);
+    h.in.wheel_lines = 3.0f;
+    CHECK(near_eq(notch(), normal, 0.5f));
+
+    // it reaches child regions too, not only windows
+    f32 child_scroll = 0.0f;
+    const auto nested = [&] {
+        if (auto w = h.ui.window("n", {0, 0}, {400, 300}, window_flags::no_title_bar)) {
+            if (auto c = h.ui.child("inner", {350.0f, 200.0f}, child_flags::frame)) {
+                for (int i = 0; i < 200; ++i) { h.ui.textf("row {}", i); }
+                child_scroll = h.ui.scroll_y();
+            }
+        }
+    };
+    h.frames(nested, 2);
+    h.scroll({150, 100}, -1.0f, nested);
+    const f32 one = child_scroll;
+    CHECK(near_eq(one, normal, 0.5f)); // the same distance as a window
+    h.ui.theme().scroll_speed = 3.0f;
+    h.scroll({150, 100}, -1.0f, nested);
+    h.ui.theme().scroll_speed = 1.0f;
+    CHECK(near_eq(child_scroll - one, normal * 3.0f, 0.5f));
+}
+
 } // namespace
 
 void run_robust_tests()
 {
+    test_scroll_speed();
     test_fast_math_nan();
     test_smooth_scroll();
     test_log_queue();

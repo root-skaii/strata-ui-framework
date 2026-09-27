@@ -244,10 +244,10 @@ void context::end_child()
         // the tilt wheel, and Shift + the ordinary wheel: the convention every list and table on Windows follows
         const bool over = pointer_over(f.bounds);
         if (m_->wheel_x_ != 0.0f && !m_->wheel_x_consumed_ && over) {
-            st.scroll_x = std::clamp(st.scroll_x + m_->wheel_x_ * 48.0f, 0.0f, max_x);
+            st.scroll_x = std::clamp(st.scroll_x + wheel_scroll_x(m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
             m_->wheel_x_consumed_ = true;
         } else if (m_->mod_shift_ && m_->wheel_ != 0.0f && !m_->wheel_consumed_ && over) {
-            st.scroll_x = std::clamp(st.scroll_x - m_->wheel_ * 48.0f, 0.0f, max_x);
+            st.scroll_x = std::clamp(st.scroll_x - wheel_scroll(m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
             m_->wheel_consumed_ = true;
         }
         if (bars) {
@@ -272,7 +272,7 @@ void context::end_child()
     if (st.overflow) {
         const f32 max_scroll = st.content_h - view_h;
         if (m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(f.bounds)) {
-            st.scroll = std::clamp(st.scroll - m_->wheel_ * 48.0f, 0.0f, max_scroll);
+            st.scroll = std::clamp(st.scroll - wheel_scroll(m_->font_.line_height(0), view_h), 0.0f, max_scroll);
             m_->wheel_consumed_ = true;
         }
         if (bars) {

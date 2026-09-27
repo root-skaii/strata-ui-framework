@@ -447,6 +447,10 @@ input_state win32_platform::new_frame() noexcept
     const UINT blink_ms = ::GetCaretBlinkTime();
     in.caret_blink_time  = blink_ms == INFINITE || blink_ms == 0 ? 0.0f : static_cast<f32>(blink_ms) / 1000.0f;
     in.double_click_time = static_cast<f32>(::GetDoubleClickTime()) / 1000.0f;
+    UINT lines = 3;
+    if (::SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0)) {
+        in.wheel_lines = lines == WHEEL_PAGESCROLL ? 0.0f : static_cast<f32>(lines); // (0: a screenful per notch)
+    }
 
     const std::int64_t now = query_ticks();
     in.delta_time = static_cast<f32>(now - last_ticks_) / static_cast<f32>(tick_frequency());

@@ -772,7 +772,8 @@ void test_window_height_cap()
     h.frames(build, 2);
     h.in.wheel = -1.0f;
     h.frames(build, 2); // the scroll offset is applied to the next frame's layout
-    CHECK(near_eq(first_row_y, y0 - 48.0f, 1.0f));
+    const f32 notch = 3.0f * h.ui.font().line_height(0); // (one wheel notch: the mouse settings' three lines)
+    CHECK(near_eq(first_row_y, y0 - notch, 1.0f));
     CHECK(near_eq(h.ui.window_rect("tall").max.y, r.max.y, 0.5f));
 
     // once the content fits it follows the content again, unscrolled

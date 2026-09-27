@@ -1210,7 +1210,12 @@ return app->run([&](strata::app&, strata::context& ui) { if (auto w = ui.window(
 - **Input:** `input_state::presses` queues every key press between two frames with the modifiers it had (they are handled
   one per frame, none is lost); typed text holds 1 KiB per frame (a whole IME sentence); key events carry `alt`; caret
   blink and double-click time come from the system settings (`win32_platform` fills them).
-- **Smooth scrolling** is on (`set_scroll_smoothing(false)` for the jump).
+- **Scrolling:** one wheel notch moves as far as the user's mouse settings ask for (Windows' "lines to scroll",
+  normally 3 lines; "one screen at a time" works too), and `style::scroll_speed` scales that -- `ui.theme().scroll_speed = 2.0f`
+  scrolls twice as far, `0` stops the wheel scrolling. It applies everywhere: windows, child regions, tables, text fields,
+  dropdown lists and tab bars. It is a style member, so a theme file can carry it (`scroll_speed = 2`) and `push_var`
+  can override it for one widget. The sandbox has `--scroll-speed F` to try values.
+  **Smooth scrolling** is on (`set_scroll_smoothing(false)` for the jump).
 - **Themes** have `success`, `warning`, `error` and a six-colour chart palette `series`, in theme files too;
   `win32_platform::appearance()` + `themes::for_appearance()` follow the system; `style::text_contrast` (0 = off, per
   theme) thickens light text on dark backgrounds.

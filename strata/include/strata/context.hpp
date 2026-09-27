@@ -73,6 +73,9 @@ struct input_state {
     // not blink, an accessibility setting), and the most time between the two clicks of a double click
     f32                 caret_blink_time  = 0.53f;
     f32                 double_click_time = 0.35f;
+    // ... and how many lines one wheel notch scrolls (the mouse settings; Windows' default is 3). 0 or less means a
+    // screenful per notch, which is the other thing that control offers
+    f32                 wheel_lines       = 3.0f;
 
     // this frame's key presses (auto-repeat included) and typed text (utf-8)
     std::array<key_event, max_key_events> keys{};
@@ -198,6 +201,9 @@ struct style {
     // light text on a dark background reads thinner than dark text on light at the same glyph coverage; this thickens
     // glyph edges in proportion to how light the text is (0 = coverage as rasterised, 1 = strong). the renderer applies it
     f32  text_contrast = 0.0f;
+    // how far one wheel notch scrolls, as a multiple of what the user's mouse settings ask for (input_state::wheel_lines,
+    // normally 3 lines). 2 scrolls twice as far, 0.5 half; 0 stops the wheel scrolling anything
+    f32  scroll_speed  = 1.0f;
     vec2 frame_padding{10.0f, 5.0f};
     f32  blur_radius   = 18.0f;   // acrylic panels: how far what is behind them is blurred (logical pixels)
     f32  acrylic_alpha = 0.62f;   // acrylic windows: the window_bg alpha is multiplied by this
@@ -239,7 +245,7 @@ enum class style_color : u8 {
 enum class style_var : u8 {
     padding, item_spacing, rounding, border_width, shadow_blur, gradient, anim_speed,
     frame_padding_x, frame_padding_y, blur_radius, acrylic_alpha, acrylic_noise,
-    acrylic_saturation, acrylic_brightness, popup_acrylic, tooltip_delay, text_contrast,
+    acrylic_saturation, acrylic_brightness, popup_acrylic, tooltip_delay, text_contrast, scroll_speed,
     count_
 };
 
@@ -2027,6 +2033,11 @@ private:
     void                   allow_item_overlap_at(id key, const rect& r) noexcept;
     // the scroll offset / view of the innermost scrolling region being built, or nullptr when nothing scrolls
     [[nodiscard]] f32*     scroll_slot(rect& view) noexcept;
+    // how far this frame's wheel scrolls a region: `unit` is one line / row of it, `page` its visible extent (for the
+    // "one screen per notch" mouse setting; 0 when the caller has no sensible one). style::scroll_speed scales it
+    [[nodiscard]] f32      scroll_step(f32 unit, f32 page) const noexcept;
+    [[nodiscard]] f32      wheel_scroll(f32 unit, f32 page = 0.0f) const noexcept;
+    [[nodiscard]] f32      wheel_scroll_x(f32 unit, f32 page = 0.0f) const noexcept;
     void                   scroll_reveal_rect(const rect& item, bool center) noexcept;
     // tree open state, with set_next_item_open / the bulk open-close applied
     [[nodiscard]] bool&    tree_open_resolved(id key, bool default_open, bool& recursive_out) noexcept;

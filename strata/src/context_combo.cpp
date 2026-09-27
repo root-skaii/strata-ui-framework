@@ -252,7 +252,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     const f32 view_h     = static_cast<f32>(visible) * item_h;
     const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
     if (list.contains(m_->mouse_) && m_->wheel_ != 0.0f) {
-        m_->popup_scroll_ -= m_->wheel_ * item_h * 1.5f;
+        m_->popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
         m_->wheel_consumed_ = true;
     }
     for (u32 i = 0; i < m_->key_count_; ++i) { // keyboard: Up / Down move, Enter toggles, Esc closes

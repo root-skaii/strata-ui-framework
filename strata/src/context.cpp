@@ -220,6 +220,7 @@ void context::begin_frame(const input_state& in)
     m_->wall_dt_ = std::clamp(in.delta_time, 1.0e-6f, 3600.0f);
     m_->time_   += m_->wall_dt_;
     m_->caret_blink_  = std::max(in.caret_blink_time, 0.0f);
+    m_->wheel_lines_  = std::min(in.wheel_lines, 100.0f); // (<= 0 is "a screenful", see scroll_step)
     m_->double_click_ = std::clamp(static_cast<f64>(in.double_click_time), 0.05, 5.0);
     const f32 inv_scale = 1.0f / m_->scale_;
     // a minimized (or briefly zero-sized) window reports a display size near 0; several window-layout
@@ -705,6 +706,16 @@ context::window_state* context::window_for(id key, vec2 pos, f32 width) noexcept
     return free_slot;
 }
 
+f32 context::scroll_step(f32 unit, f32 page) const noexcept
+{
+    const f32 lines = m_->wheel_lines_;
+    const f32 step  = lines > 0.0f ? lines * unit : (page > 0.0f ? page * 0.9f : unit * 10.0f);
+    return step * std::max(m_->style_.scroll_speed, 0.0f);
+}
+
+f32 context::wheel_scroll(f32 unit, f32 page) const noexcept { return m_->wheel_ * scroll_step(unit, page); }
+f32 context::wheel_scroll_x(f32 unit, f32 page) const noexcept { return m_->wheel_x_ * scroll_step(unit, page); }
+
 void context::report_limit(const char* what, u32 capacity) noexcept
 {
     ++m_->stats_cur_.limits_hit;
@@ -1022,6 +1033,7 @@ f32& context::var_ref(style_var which) noexcept
     case style_var::popup_acrylic:   return m_->style_.popup_acrylic;
     case style_var::tooltip_delay:   return m_->style_.tooltip_delay_s;
     case style_var::text_contrast:   return m_->style_.text_contrast;
+    case style_var::scroll_speed:    return m_->style_.scroll_speed;
     default:                         return m_->style_.rounding;
     }
 }
@@ -2064,7 +2076,7 @@ void context::end_window()
                 const rect body = {{w.pos.x, w.pos.y + title_h}, {w.pos.x + w.width, w.pos.y + shown_h}};
 
                 if (m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(body)) {
-                    w.scroll = std::clamp(w.scroll - m_->wheel_ * 48.0f, 0.0f, max_scroll);
+                    w.scroll = std::clamp(w.scroll - wheel_scroll(m_->font_.line_height(0), body_h), 0.0f, max_scroll);
                     m_->wheel_consumed_ = true;
                 }
 
@@ -2971,7 +2983,7 @@ void context::draw_combo_popup(id key, const rect& anchor, const std::string_vie
     const f32 view_h     = static_cast<f32>(visible) * item_h;
     const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
     if (list.contains(m_->mouse_) && m_->wheel_ != 0.0f) {
-        m_->popup_scroll_ -= m_->wheel_ * item_h * 1.5f;
+        m_->popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
         m_->wheel_consumed_ = true;
     }
 

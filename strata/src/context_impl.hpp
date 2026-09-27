@@ -406,6 +406,7 @@ struct context::impl {
     f32  dt_{1.0f / 60.0f};       // animation step: the frame delta, at most 0.1 s
     f32  wall_dt_{1.0f / 60.0f};  // timers: the whole frame delta (see input_state::delta_time)
     f32  caret_blink_{0.53f};     // input_state::caret_blink_time
+    f32  wheel_lines_{3.0f};      // input_state::wheel_lines
     f64  double_click_{0.35};     // input_state::double_click_time
     f64  next_wake_{};            // see next_wake_seconds()
     vec2 display_{};

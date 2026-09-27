@@ -781,7 +781,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         st->scroll = std::max(0.0f, static_cast<f32>(gl) * lh - view_h * 0.35f);
     }
     if (st->overflow && m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(box)) {
-        st->scroll -= m_->wheel_ * lh * 3.0f;
+        st->scroll -= wheel_scroll(lh, view_h);
         m_->wheel_consumed_ = true;
     }
     if (focused && caret_moved && !sb_active) { // keep the caret in view

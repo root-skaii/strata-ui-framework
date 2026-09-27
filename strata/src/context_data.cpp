@@ -1331,7 +1331,7 @@ void context::end_table()
         // the wheel goes to the innermost scroller under the pointer: tables nested in this one finished before it
         const rect region = {{m_->table_.origin.x, m_->table_.body_top}, {m_->table_.origin.x + m_->table_.width, m_->table_.body_top + m_->table_.body_h}};
         if (m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(region)) {
-            st.scroll -= m_->wheel_ * st.row_hint * 3.0f;
+            st.scroll -= wheel_scroll(st.row_hint, m_->table_.body_h);
             m_->wheel_consumed_ = true;
         }
 

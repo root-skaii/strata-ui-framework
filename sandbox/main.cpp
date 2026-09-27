@@ -35,6 +35,7 @@ struct options {
     std::string    theme_file;          // a theme file applied on top of the theme
     float          scale      = 0.0f;   // ui scale; 0 = the monitor's dpi scale
     float          rescale    = 0.0f;   // > 0: switch to this scale after a few frames (exercises the atlas re-upload)
+    float          scroll_speed = 1.0f; // how far a wheel notch scrolls, as a multiple of the mouse settings' lines
     std::string    scene;               // start with one scene: default, features, visuals, ...
     int            icon_page  = -1;     // --scene icons: show this 256-code-point page (hex) instead of the named set
     std::string    shot;                // write a screenshot (png) of the last frame and exit
@@ -82,6 +83,7 @@ constexpr const wchar_t* usage_text =
     L"  --theme N|NAME           a built-in theme by index or name (midnight, light, ocean, rose, dracula, nord, ...)\n"
     L"  --theme-file FILE        a theme file applied on top\n"
     L"  --scale F                ui scale (default: the monitor's dpi scale)\n"
+    L"  --scroll-speed F         how far one wheel notch scrolls: 1 = the mouse settings' lines, 2 = twice as far\n"
     L"  --scene NAME             start with one scene only: default, features, visuals, menus, config, tabs, dnd, lists,\n"
     L"                           editor, icons, bigtree, rows, app, ...\n"
     L"  --icon-page HEX          with --scene icons: show that page of 256 code points instead of the named set\n"
@@ -172,6 +174,7 @@ struct app {
         else if (a == L"--theme-file")     { opt.theme_file = to_utf8(value(i)); }
         else if (a == L"--scale")          { opt.scale = std::max(real(i), 0.0f); }
         else if (a == L"--rescale")        { opt.rescale = std::max(real(i), 0.0f); }
+        else if (a == L"--scroll-speed")   { opt.scroll_speed = std::max(real(i), 0.0f); }
         else if (a == L"--scene")          { opt.scene = to_utf8(value(i)); }
         else if (a == L"--icon-page")      { opt.icon_page = static_cast<int>(std::wcstol(value(i), nullptr, 16)); }
         else if (a == L"--shot")           { opt.shot = to_utf8(value(i)); }
@@ -325,6 +328,7 @@ struct demo_state {
     double      fps         = 0.0;
     double      ui_ms       = 0.0;
     int         pending_theme = -1; // applied between frames
+    float       scroll_speed  = 1.0f; // --scroll-speed
 
     int         tab         = 0;
     int         theme_combo = 0;
@@ -438,6 +442,7 @@ void apply_theme(strata::context& ui, demo_state& s, int which)
         break;
     }
     }
+    ui.theme().scroll_speed = s.scroll_speed; // (--scroll-speed: a theme carries it, so it is set again here)
 }
 
 // a widget the library does not have: animated level meter drawn with ui.draw()
@@ -1443,6 +1448,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     state.dock_pending  = opt.features;
     apply_scene(state, opt.scene);
     init_rows(state);
+    state.scroll_speed = opt.scroll_speed;
     apply_theme(ui, state, opt.theme);
     state.x.dock_anim = state.x.dock_anim && opt.shot.empty() && opt.golden.empty(); // (screenshots are taken of the settled layout)
     ui.set_dock_animation(state.x.dock_anim);

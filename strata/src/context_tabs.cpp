@@ -62,7 +62,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
         sc.custom      = -1.0f;
     }
     if (overflow && pointer_over(region) && m_->wheel_ != 0.0f && !m_->wheel_consumed_) {
-        sc.active -= m_->wheel_ * 48.0f;
+        sc.active -= wheel_scroll(m_->font_.line_height(0), view_w);
         m_->wheel_consumed_ = true;
     }
     if (static_cast<int>(sc.custom) != selected) { // a new selection scrolls into view
