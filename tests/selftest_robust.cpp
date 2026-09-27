@@ -651,10 +651,293 @@ void test_scroll_speed()
     CHECK(near_eq(child_scroll - one, normal * 3.0f, 0.5f));
 }
 
+// a "deeper" button that opens the next popup, inside which the same again
+void nest_popups(context& ui, int level, int& deepest, std::array<rect, 8>& buttons)
+{
+    deepest = std::max(deepest, level);
+    if (ui.button("deeper")) { ui.toggle_popup("next"); }
+    buttons[static_cast<std::size_t>(level)] = ui.last_item_rect();
+    if (auto p = ui.popup("next", 160.0f)) { nest_popups(ui, level + 1, deepest, buttons); }
+}
+
+void test_nested_popups()
+{
+    std::fprintf(stderr, "[popups stack: a combo, picker, menu or popup opened inside a popup keeps it open]\n");
+    diag_log log;
+    context_config cfg;
+    cfg.diagnostics = {&diag_collect, &log};
+    harness h{cfg};
+    h.in.display_size = {800.0f, 1000.0f}; // room for every popup below its opener (the picker would flip up)
+
+    bool  wrap = false, deep = false, modal_check = false, open_modal = false, modal_drawn = false;
+    int   mode = 0, pick = 0, level_pick = 0, mode_after = 0, resets = 0, modal_mode = 0;
+    color tint{200, 40, 40, 255};
+    bool  settings_open = false, mode_open = false, pick_open = false, tint_open = false, inner_open = false;
+    bool  other_open = false, want_other = false, modal_popup_open = false;
+    rect  settings_btn{}, wrap_r{}, mode_r{}, pick_r{}, tint_r{}, more_r{}, deep_r{}, all_r{}, level_r{}, reset_r{};
+    rect  modal_btn{}, modal_box{};
+    const std::array<std::string_view, 5> fruits{"apple", "banana", "cherry", "date", "elder"};
+    const auto build = [&] {
+        settings_open = mode_open = pick_open = tint_open = inner_open = other_open = false;
+        if (auto w = h.ui.window("host", {100, 100}, {300, 0}, plain_window)) {
+            if (h.ui.button("settings")) { h.ui.toggle_popup("settings"); }
+            settings_btn = h.ui.last_item_rect();
+            if (want_other) { h.ui.open_popup("other"); want_other = false; }
+            if (auto p = h.ui.popup("settings", 260.0f)) {
+                (void)h.ui.checkbox("wrap", wrap);
+                wrap_r = h.ui.item_rect();
+                if (auto m = h.ui.context_menu("wrap menu")) {
+                    if (h.ui.menu_item("reset")) { wrap = false; ++resets; }
+                    reset_r = h.ui.item_rect();
+                }
+                (void)h.ui.combo("mode", mode, {"a", "b", "c", "d"});
+                mode_open = h.ui.popup_is_open("mode");
+                if (!mode_open) { mode_r = h.ui.item_rect(); } // (open, the last item is the list's last row)
+                mode_after += h.ui.item_deactivated_after_edit() ? 1 : 0;
+                (void)h.ui.combo_filtered("pick", pick, fruits.data(), fruits.size());
+                pick_open = h.ui.popup_is_open("pick");
+                if (!pick_open) { pick_r = h.ui.item_rect(); }
+                (void)h.ui.color_edit("tint", tint);
+                tint_open = h.ui.popup_is_open("tint");
+                if (!tint_open) { tint_r = h.ui.item_rect(); }
+                if (h.ui.button("more")) { h.ui.toggle_popup("inner"); }
+                more_r = h.ui.last_item_rect();
+                if (auto q = h.ui.popup("inner", 200.0f)) {
+                    (void)h.ui.checkbox("deep", deep);
+                    deep_r = h.ui.item_rect();
+                    (void)h.ui.combo("level", level_pick, {"one", "two", "three"});
+                    if (!h.ui.popup_is_open("level")) { level_r = h.ui.item_rect(); }
+                    if (h.ui.button("close all")) { h.ui.close_all_popups(); }
+                    all_r = h.ui.item_rect();
+                }
+                inner_open = h.ui.popup_is_open("inner");
+            }
+            settings_open = h.ui.popup_is_open("settings");
+            if (auto p = h.ui.popup("other")) { h.ui.text("other"); }
+            other_open = h.ui.popup_is_open("other");
+        }
+        if (open_modal) { h.ui.open_modal("dialog"); open_modal = false; }
+        modal_drawn = false;
+        if (h.ui.begin_modal("dialog", {300.0f, 0.0f})) {
+            modal_drawn = true;
+            if (h.ui.button("modal options")) { h.ui.toggle_popup("in modal"); }
+            modal_btn = h.ui.last_item_rect();
+            if (auto p = h.ui.popup("in modal", 220.0f)) {
+                (void)h.ui.checkbox("x", modal_check);
+                modal_box = h.ui.item_rect();
+                (void)h.ui.combo("modal mode", modal_mode, {"p", "q"});
+            }
+            modal_popup_open = h.ui.popup_is_open("in modal");
+            h.ui.end_modal();
+        }
+    };
+    const auto open_settings = [&] {
+        if (!settings_open) { h.click(settings_btn.center(), build); }
+        h.frames(build, 2); // the first frame only measures it
+    };
+    const f32 item_h = h.ui.frame_height() - 4.0f; // a combo list row
+    h.frames(build, 2);
+
+    // a combo inside a popup: opening it keeps the popup, a row picks, and the list covers the parent's rows
+    open_settings();
+    CHECK(settings_open && h.ui.popup_open());
+    h.click(mode_r.center(), build);
+    CHECK(mode_open && settings_open);
+    const vec2 row_b{mode_r.center().x, mode_r.max.y + 4.0f + 4.0f + item_h * 1.5f};
+    CHECK(pick_r.contains(row_b)); // (the row lies over the parent's next combo)
+    h.click(row_b, build);
+    h.frames(build, 2);
+    CHECK(mode == 1 && !mode_open && settings_open);
+    CHECK(!pick_open);              // the press was the list's, not the combo under it
+    CHECK(mode_after == 1);         // the edit is reported for the nested combo too
+
+    // a press in the parent outside the list closes the list only, and does nothing else
+    h.click(mode_r.center(), build);
+    CHECK(mode_open);
+    h.click(wrap_r.center(), build);
+    CHECK(!mode_open && settings_open && !wrap);
+    h.click(wrap_r.center(), build);
+    CHECK(wrap && settings_open);
+
+    // Esc: the list, then the popup
+    h.click(mode_r.center(), build);
+    CHECK(mode_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!mode_open && settings_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!settings_open && !h.ui.popup_open());
+
+    // a press outside everything closes the whole stack
+    open_settings();
+    h.click(mode_r.center(), build);
+    CHECK(mode_open && settings_open);
+    h.move(row_b);
+    h.frames(build, 2);
+    CHECK(h.ui.want_capture_mouse());
+    h.click({700.0f, 550.0f}, build);
+    CHECK(!mode_open && !settings_open && !h.ui.popup_open());
+
+    // keys reach the nested list
+    open_settings();
+    h.click(mode_r.center(), build);
+    h.key(key::down);
+    h.frame(build);
+    h.key(key::enter);
+    h.frames(build, 2);
+    CHECK(mode == 2 && !mode_open && settings_open);
+
+    // the filtered combo: typing filters, Enter picks; Esc leaves the search field, then closes the list, then the popup
+    h.click(pick_r.center(), build);
+    CHECK(pick_open && settings_open);
+    h.type("ch");
+    h.frame(build);
+    h.key(key::enter);
+    h.frames(build, 2);
+    CHECK(pick == 2 && !pick_open && settings_open);
+    h.click(pick_r.center(), build);
+    CHECK(pick_open);
+    for (int i = 0; i < 3 && pick_open; ++i) {
+        h.key(key::escape);
+        h.frames(build, 2);
+        CHECK(settings_open);
+    }
+    CHECK(!pick_open && settings_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!settings_open);
+
+    // the color picker: a click in its square edits, the parent stays; Esc closes the picker only
+    open_settings();
+    h.click(tint_r.center(), build);
+    CHECK(tint_open && settings_open);
+    h.frames(build, 2);
+    const color before = tint;
+    const f32   pad    = h.ui.theme().padding;
+    h.click({tint_r.min.x + pad + 90.0f, tint_r.max.y + 4.0f + pad + 30.0f}, build);
+    CHECK(!(tint == before));
+    CHECK(tint_open && settings_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!tint_open && settings_open);
+
+    // a popup opened from a button in a popup
+    h.click(more_r.center(), build);
+    h.frames(build, 2);
+    CHECK(inner_open && settings_open);
+    h.click(deep_r.center(), build);
+    CHECK(deep && inner_open && settings_open);
+    h.move(deep_r.center()); // (below the parent, outside every window)
+    h.frames(build, 2);
+    CHECK(h.ui.want_capture_mouse());
+    // ... with a combo in it: three levels
+    h.click(level_r.center(), build);
+    h.click({level_r.center().x, level_r.max.y + 4.0f + 4.0f + item_h * 2.5f}, build);
+    h.frames(build, 2);
+    CHECK(level_pick == 2 && inner_open && settings_open);
+    // a press in the parent closes the child only
+    const bool wrap_before = wrap;
+    h.click(wrap_r.center(), build);
+    CHECK(!inner_open && settings_open && wrap == wrap_before);
+    // Esc: the child, then the parent
+    h.click(more_r.center(), build);
+    h.frames(build, 2);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!inner_open && settings_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!settings_open);
+    // close_all_popups() from the child
+    open_settings();
+    h.click(more_r.center(), build);
+    h.frames(build, 2);
+    h.click(all_r.center(), build);
+    CHECK(!inner_open && !settings_open && !h.ui.popup_open());
+
+    // a context menu inside a popup: its item works and the popup stays; Esc closes the menu first
+    open_settings();
+    h.right_click(wrap_r.center(), build);
+    h.frames(build, 2);
+    const int resets_before = resets;
+    h.click(reset_r.center(), build);
+    CHECK(resets == resets_before + 1 && !wrap && settings_open);
+    h.right_click(wrap_r.center(), build);
+    h.frames(build, 2);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(settings_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!settings_open);
+
+    // opened from outside every popup, a popup replaces the stack
+    open_settings();
+    h.click(more_r.center(), build);
+    h.frames(build, 2);
+    CHECK(inner_open && settings_open);
+    want_other = true;
+    h.frames(build, 2);
+    CHECK(other_open && !settings_open && !inner_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!other_open);
+
+    // a modal closes every popup; a popup (and a combo in it) inside the modal works, and Esc closes it before the modal
+    open_settings();
+    h.click(more_r.center(), build);
+    h.frames(build, 2);
+    open_modal = true;
+    h.frames(build, 3);
+    CHECK(modal_drawn && !settings_open && !inner_open);
+    h.frames(build, 30); // (fades in)
+    h.click(modal_btn.center(), build);
+    h.frames(build, 2);
+    CHECK(modal_popup_open);
+    h.click(modal_box.center(), build);
+    CHECK(modal_check && modal_popup_open);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!modal_popup_open && modal_drawn);
+    h.key(key::escape);
+    h.frames(build, 2);
+    CHECK(!modal_drawn);
+
+    // nothing above ran out of room
+    CHECK(log.lines.empty());
+
+    // four levels nest; a fifth is refused (reported once) and leaves the four open
+    {
+        diag_log log2;
+        context_config cfg2;
+        cfg2.diagnostics = {&diag_collect, &log2};
+        harness n{cfg2};
+        int deepest = 0;
+        std::array<rect, 8> buttons{};
+        const auto nested = [&] {
+            deepest = 0;
+            if (auto w = n.ui.window("nest", {20, 20}, {200, 0}, plain_window)) { nest_popups(n.ui, 0, deepest, buttons); }
+        };
+        n.frames(nested, 2);
+        for (int level = 0; level < 4; ++level) {
+            n.click(buttons[static_cast<std::size_t>(level)].center(), nested);
+            n.frames(nested, 2);
+            CHECK(deepest == level + 1);
+        }
+        CHECK(log2.lines.empty());
+        n.click(buttons[4].center(), nested);
+        n.frames(nested, 2);
+        CHECK(deepest == 4);
+        CHECK(log2.lines.size() == 1 && log2.lines[0].second.find("max_popup_levels") != std::string::npos);
+    }
+}
+
 } // namespace
 
 void run_robust_tests()
 {
+    test_nested_popups();
     test_scroll_speed();
     test_fast_math_nan();
     test_smooth_scroll();

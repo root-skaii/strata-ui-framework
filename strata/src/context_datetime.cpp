@@ -82,8 +82,8 @@ bool context::pick_cell(id key, const rect& r, std::string_view text, bool selec
 bool context::calendar_body(date& value, bool close_on_pick)
 {
     bool changed = false;
-    if (m_->cal_key_ != m_->popup_id_) { // just opened: show the month of the value
-        m_->cal_key_   = m_->popup_id_;
+    if (m_->cal_key_ != m_->popup_drawing_key()) { // just opened: show the month of the value
+        m_->cal_key_   = m_->popup_drawing_key();
         m_->cal_year_  = value.year;
         m_->cal_month_ = value.month;
     }

@@ -45,14 +45,13 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool open = m_->popup_id_ == key;
+    bool open = m_->popup_has(key);
     if (in.pressed) {
         if (open) {
-            m_->popup_id_ = 0;
-            open      = false;
-        } else {
-            m_->popup_id_          = key;
-            open               = true;
+            m_->popup_close(key);
+            open = false;
+        } else if (popup_push(key)) {
+            open = true;
             m_->combo_filter_.clear();
             m_->combo_filter_hover_ = 0;
             m_->combo_filter_focus_ = true; // the search field takes the keyboard on the frame it appears
@@ -154,12 +153,12 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
     if (want_pick >= 0) {
         changed   = current != want_pick;
         current   = want_pick;
-        m_->popup_id_ = 0;
+        m_->popup_close(key);
         m_->focus_id_ = 0;
     } else if (close_now) {
         m_->focus_id_ = 0;
     }
-    track_edit(key, changed, m_->popup_id_ == key);
+    track_edit(key, changed, m_->popup_has(key));
     return changed;
 }
 
@@ -176,16 +175,15 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool open = m_->popup_id_ == key;
+    bool open = m_->popup_has(key);
     if (in.pressed) {
         if (open) {
-            m_->popup_id_ = 0;
-            open      = false;
-        } else {
-            m_->popup_id_     = key;
+            m_->popup_close(key);
+            open = false;
+        } else if (popup_push(key)) {
             m_->popup_scroll_ = 0.0f;
             m_->popup_hover_  = 0;
-            open          = true;
+            open = true;
         }
     }
 
@@ -245,9 +243,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     if (list.max.y > m_->display_.y - 4.0f && box.min.y - 4.0f - list_h >= 4.0f) {
         list = {{box.min.x, box.min.y - 4.0f - list_h}, {box.max.x, box.min.y - 4.0f}};
     }
-    m_->popup_open_cur_   = true;
-    m_->popup_rect_cur_   = list;
-    m_->popup_anchor_cur_ = box;
+    const u32 level = m_->popup_level_of(key); // (before Esc below can close it: this frame still draws it)
 
     const f32 view_h     = static_cast<f32>(visible) * item_h;
     const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
@@ -265,7 +261,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
                 changed = true;
             }
             break;
-        case key::escape: m_->popup_id_ = 0; break;
+        case key::escape: m_->popup_close(key); break;
         default: break;
         }
     }
@@ -277,9 +273,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     }
     m_->popup_scroll_ = std::clamp(m_->popup_scroll_, 0.0f, max_scroll);
 
-    const u32 previous_owner = m_->run_owner_;
-    switch_run(run_overlay);
-    m_->in_overlay_ = true;
+    popup_enter(level, list, box);
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
     shape_style body;
@@ -372,9 +366,8 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     }
 
     m_->dl_.pop_clip();
-    m_->in_overlay_ = false;
-    switch_run(previous_owner);
-    track_edit(key, changed, m_->popup_id_ == key);
+    popup_leave();
+    track_edit(key, changed, m_->popup_has(key));
     return changed;
 }
 

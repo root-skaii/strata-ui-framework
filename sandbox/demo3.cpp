@@ -78,6 +78,19 @@ void tabs_window(context& ui, demo3_state& s)
             if (auto p = ui.popup("options", 260.0f)) {
                 ui.checkbox("wrap lines", s.wrap);
                 ui.slider("zoom", s.zoom, 0.5f, 2.0f);
+                // dropdowns, pickers and popups opened in here stack on top of it
+                ui.combo("layout", s.layout_mode, {"single page", "two pages", "continuous", "outline"});
+                static constexpr std::array<std::string_view, 8> fonts{"Segoe UI", "Consolas", "Cascadia Code", "Georgia",
+                                                                       "Verdana", "Tahoma", "Calibri", "Arial"};
+                ui.combo_filtered("font", s.font_pick, fonts.data(), fonts.size(), "search fonts");
+                ui.color_edit("highlight", s.highlight);
+                if (ui.button("more...")) { ui.toggle_popup("more"); }
+                if (auto q = ui.popup("more", 220.0f)) {
+                    ui.checkbox("spell check", s.spell_check);
+                    ui.combo("language", s.language, {"English", "Deutsch", "Español", "Italiano"});
+                    if (ui.button("close all")) { ui.close_all_popups(); }
+                }
+                ui.same_line();
                 if (ui.button("done")) { ui.close_popup(); }
             }
             ui.same_line();
@@ -442,8 +455,9 @@ void demo3_script(const demo3_state& s, int frame, vec2& pos, bool* down)
         if (frame == first_frame)     { down[button] = true; }
         if (frame == first_frame + 1) { down[button] = false; }
     };
-    if (s.scene == "tabs") {        // the options popup
+    if (s.scene == "tabs") {        // the options popup, and the dropdown in it (a popup on top of a popup)
         click({100.0f, 389.0f}, 8, 0);
+        click({190.0f, 543.0f}, 16, 0); // (at the golden's height of 900 the popup opens below its button)
     } else if (s.scene == "dnd") {  // the calendar of the date field
         click({360.0f, 558.0f}, 8, 0);
     } else if (s.scene == "lists") { // the menu that hides columns

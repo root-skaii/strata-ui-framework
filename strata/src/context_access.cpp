@@ -17,14 +17,14 @@ draw_data context::render_data() const noexcept
 bool context::want_capture_mouse() const noexcept
 {
     return m_->hovered_window_prev_ != 0 || m_->active_ != 0 || m_->dock_chrome_prev_ || m_->toast_hover_prev_ || m_->modal_count_ != 0 ||
-           m_->menu_hit_prev_ || (m_->popup_open_prev_ && m_->popup_rect_prev_.contains(m_->mouse_));
+           m_->menu_hit_prev_ || m_->popup_covers(m_->mouse_);
 }
 
 bool context::want_text_input() const noexcept
 { return m_->focus_id_ != 0 || m_->hotkey_capture_ != 0; }
 
 bool context::popup_open() const noexcept
-{ return m_->popup_open_prev_; }
+{ return m_->popup_any_prev(); }
 
 cursor_kind context::cursor() const noexcept
 { return m_->cursor_; }
@@ -156,7 +156,17 @@ bool context::item_claimed() const noexcept
 { return m_->overlap_stolen_; }
 
 void context::close_popup() noexcept
-{ m_->popup_id_ = 0; }
+{
+    const u32 drawing = m_->popup_drawing();
+    if (drawing != impl::no_popup) {
+        m_->popup_close_from(drawing);
+    } else if (m_->popup_count_ > 0) {
+        m_->popup_close_from(m_->popup_count_ - 1);
+    }
+}
+
+void context::close_all_popups() noexcept
+{ m_->popup_close_from(0); }
 
 rect context::last_item_rect() const noexcept
 { return m_->last_item_rect_; }

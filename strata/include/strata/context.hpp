@@ -1281,6 +1281,11 @@ public:
     void end_table();
     // skips `count` rows (row height each, keeps the scrollbar right); for big tables with list_clipper
     void table_skip_rows(int count);
+    // the body of a table with a height scrolls on its own, apart from scroll_y(). call between the rows and
+    // end_table(): the offset, last frame's maximum, and a new offset (applied from the next frame, clamped)
+    [[nodiscard]] f32 table_scroll_y() const noexcept;
+    [[nodiscard]] f32 table_scroll_max_y() const noexcept;
+    void table_set_scroll_y(f32 y) noexcept;
     // column order / widths / hidden state as text; call in begin_table's id scope, load may precede first show
     [[nodiscard]] std::string table_save_layout(std::string_view id) const;
     void table_load_layout(std::string_view id, std::string_view text);
@@ -1424,16 +1429,22 @@ public:
     void pop_id() noexcept;
 
     // popups ---------------------------------------------------------------
-    // a widget panel under the last widget (or at `pos`), closed by Esc or an outside click. one popup at a time
-    // (shared with menus / dropdowns). open and draw in the same id scope. `width` 0 = opener's width (min 180).
+    // a widget panel under the last widget (or at `pos`), closed by Esc or an outside click. open and draw in the same
+    // id scope. `width` 0 = opener's width (min 180).
     //   if (ui.button("options")) { ui.toggle_popup("opts"); }
     //   if (auto p = ui.popup("opts")) { ui.checkbox("wrap", wrap); if (ui.button("done")) { ui.close_popup(); } }
+    // popups (and dropdowns / pickers, which are popups too) stack: one opened while a popup is being drawn goes on top
+    // of it and the parent stays open, up to 4 levels. a click inside one closes the ones above it, a click outside
+    // all of them closes them all, Esc closes the top one. opened from outside every popup, it replaces what was open.
     void open_popup(std::string_view id);
     void open_popup(std::string_view id, vec2 pos);
     void toggle_popup(std::string_view id);
     bool begin_popup(std::string_view id, f32 width = 0.0f);
     void end_popup();
+    // closes the popup being drawn and those above it; outside every popup, the top one
     void close_popup() noexcept;
+    void close_all_popups() noexcept;
+    // open at any level (a parent stays open while its child is)
     [[nodiscard]] bool popup_is_open(std::string_view id) const noexcept;
     [[nodiscard]] popup_scope popup(std::string_view id, f32 width = 0.0f) { return {*this, begin_popup(id, width)}; }
     // screen rect of the last hit-tested widget
@@ -1924,6 +1935,12 @@ private:
     [[nodiscard]] bool     pointer_over(const rect& r) const noexcept;
     bool begin_popup_at(id key, const rect& anchor, vec2 size);
     void end_popup_at();
+    // popup stack: opens `key` above the popup being drawn (from outside every popup: replaces the stack). false when
+    // the stack is full
+    bool popup_push(id key) noexcept;
+    // enters the draw layer of `level` (records its rect as drawn this frame); popup_leave() restores what was before
+    void popup_enter(u32 level, const rect& r, const rect& anchor) noexcept;
+    void popup_leave() noexcept;
     bool picker_body(id key, color& c, color_flags flags);
     bool hotkey_field(std::string_view label, u32& key_code, key_chord* chord);
     // scrollbar thumb drag: the new offset while pressed. `grab` = press point in the thumb (off-thumb presses centre

@@ -388,18 +388,16 @@ void context::begin_frame(const input_state& in)
         m_->tree_bulk_seed_ = 0;
     }
 
-    m_->popup_open_prev_   = m_->popup_open_cur_;
-    m_->popup_rect_prev_   = m_->popup_rect_cur_;
-    m_->popup_anchor_prev_ = m_->popup_anchor_cur_;
-    m_->popup_open_cur_    = false;
-    m_->in_overlay_        = false;
-
-    // a press outside an open popup closes it and is consumed by that
-    m_->swallow_press_ = false;
-    if (m_->popup_open_prev_ && m_->mouse_pressed_ && !m_->popup_rect_prev_.contains(m_->mouse_) && !m_->popup_anchor_prev_.contains(m_->mouse_)) {
-        m_->popup_id_      = 0;
-        m_->swallow_press_ = true;
+    for (impl::popup_level& p : m_->popups_) {
+        p.open_prev   = p.open_cur;
+        p.rect_prev   = p.rect_cur;
+        p.anchor_prev = p.anchor_cur;
+        p.open_cur    = false;
     }
+    m_->popup_depth_    = 0;
+    m_->popup_esc_used_ = false;
+    m_->in_overlay_     = false;
+    m_->swallow_press_  = false;
 
     // menus: a press outside every open menu closes them all (and only does that)
     m_->menu_hit_prev_ = false;
@@ -418,6 +416,21 @@ void context::begin_frame(const input_state& in)
         menu_close_all();
         m_->menu_hit_prev_ = false;
         m_->swallow_press_ = true;
+    }
+
+    // popups: a press closes the levels above the highest one it lands in (a level's own opener counts as in it:
+    // that widget toggles it itself). outside all of them it closes every one. either way the press only does that.
+    // a press on an open menu (e.g. one opened from a popup) is the menu's.
+    if (m_->mouse_pressed_ && !m_->menu_hit_prev_ && m_->popup_any_prev()) {
+        u32 keep = 0; // levels that stay open
+        for (u32 i = 0; i < m_->popup_count_; ++i) {
+            const impl::popup_level& p = m_->popups_[i];
+            if (p.open_prev && (p.rect_prev.contains(m_->mouse_) || p.anchor_prev.contains(m_->mouse_))) { keep = i + 1; }
+        }
+        if (keep < m_->popup_count_) {
+            m_->popup_close_from(keep);
+            m_->swallow_press_ = true;
+        }
     }
     m_->toast_hover_prev_ = m_->toast_hover_cur_;
     m_->toast_hover_cur_  = false;
@@ -471,9 +484,14 @@ void context::end_frame()
     }
     detail::secure_wipe(m_->typed_.data(), m_->typed_.size());
     m_->typed_len_ = 0;
-    if (m_->popup_id_ != 0 && !m_->popup_open_cur_) {
-        m_->popup_id_ = 0;
+    // a popup level not drawn this frame closes along with everything above it
+    for (u32 i = 0; i < m_->popup_count_; ++i) {
+        if (!m_->popups_[i].open_cur) {
+            m_->popup_close_from(i);
+            break;
+        }
     }
+    assert(m_->popup_depth_ == 0 && "missing end_popup");
     if (m_->hotkey_capture_ != 0 && !m_->hotkey_seen_) {
         m_->hotkey_capture_ = 0;
     }
@@ -967,6 +985,9 @@ void context::apply_layer_order()
         add_owner(order[i]);
     }
     add_owner(run_overlay);
+    for (u32 level = 1; level < impl::max_popup_levels; ++level) { // nested popups, each above its parent
+        add_owner(impl::popup_run(level));
+    }
 
     // nothing to do when the emission order already is the draw order
     u32  cursor   = 0;
@@ -1272,9 +1293,8 @@ context::interaction context::interact_impl(id key, const rect& r, bool in_windo
         return out; // (nearly) invisible content, e.g. mid page transition
     }
 
-    // everything but popup content is blocked while the pointer is over an open popup
-    const bool blocked   = !m_->in_overlay_ && ((m_->popup_open_prev_ && m_->popup_rect_prev_.contains(m_->mouse_)) || m_->menu_hit_prev_);
-    const bool over      = in_window && !blocked && m_->dl_.clip().contains(m_->mouse_) && r.contains(m_->mouse_);
+    // what lies under an open popup (or a popup level above this one, or a menu) gets no pointer
+    const bool over      = in_window && !m_->pointer_blocked() && m_->dl_.clip().contains(m_->mouse_) && r.contains(m_->mouse_);
 
     // an allow_item_overlap() item loses the press to anything submitted over it. the press is resolved this frame;
     // the hover can only be removed a frame late (the covering item is submitted after), so it uses last frame's cover.
@@ -2084,7 +2104,7 @@ void context::end_window()
     // an empty spot of a drag_by_body window starts moving the window
     if (has_flag(m_->cur_flags_, window_flags::drag_by_body) && !has_flag(m_->cur_flags_, window_flags::no_move) &&
         m_->mouse_pressed_ && m_->active_ == 0 && !m_->swallow_press_ && m_->hovered_window_prev_ == m_->cur_window_ &&
-        m_->cur_frame_.contains(m_->mouse_) && !m_->menu_hit_prev_ && !(m_->popup_open_prev_ && m_->popup_rect_prev_.contains(m_->mouse_))) {
+        m_->cur_frame_.contains(m_->mouse_) && !m_->menu_hit_prev_ && !m_->popup_covers(m_->mouse_)) {
         m_->active_ = hash_id("##bodydrag", m_->cur_window_);
     }
 
@@ -2126,7 +2146,7 @@ void context::text_colored(color c, std::string_view s)
 void context::note_passive_item(id key, const rect& r) noexcept
 {
     const bool over = m_->cur_window_ != 0 && m_->hovered_window_prev_ == m_->cur_window_ && m_->active_ == 0 &&
-                      !(m_->popup_open_prev_ && m_->popup_rect_prev_.contains(m_->mouse_)) && !m_->menu_hit_prev_ &&
+                      !m_->popup_covers(m_->mouse_) && !m_->menu_hit_prev_ &&
                       m_->dl_.clip().contains(m_->mouse_) && r.contains(m_->mouse_);
     m_->last_item_key_       = key;
     m_->last_item_rect_      = r;
@@ -2901,16 +2921,15 @@ bool context::combo(std::string_view label, int& current, const std::string_view
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool open = m_->popup_id_ == key;
+    bool open = m_->popup_has(key);
     if (in.pressed) {
         if (open) {
-            m_->popup_id_ = 0;
-            open      = false;
-        } else {
-            m_->popup_id_     = key;
+            m_->popup_close(key);
+            open = false;
+        } else if (popup_push(key)) {
             m_->popup_scroll_ = 0.0f;
             m_->popup_hover_  = current;
-            open          = true;
+            open = true;
         }
     }
 
@@ -2942,7 +2961,7 @@ bool context::combo(std::string_view label, int& current, const std::string_view
     if (open) {
         draw_combo_popup(key, box, items, count, current, changed);
     }
-    track_edit(key, changed, m_->popup_id_ == key);
+    track_edit(key, changed, m_->popup_has(key));
     return changed;
 }
 
@@ -2959,9 +2978,7 @@ void context::draw_combo_popup(id key, const rect& anchor, const std::string_vie
     if (list.max.y > m_->display_.y - 4.0f && anchor.min.y - 4.0f - list_h >= 4.0f) {
         list = {{anchor.min.x, anchor.min.y - 4.0f - list_h}, {anchor.max.x, anchor.min.y - 4.0f}};
     }
-    m_->popup_open_cur_    = true;
-    m_->popup_rect_cur_    = list;
-    m_->popup_anchor_cur_  = anchor;
+    const u32 level = m_->popup_level_of(key); // (before Enter / Esc below can close it: this frame still draws it)
 
     const f32 view_h     = static_cast<f32>(visible) * item_h;
     const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
@@ -2982,11 +2999,11 @@ void context::draw_combo_popup(id key, const rect& anchor, const std::string_vie
             if (m_->popup_hover_ >= 0 && m_->popup_hover_ < static_cast<int>(count)) {
                 changed   = changed || current != m_->popup_hover_;
                 current   = m_->popup_hover_;
-                m_->popup_id_ = 0;
+                m_->popup_close(key);
             }
             break;
         case key::escape:
-            m_->popup_id_ = 0;
+            m_->popup_close(key);
             break;
         default:
             break;
@@ -3000,10 +3017,8 @@ void context::draw_combo_popup(id key, const rect& anchor, const std::string_vie
     }
     m_->popup_scroll_ = std::clamp(m_->popup_scroll_, 0.0f, max_scroll);
 
-    // everything below is emitted into the overlay layer, above all windows
-    const u32 previous_owner = m_->run_owner_;
-    switch_run(run_overlay);
-    m_->in_overlay_ = true;
+    // everything below is emitted into the popup's overlay layer, above all windows (and above a parent popup)
+    popup_enter(level, list, anchor);
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
     shape_style body;
@@ -3033,7 +3048,7 @@ void context::draw_combo_popup(id key, const rect& anchor, const std::string_vie
         if (it.pressed) {
             changed   = changed || current != static_cast<int>(i);
             current   = static_cast<int>(i);
-            m_->popup_id_ = 0;
+            m_->popup_close(key);
         }
 
         const bool selected = static_cast<int>(i) == current;
@@ -3063,8 +3078,7 @@ void context::draw_combo_popup(id key, const rect& anchor, const std::string_vie
     }
 
     m_->dl_.pop_clip();
-    m_->in_overlay_ = false;
-    switch_run(previous_owner);
+    popup_leave();
 }
 
 } // namespace strata

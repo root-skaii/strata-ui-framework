@@ -313,7 +313,7 @@ bool context::menu_begin_level(u32 level, id menu_key)
     frame.keys_ok = measured && m_->focus_id_ == 0 && !m_->mod_ctrl_ && !m_->mod_alt_ &&
                     (level + 1 >= max_menu_levels || m_->menu_open_[level + 1].key == 0);
 
-    switch_run(run_overlay);
+    switch_run(m_->overlay_run());
     m_->in_overlay_ = true;
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
     m_->dl_.push_alpha(fade);

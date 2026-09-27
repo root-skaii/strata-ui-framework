@@ -24,6 +24,11 @@ struct demo3_state {
     int                      many_selected = 0;
     bool                     wrap = true;
     float                    zoom = 1.0f;
+    int                      layout_mode = 0;   // the options popup: a combo, a filtered combo, a picker and a popup in it
+    int                      font_pick   = 0;
+    strata::color            highlight{255, 196, 64, 255};
+    bool                     spell_check = true;
+    int                      language    = 0;
     std::vector<std::string> tags{"ui", "d3d12", "tools", "beta"};
     std::array<bool, 16>     tag_on{true, false, true};
     int                      tag_counter = 1;

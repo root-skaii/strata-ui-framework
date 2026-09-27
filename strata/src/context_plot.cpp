@@ -73,7 +73,7 @@ void context::draw_tooltip_at(vec2 anchor, std::string_view text)
     pos.y = std::max(pos.y, 4.0f);
 
     const u32 previous_owner = m_->run_owner_;
-    switch_run(run_overlay);
+    switch_run(m_->overlay_run());
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
     shape_style body;
     body.radius        = radii(m_->style_.rounding * 0.6f);

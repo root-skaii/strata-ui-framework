@@ -508,7 +508,7 @@ void context::draw_tooltip(std::string_view text)
 
     const f32 fade = std::clamp((m_->hover_time_ - 0.35f) / 0.12f, 0.0f, 1.0f);
     const u32 previous_owner = m_->run_owner_;
-    switch_run(run_overlay);
+    switch_run(m_->overlay_run());
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
     m_->dl_.push_alpha(fade);
 

@@ -6,6 +6,7 @@
 
 #include "dock_state.hpp"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <string>
@@ -120,6 +121,7 @@ struct context::table_state { // persists across frames
     f32                                press_x{};
     f32                                row_hint{};
     f32                                scroll{};
+    f32                                scroll_wanted{-1.0f}; // table_set_scroll_y(), for the next body; < 0 none
     f32                                grab{};
     f32                                content_h{};
     bool                               inited{};
@@ -580,11 +582,8 @@ struct context::impl {
     i32 cal_year_{};
     i32 cal_month_{};
 
-    // generic popups (open_popup): opener and last frame's content size
-    rect gpopup_anchor_{};
-    vec2 gpopup_size_{};
-    id   gpopup_key_{};       // the popup gpopup_size_ was measured for
-    bool gpopup_hidden_{};    // this frame's popup is only being measured
+    // generic popups (open_popup): this frame's popup is only being measured (its size is kept per popup_level)
+    bool gpopup_hidden_{};
 
     // drag and drop
     bool            dd_active_{};     // a payload is being dragged
@@ -601,26 +600,112 @@ struct context::impl {
     layout_state    dd_saved_layout_{};
     rect            last_item_rect_{};
 
-    // popup (combo)
-    id   popup_id_{};
+    // popups (open_popup, combo lists, pickers): a stack. one opened while another is being drawn goes on top of it
+    // as its child; one opened from outside every popup replaces the whole stack. levels 1.. draw in layers of their
+    // own above the overlay (popup_run), so a child covers the rest of its parent's content.
+    static constexpr u32 max_popup_levels = 4;
+    static constexpr u32 run_popup        = 0xfffffff8u; // + level (1..): the draw layer of a nested popup
+    static constexpr u32 no_popup         = 0xffffffffu;
+    struct popup_level {
+        id   key{};
+        bool open_cur{};     // drawn this frame
+        bool open_prev{};
+        rect rect_cur{};
+        rect rect_prev{};
+        rect anchor_cur{};   // the widget that owns it: a press there is left to that widget
+        rect anchor_prev{};
+        rect opener{};       // open_popup: the item it opens under
+        vec2 size{};         // open_popup: last frame's content size ...
+        id   measured{};     // ... and the popup it was measured for
+    };
+    // a popup being drawn: what its end restores
+    struct popup_frame {
+        u32          level{};
+        u32          prev_owner{run_base};
+        bool         saved_overlay{};
+        bool         outer_hidden{};  // begin_popup: gpopup_hidden_ of the popup around this one
+        layout_state saved_layout{};
+    };
+    std::array<popup_level, max_popup_levels> popups_{};
+    u32  popup_count_{};       // open levels
+    std::array<popup_frame, max_popup_levels> popup_frames_{};
+    u32  popup_depth_{};       // popups being drawn right now
+    bool popup_esc_used_{};    // Esc closed a level this frame: one level per press
     bool in_overlay_{};
-    bool popup_open_cur_{};
-    bool popup_open_prev_{};
-    rect popup_rect_cur_{};
-    rect popup_rect_prev_{};
-    rect popup_anchor_cur_{};  // the combo box that owns the popup
-    rect popup_anchor_prev_{};
     bool swallow_press_{};     // this frame's press only closed a popup: ignore it
-    f32  popup_scroll_{};
+    f32  popup_scroll_{};      // the open combo list (lists hold no widgets, so there is only ever one)
     int  popup_hover_{-1};
+
+    [[nodiscard]] u32 popup_level_of(id key) const noexcept
+    {
+        for (u32 i = 0; key != 0 && i < popup_count_; ++i) {
+            if (popups_[i].key == key) { return i; }
+        }
+        return no_popup;
+    }
+    [[nodiscard]] bool popup_has(id key) const noexcept { return popup_level_of(key) != no_popup; }
+    [[nodiscard]] id   popup_top() const noexcept { return popup_count_ > 0 ? popups_[popup_count_ - 1].key : id{}; }
+    // the innermost popup being drawn (popup_depth_ > 0). a popup drawn inside itself (an id collision) would nest
+    // deeper than the levels: the slot is clamped so that stays in bounds
+    [[nodiscard]] popup_frame&       popup_frame_top() noexcept { return popup_frames_[std::min(popup_depth_, max_popup_levels) - 1]; }
+    [[nodiscard]] const popup_frame& popup_frame_top() const noexcept { return popup_frames_[std::min(popup_depth_, max_popup_levels) - 1]; }
+    // the level of the popup being drawn, no_popup outside every popup
+    [[nodiscard]] u32  popup_drawing() const noexcept { return popup_depth_ > 0 ? popup_frame_top().level : no_popup; }
+    [[nodiscard]] id   popup_drawing_key() const noexcept
+    {
+        const u32 l = popup_drawing();
+        return l < popup_count_ ? popups_[l].key : id{};
+    }
+    // closes `level` and everything above it
+    void popup_close_from(u32 level) noexcept
+    {
+        for (u32 i = level; i < popup_count_; ++i) { popups_[i] = {}; }
+        popup_count_ = std::min(popup_count_, level);
+    }
+    void popup_close(id key) noexcept
+    {
+        const u32 l = popup_level_of(key);
+        if (l != no_popup) { popup_close_from(l); }
+    }
+    [[nodiscard]] static u32 popup_run(u32 level) noexcept { return level == 0 ? run_overlay : run_popup + level; }
+    // where overlay drawing (tooltips, menus, drag previews) goes: the layer of the popup being drawn, if any
+    [[nodiscard]] u32 overlay_run() const noexcept
+    {
+        const u32 l = popup_drawing();
+        return l == no_popup ? run_overlay : popup_run(l);
+    }
+    // any level was drawn last frame
+    [[nodiscard]] bool popup_any_prev() const noexcept
+    {
+        for (u32 i = 0; i < popup_count_; ++i) {
+            if (popups_[i].open_prev) { return true; }
+        }
+        return false;
+    }
+    // `p` is over an open popup (last frame's rects) above what is being built: above the popup being drawn, or any
+    // level from outside the popups
+    [[nodiscard]] bool popup_covers(vec2 p) const noexcept
+    {
+        const u32 l = popup_drawing();
+        for (u32 i = l == no_popup ? 0u : l + 1; i < popup_count_; ++i) {
+            if (popups_[i].open_prev && popups_[i].rect_prev.contains(p)) { return true; }
+        }
+        return false;
+    }
+    // widgets under the pointer that must not react: popup content is blocked by the levels above it and by an open
+    // menu (unless it is that menu's own content); window content by every popup and menu. other overlay content
+    // (tooltips, toasts, menus outside popups) is not blocked.
+    [[nodiscard]] bool pointer_blocked() const noexcept
+    {
+        const bool popup_content = popup_depth_ > 0;
+        if (in_overlay_ && !popup_content) { return false; }
+        return popup_covers(mouse_) || (menu_hit_prev_ && menu_depth_ == 0);
+    }
 
     // color picker (the one being edited)
     id    pick_key_{};
     f32   pick_h_{}, pick_s_{}, pick_v_{};
     color pick_last_{};
-    // generic popup content
-    layout_state popup_saved_layout_{};
-    u32          popup_prev_owner_{run_base};
 
     // trees, tables
     std::array<tree_frame, max_tree_depth> tree_stack_{};

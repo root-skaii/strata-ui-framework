@@ -406,8 +406,10 @@ auto r = ui.chip("filter", {.closable = true, .selected = &on});    // r.clicked
 - **Tabs:** `tab_bar` reports `changed`, `closed`, `moved_from` / `moved_to`, `add`; `apply_tab_events` updates your
   list. Overflowing tabs scroll (wheel) and get a list button.
 - **Popups:** `open_popup` / `toggle_popup` / `popup` (or `begin_popup` / `end_popup`) / `close_popup` /
-  `popup_is_open`. Opens under `last_item_rect()` or at a position, sized to content, above all windows. One at a time
-  (shared with menus and dropdowns).
+  `close_all_popups` / `popup_is_open`. Opens under `last_item_rect()` or at a position, sized to content, above all
+  windows. Popups stack (up to 4 levels): a popup, dropdown, picker or context menu opened from inside a popup opens on
+  top of it and the parent stays open. A click in a popup closes the ones above it, a click outside closes them all,
+  Esc closes the top one. Opened from outside every popup, one replaces what was open.
 - **Status widgets:** `spinner`, `badge` (`kind_color(kind, theme)`), `chip` (`closable`, `selected`, `tint`, `icon`).
 - `--scene tabs` shows it all.
 

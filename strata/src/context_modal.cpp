@@ -23,7 +23,7 @@ void context::open_modal(std::string_view title)
     anim_for(hash_id("##modal", wid)).toggle = 0.0f; // fades in from nothing
     // whatever had the keyboard or a popup open gives way
     m_->focus_id_ = 0;
-    m_->popup_id_ = 0;
+    m_->popup_close_from(0);
     menu_close_all();
 }
 
@@ -56,7 +56,7 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     // Esc or a click on the dim closes it (unless something inside uses the key / click)
     const rect prev = window_rect(title);
     if (top) {
-        const bool busy = m_->focus_id_ != 0 || m_->hotkey_capture_ != 0 || m_->popup_id_ != 0 || m_->menu_open_[0].key != 0;
+        const bool busy = m_->focus_id_ != 0 || m_->hotkey_capture_ != 0 || m_->popup_count_ != 0 || m_->menu_open_[0].key != 0;
         if (has_flag(flags, modal_flags::esc_closes) && !busy) {
             for (u32 i = 0; i < m_->key_count_; ++i) {
                 if (m_->keys_[i].k == key::escape) {
@@ -66,7 +66,7 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
             }
         }
         if (has_flag(flags, modal_flags::backdrop_closes) && m_->mouse_pressed_ && t > 0.6f && prev.width() > 0.0f &&
-            !prev.contains(m_->mouse_) && !m_->menu_hit_prev_ && !(m_->popup_open_prev_ && m_->popup_rect_prev_.contains(m_->mouse_))) {
+            !prev.contains(m_->mouse_) && !m_->menu_hit_prev_ && !m_->popup_covers(m_->mouse_)) {
             close_modal();
             return false;
         }

@@ -119,22 +119,24 @@ tree_scope::~tree_scope()
 bool context::pointer_over(const rect& r) const noexcept
 {
     const bool in_window = m_->in_overlay_ || (m_->cur_window_ != 0 && m_->hovered_window_prev_ == m_->cur_window_);
-    const bool blocked   = !m_->in_overlay_ && ((m_->popup_open_prev_ && m_->popup_rect_prev_.contains(m_->mouse_)) || m_->menu_hit_prev_);
-    return in_window && !blocked && m_->dl_.clip().contains(m_->mouse_) && r.contains(m_->mouse_);
+    return in_window && !m_->pointer_blocked() && m_->dl_.clip().contains(m_->mouse_) && r.contains(m_->mouse_);
 }
 
 // generic popup ----------------------------------------------------------------------
 
-// draws the popup frame in the overlay layer and redirects layout into it until end_popup(). false while closed.
+// draws the popup frame in its overlay layer and redirects layout into it until end_popup(). false while closed.
 bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
 {
-    if (m_->popup_id_ != key) {
+    const u32 level = m_->popup_level_of(key);
+    if (level == impl::no_popup) {
         return false;
     }
-    if (m_->focus_id_ == 0) {
+    // Esc closes the top level only, and not while a text field or a menu (opened from here) has the keyboard
+    if (level + 1 == m_->popup_count_ && m_->focus_id_ == 0 && m_->menu_open_[0].key == 0 && !m_->popup_esc_used_) {
         for (u32 i = 0; i < m_->key_count_; ++i) {
             if (m_->keys_[i].k == key::escape) {
-                m_->popup_id_ = 0;
+                m_->popup_close_from(level);
+                m_->popup_esc_used_ = true;
                 return false;
             }
         }
@@ -149,13 +151,7 @@ bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
         list = {{list.min.x - shift, list.min.y}, {list.max.x - shift, list.max.y}};
     }
 
-    m_->popup_open_cur_   = true;
-    m_->popup_rect_cur_   = list;
-    m_->popup_anchor_cur_ = anchor;
-
-    m_->popup_prev_owner_ = m_->run_owner_;
-    switch_run(run_overlay);
-    m_->in_overlay_ = true;
+    popup_enter(level, list, anchor);
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
     shape_style body;
@@ -171,20 +167,17 @@ bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
 
     m_->dl_.push_clip({{list.min.x + 1.0f, list.min.y + 1.0f}, {list.max.x - 1.0f, list.max.y - 1.0f}});
 
-    m_->popup_saved_layout_ = m_->layout_;
-    m_->layout_             = {};
-    m_->layout_.origin      = {list.min.x + m_->style_.padding, list.min.y + m_->style_.padding};
-    m_->layout_.width       = size.x - 2.0f * m_->style_.padding;
+    m_->layout_        = {};
+    m_->layout_.origin = {list.min.x + m_->style_.padding, list.min.y + m_->style_.padding};
+    m_->layout_.width  = size.x - 2.0f * m_->style_.padding;
     return true;
 }
 
 void context::end_popup_at()
 {
-    m_->layout_ = m_->popup_saved_layout_;
     m_->dl_.pop_clip();
     m_->dl_.pop_clip();
-    m_->in_overlay_ = false;
-    switch_run(m_->popup_prev_owner_);
+    popup_leave(); // (restores the layout)
 }
 
 // color ----------------------------------------------------------------------------------
@@ -388,14 +381,13 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool open = m_->popup_id_ == key;
+    bool open = m_->popup_has(key);
     if (in.pressed) {
         if (open) {
-            m_->popup_id_ = 0;
-            open      = false;
+            m_->popup_close(key);
+            open = false;
         } else {
-            m_->popup_id_ = key;
-            open      = true;
+            open = popup_push(key);
         }
     }
 
@@ -436,7 +428,7 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
             end_popup_at();
         }
     }
-    track_edit(key, changed, m_->popup_id_ == key);
+    track_edit(key, changed, m_->popup_has(key));
     return changed;
 }
 
@@ -851,6 +843,7 @@ bool context::begin_table(std::string_view id_label, u32 columns, table_flags fl
         st.inited    = false;
         st.row_hint  = m_->table_.min_row_h;
         st.scroll    = 0.0f;
+        st.scroll_wanted = -1.0f;
         st.content_h = 0.0f;
     }
     push_id(id_label);
@@ -1055,7 +1048,13 @@ int context::table_headers_row(int sort_column, bool ascending)
             if (in.held && m_->mouse_delta_.x != 0.0f) {
                 const f32 per_px   = m_->table_.frac_total / m_->table_.width; // what a pixel is worth in `frac` units
                 const f32 min_frac = 36.0f * per_px;
-                const f32 dx = std::clamp(m_->mouse_delta_.x * per_px, min_frac - st.frac[a], st.frac[b] - min_frac);
+                f32 lo = min_frac - st.frac[a];
+                f32 hi = st.frac[b] - min_frac;
+                if (lo > hi) { // the pair is already narrower than two minimums (a restored layout, a tiny table)
+                    lo = -std::max(st.frac[a], 0.0f);
+                    hi = std::max(st.frac[b], 0.0f);
+                }
+                const f32 dx = std::clamp(m_->mouse_delta_.x * per_px, lo, hi);
                 st.frac[a] += dx;
                 st.frac[b] -= dx;
                 table_recompute_x();
@@ -1201,6 +1200,10 @@ void context::table_start_body()
         m_->table_.body_h = std::max(m_->table_.origin.y + m_->table_.height_limit - m_->table_.body_top, m_->table_.min_row_h);
         const rect region = {{m_->table_.origin.x, m_->table_.body_top}, {m_->table_.origin.x + m_->table_.width, m_->table_.body_top + m_->table_.body_h}};
 
+        if (st.scroll_wanted >= 0.0f) {
+            st.scroll         = st.scroll_wanted;
+            st.scroll_wanted  = -1.0f;
+        }
         st.scroll = std::clamp(st.scroll, 0.0f, std::max(0.0f, st.content_h - m_->table_.body_h));
 
         m_->dl_.push_clip(region);
@@ -1326,6 +1329,7 @@ void context::end_table()
         const rect region = {{m_->table_.origin.x, m_->table_.body_top}, {m_->table_.origin.x + m_->table_.width, m_->table_.body_top + m_->table_.body_h}};
         if (m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(region)) {
             st.scroll -= wheel_scroll(st.row_hint, m_->table_.body_h);
+            st.scroll_wanted    = -1.0f; // the user's scrolling wins over a table_set_scroll_y() still waiting
             m_->wheel_consumed_ = true;
         }
 
@@ -1339,6 +1343,7 @@ void context::end_table()
             f32 thumb_y = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
             const interaction in = interact(widget_id("##tscroll"), rect{{x1 - 7.0f, thumb_y}, {x1 + 2.0f, thumb_y + thumb_h}});
             st.scroll = thumb_drag(in, st.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, st.scroll);
+            if (in.held) { st.scroll_wanted = -1.0f; }
             thumb_y   = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
             const rect thumb = {{x1 - 5.0f, thumb_y}, {x1, thumb_y + thumb_h}};
             shape_style bar;
@@ -1389,6 +1394,27 @@ void context::table_skip_rows(int count)
     table_start_body();
     m_->table_.row_y     += static_cast<f32>(count) * std::max(m_->table_.state->row_hint, m_->table_.min_row_h);
     m_->table_.row_index += static_cast<u32>(count);
+}
+
+f32 context::table_scroll_y() const noexcept
+{
+    return m_->table_.active && m_->table_.scroll_mode ? m_->table_.state->scroll : 0.0f;
+}
+
+f32 context::table_scroll_max_y() const noexcept
+{
+    if (!m_->table_.active || !m_->table_.scroll_mode) {
+        return 0.0f;
+    }
+    return std::max(0.0f, m_->table_.state->content_h - m_->table_.body_h);
+}
+
+void context::table_set_scroll_y(f32 y) noexcept
+{
+    // not st.scroll itself: end_table measures this frame's content from the offset the rows were laid out with
+    if (m_->table_.active && m_->table_.scroll_mode) {
+        m_->table_.state->scroll_wanted = std::max(0.0f, y);
+    }
 }
 
 std::string context::table_save_layout(std::string_view id_label) const

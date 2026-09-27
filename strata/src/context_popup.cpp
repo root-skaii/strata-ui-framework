@@ -24,26 +24,82 @@ drag_source_scope::~drag_source_scope()
 
 // popups -----------------------------------------------------------------------------------
 
+bool context::popup_push(id key) noexcept
+{
+    // above the popup being drawn; a popup already in the stack reopens at its own level
+    const u32 drawing = m_->popup_drawing();
+    u32 level = drawing == impl::no_popup ? 0u : drawing + 1;
+    const u32 existing = m_->popup_level_of(key);
+    if (existing != impl::no_popup && existing < level) {
+        level = existing;
+    }
+    if (level >= impl::max_popup_levels) {
+        report_limit("nested popups (max_popup_levels)", impl::max_popup_levels);
+        return false;
+    }
+    m_->popup_close_from(level);
+    m_->popups_[level].key = key;
+    m_->popup_count_       = level + 1;
+    return true;
+}
+
+void context::popup_enter(u32 level, const rect& r, const rect& anchor) noexcept
+{
+    if (level < m_->popup_count_) {
+        impl::popup_level& p = m_->popups_[level];
+        p.open_cur   = true;
+        p.rect_cur   = r;
+        p.anchor_cur = anchor;
+    }
+    ++m_->popup_depth_;
+    impl::popup_frame& f = m_->popup_frame_top();
+    f.level         = level;
+    f.prev_owner    = m_->run_owner_;
+    f.saved_overlay = m_->in_overlay_;
+    f.outer_hidden  = false;
+    f.saved_layout  = m_->layout_;
+    switch_run(impl::popup_run(level));
+    m_->in_overlay_ = true;
+}
+
+void context::popup_leave() noexcept
+{
+    if (m_->popup_depth_ == 0) {
+        return;
+    }
+    const impl::popup_frame f = m_->popup_frame_top();
+    --m_->popup_depth_;
+    m_->layout_     = f.saved_layout;
+    m_->in_overlay_ = f.saved_overlay;
+    switch_run(f.prev_owner);
+}
+
 void context::open_popup(std::string_view label)
 {
-    m_->popup_id_      = widget_id(label);
-    m_->popup_scroll_  = 0.0f;
-    m_->popup_hover_   = -1;
-    m_->gpopup_anchor_ = m_->last_item_rect_.width() > 0.0f ? m_->last_item_rect_ : rect{m_->mouse_, m_->mouse_};
-    m_->gpopup_size_   = {};
-    m_->gpopup_key_    = 0;
+    if (!popup_push(widget_id(label))) {
+        return;
+    }
+    impl::popup_level& p = m_->popups_[m_->popup_count_ - 1];
+    p.opener   = m_->last_item_rect_.width() > 0.0f ? m_->last_item_rect_ : rect{m_->mouse_, m_->mouse_};
+    p.size     = {};
+    p.measured = 0;
+    m_->popup_scroll_ = 0.0f;
+    m_->popup_hover_  = -1;
 }
 
 void context::open_popup(std::string_view label, vec2 pos)
 {
     open_popup(label);
-    m_->gpopup_anchor_ = {{pos.x, pos.y - 4.0f}, {pos.x, pos.y - 4.0f}}; // the panel sits 4 px below its anchor
+    const u32 level = m_->popup_level_of(hash_id(label, m_->id_stack_[m_->id_depth_]));
+    if (level != impl::no_popup) {
+        m_->popups_[level].opener = {{pos.x, pos.y - 4.0f}, {pos.x, pos.y - 4.0f}}; // the panel sits 4 px below its anchor
+    }
 }
 
 void context::toggle_popup(std::string_view label)
 {
     if (popup_is_open(label)) {
-        m_->popup_id_ = 0;
+        m_->popup_close(hash_id(label, m_->id_stack_[m_->id_depth_]));
     } else {
         open_popup(label);
     }
@@ -51,25 +107,31 @@ void context::toggle_popup(std::string_view label)
 
 bool context::popup_is_open(std::string_view label) const noexcept
 {
-    return m_->popup_id_ != 0 && m_->popup_id_ == hash_id(label, m_->id_stack_[m_->id_depth_]);
+    return m_->popup_has(hash_id(label, m_->id_stack_[m_->id_depth_]));
 }
 
 bool context::begin_popup(std::string_view label, f32 width)
 {
-    const id key = widget_id(label);
-    if (m_->popup_id_ != key) {
+    const id  key   = widget_id(label);
+    const u32 level = m_->popup_level_of(key);
+    if (level == impl::no_popup) {
         return false;
     }
-    const f32  w        = width > 0.0f ? width : std::max(m_->gpopup_anchor_.width(), 180.0f);
-    const bool measured = m_->gpopup_key_ == key && m_->gpopup_size_.y > 0.0f;
-    const f32  h        = measured ? std::min(m_->gpopup_size_.y, m_->display_.y - 16.0f) : 40.0f;
+    const impl::popup_level& p = m_->popups_[level];
+    const f32  w        = width > 0.0f ? width : std::max(p.opener.width(), 180.0f);
+    const bool measured = p.measured == key && p.size.y > 0.0f;
+    const f32  h        = measured ? std::min(p.size.y, m_->display_.y - 16.0f) : 40.0f;
 
-    m_->gpopup_hidden_ = !measured; // the first frame only finds out how tall the content is
+    // the first frame only finds out how tall the content is (end_popup puts back the flag of a popup around this one)
+    const bool outer_hidden = m_->gpopup_hidden_;
+    m_->gpopup_hidden_ = !measured;
     if (m_->gpopup_hidden_) { m_->dl_.push_alpha(0.0f); }
-    if (!begin_popup_at(key, m_->gpopup_anchor_, {w, h})) {
+    if (!begin_popup_at(key, p.opener, {w, h})) {
         if (m_->gpopup_hidden_) { m_->dl_.pop_alpha(); }
+        m_->gpopup_hidden_ = outer_hidden;
         return false;
     }
+    m_->popup_frame_top().outer_hidden = outer_hidden;
     push_id(label);
     return true;
 }
@@ -79,10 +141,16 @@ void context::end_popup()
     pop_id();
     const f32 pad       = m_->style_.padding;
     const f32 content_h = m_->layout_.first ? 0.0f : m_->layout_.bottom - m_->layout_.origin.y;
-    m_->gpopup_size_ = {m_->layout_.width + 2.0f * pad, content_h + 2.0f * pad};
-    m_->gpopup_key_  = m_->popup_id_;
+    const u32 level     = m_->popup_drawing();
+    if (level < m_->popup_count_) { // (still open: close_popup() from inside empties the level)
+        impl::popup_level& p = m_->popups_[level];
+        p.size     = {m_->layout_.width + 2.0f * pad, content_h + 2.0f * pad};
+        p.measured = p.key;
+    }
+    const bool outer_hidden = m_->popup_depth_ > 0 && m_->popup_frame_top().outer_hidden;
     end_popup_at();
     if (m_->gpopup_hidden_) { m_->dl_.pop_alpha(); }
+    m_->gpopup_hidden_ = outer_hidden;
 }
 
 // drag and drop --------------------------------------------------------------------------
@@ -127,7 +195,7 @@ bool context::begin_drag_source()
     m_->dd_saved_overlay_ = m_->in_overlay_;
     m_->dd_saved_layout_  = m_->layout_;
     m_->dd_prev_owner_    = m_->run_owner_;
-    switch_run(run_overlay);
+    switch_run(m_->overlay_run());
     m_->in_overlay_ = true;
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
