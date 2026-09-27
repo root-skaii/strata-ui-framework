@@ -53,6 +53,7 @@ struct harness {
         in.mouse_pos    = {-500.0f, -500.0f};
         ui.set_clipboard({&clip_set, &clip_get, &clip});
         ui.set_dock_animation(false); // the checks look at where panes end up, not on the way there
+        ui.set_scroll_smoothing(false); // ... and where a scroll ends up
     }
 
     template <class F>
@@ -66,6 +67,12 @@ struct harness {
         in.typed_len   = 0;
         in.wheel       = 0.0f;
         in.pressed_key = 0;
+        in.press_count = 0;
+    }
+    // a key press queued the way win32_platform does it: with the modifiers held for it
+    void press(u32 vk, bool ctrl = false, bool shift = false, bool alt = false)
+    {
+        if (in.press_count < in.presses.size()) { in.presses[in.press_count++] = {vk, ctrl, shift, alt}; }
     }
     template <class F>
     void frames(F&& build, int n, f32 dt = 1.0f / 60.0f)

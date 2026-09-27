@@ -3,6 +3,7 @@
 #include "strata/types.hpp"
 
 #include <array>
+#include <cstdint>
 #include <expected>
 #include <span>
 #include <string_view>
@@ -163,6 +164,10 @@ public:
         if (fd.kern.empty() || left > 0xffff || right > 0xffff) {
             return 0.0f;
         }
+        if (left < 128 && right < 128) { // the common case, every glyph of plain text: one table read
+            const std::int8_t k = fd.kern_ascii[left * 128 + right];
+            if (k != kern_ask) { return static_cast<f32>(k); }
+        }
         return kerning_slow(fd, (static_cast<u32>(left) << 16) | static_cast<u32>(right));
     }
     [[nodiscard]] f32 kerning(font_id f, char32_t left, char32_t right) const noexcept { return kerning_px(f, left, right) * inv_scale_; }
@@ -210,10 +215,15 @@ private:
         std::vector<range_entry> ranges; // sorted, disjoint
         std::vector<glyph>       glyphs;
         std::vector<kern_pair>   kern;   // sorted by key
+        // the pairs of ascii characters, [left * 128 + right], whole pixels; kern_ask: not representable, look in `kern`.
+        // filled whenever `kern` is not empty
+        std::vector<std::int8_t> kern_ascii;
         std::size_t              fallback{};
         f32                      line_height{};
         f32                      ascent{};
     };
+
+    static constexpr std::int8_t kern_ask = -128;
 
     [[nodiscard]] static const glyph& lookup_slow(const font_data& fd, char32_t cp) noexcept;
     [[nodiscard]] static f32          kerning_slow(const font_data& fd, u32 key) noexcept;

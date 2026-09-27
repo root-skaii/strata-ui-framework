@@ -15,6 +15,7 @@ add_executable(strata_sandbox WIN32
     ../tests/selftest_rows.cpp
     ../tests/selftest_app.cpp
     ../tests/selftest_new.cpp
+    ../tests/selftest_robust.cpp
     demo2.cpp
     demo3.cpp
     demo3.hpp

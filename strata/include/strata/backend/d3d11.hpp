@@ -41,6 +41,17 @@ public:
     void set_state_restore(bool on) noexcept;
     [[nodiscard]] bool state_restore() const noexcept;
 
+    // how colours are written into the target (see output_space): an srgb view, an scRGB or an HDR10 swap chain needs it
+    // said, otherwise the ui comes out washed out, too dark or garish. applies from the next render()
+    void set_output(const output_desc& output) noexcept;
+    [[nodiscard]] output_desc output() const noexcept;
+
+    // the device is gone (a driver update or crash, a gpu that was removed, TDR): Present / Map fail from now on and
+    // everything made on it is dead. recovering is the host's job, in this order: make a new device (and swap chain),
+    // ui.rebuild_font_atlas(), create() this renderer on the new device from ui.font(), ui.release_font_pixels(), then
+    // create the textures again (their old ids mean nothing any more) and ui.invalidate()
+    [[nodiscard]] bool device_lost() const noexcept;
+
     // uploads a straight-alpha rgba8 image (width * height * 4 bytes, rows tightly packed) and returns the id that
     // ui.image() / draw_list::image() take; 0 if it failed. the texture lives until destroy_texture() or destroy().
     [[nodiscard]] texture_id create_texture(u32 width, u32 height, std::span<const u8> rgba);

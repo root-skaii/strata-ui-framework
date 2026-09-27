@@ -68,6 +68,25 @@ struct draw_data {
     // skip the upload (context::end_frame computes it; see context::frame_unchanged). 0 = unknown, always upload.
     // it is a hash, so a renderer must treat it as a hint about equality and nothing more.
     u64                       content_hash{};
+    // how much glyph edges are thickened for light text (style::text_contrast); applied by the renderers' shader
+    f32                       text_contrast{};
+};
+
+// how a renderer writes colours into its target. the ui's colours are srgb -- what a theme's hex values mean -- and are
+// written as they are unless the target wants them otherwise
+enum class output_space : u8 {
+    srgb,      // the default: an 8 or 10-bit UNORM target shown as srgb
+    srgb_view, // a *_UNORM_SRGB render target view: it encodes on write, so the shader writes linear values (and blending
+               // happens in linear light, which is what such a target is for)
+    scrgb,     // an FP16 target in the scRGB colour space (linear, 1.0 = 80 nits): Windows HDR / advanced colour
+    hdr10,     // a 10-bit target in HDR10 (BT.2020 primaries, PQ curve): a game's HDR swap chain
+};
+
+struct output_desc {
+    output_space space{output_space::srgb};
+    // hdr (scrgb / hdr10): how bright the ui's white is, in nits. Windows' "SDR content brightness" is the natural value;
+    // 200 is a comfortable default next to a game's own hdr highlights
+    f32 paper_white_nits{200.0f};
 };
 
 enum class corners : u8 {

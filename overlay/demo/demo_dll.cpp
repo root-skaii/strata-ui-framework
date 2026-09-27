@@ -20,8 +20,7 @@ namespace {
 
 using namespace strata;
 
-std::mutex                                       g_log_mutex;
-std::vector<std::pair<log_level, std::string>>   g_pending_log;
+log_queue                                        g_log_in{10000}; // lines from any thread (strata_overlay_log)
 log_buffer                                       g_log{2000};
 int                                              g_tab   = 0;
 int                                              g_theme = 0;
@@ -39,11 +38,7 @@ HMODULE                                          g_module{};
 
 void overlay_ui(context& ui)
 {
-    {   // lines other threads wrote (strata_overlay_log) join the log here, on the render thread
-        const std::lock_guard lock{g_log_mutex};
-        for (auto& [level, text] : g_pending_log) { g_log.add(level, text); }
-        g_pending_log.clear();
-    }
+    (void)g_log_in.drain_into(g_log); // lines other threads wrote (strata_overlay_log) join the log here, on the render thread
 
     if (auto w = ui.window("strata overlay", {40.0f, 40.0f}, {460.0f, 0.0f}, window_flags::resizable)) {
         (void)ui.tab_bar("tabs", {"Info", "Log", "Style"}, g_tab);
@@ -105,13 +100,14 @@ __declspec(dllexport) int  strata_overlay_visible() { return overlay::visible() 
 __declspec(dllexport) unsigned long long strata_overlay_frames() { return overlay::frames(); }
 __declspec(dllexport) const char* strata_overlay_last_error() { return overlay::last_error(); }
 __declspec(dllexport) int  strata_overlay_attached() { return overlay::attached() ? 1 : 0; }
+// 0 srgb, 1 srgb view, 2 scRGB, 3 HDR10 (strata::output_space)
+__declspec(dllexport) int  strata_overlay_output_space() { return static_cast<int>(overlay::output_space_in_use()); }
 __declspec(dllexport) void strata_overlay_eject() { g_eject.store(true); }
 // level: 0 trace, 1 debug, 2 info, 3 warn, 4 error. callable from any thread
 __declspec(dllexport) void strata_overlay_log(int level, const char* utf8)
 {
     if (utf8 == nullptr) { return; }
-    const std::lock_guard lock{g_log_mutex};
-    if (g_pending_log.size() < 10000) { g_pending_log.emplace_back(static_cast<log_level>(std::clamp(level, 0, 4)), utf8); }
+    g_log_in.add(static_cast<log_level>(std::clamp(level, 0, 4)), utf8);
 }
 
 } // extern "C"

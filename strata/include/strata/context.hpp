@@ -36,10 +36,25 @@ struct key_event {
     key  k{};
     bool ctrl{};
     bool shift{};
+    bool alt{};   // text fields leave Alt + key alone (it is a shortcut, not caret movement)
+};
+
+// context::next_wake_seconds() when nothing will change until there is input (finite on purpose: /fp:fast builds may
+// not compare infinities reliably)
+inline constexpr f64 no_deadline = std::numeric_limits<f64>::max();
+
+// one press of a key (virtual-key code) or extra mouse button, with the modifiers that were held for it
+struct key_press {
+    u32  key{};
+    bool ctrl{};
+    bool shift{};
+    bool alt{};
 };
 
 inline constexpr u32 max_key_events  = 16;
-inline constexpr u32 max_typed_bytes = 64;
+inline constexpr u32 max_key_presses = 16;
+// a whole confirmed IME sentence arrives in one frame: 1 KiB is ~340 CJK characters
+inline constexpr u32 max_typed_bytes = 1024;
 
 // mouse_pos and display_size are in physical pixels (what the os reports); the context divides them by its scale
 struct input_state {
@@ -49,15 +64,27 @@ struct input_state {
     // horizontal wheel: a tilt wheel, a trackpad sideways gesture (WM_MOUSEHWHEEL). positive = towards the right,
     // which is the opposite sign convention to `wheel` because that is what the message reports.
     f32                 wheel_x{};
+    // seconds since the previous frame, however long: animations take at most 0.1 s of it per frame (a stall does not
+    // fast-forward them), while timers -- toasts, the tooltip delay, the caret blink -- take all of it, so a host that
+    // sleeps until next_wake_seconds() wakes to a ui where the deadline has come
     f32                 delta_time = 1.0f / 60.0f;
     vec2                display_size{};
+    // the user's system settings (win32_platform fills them): how long the text caret stays on and then off (0: it does
+    // not blink, an accessibility setting), and the most time between the two clicks of a double click
+    f32                 caret_blink_time  = 0.53f;
+    f32                 double_click_time = 0.35f;
 
     // this frame's key presses (auto-repeat included) and typed text (utf-8)
     std::array<key_event, max_key_events> keys{};
     u32                                   key_count{};
     std::array<char, max_typed_bytes>     typed{};
     u32                                   typed_len{};
-    // last key (virtual-key code) or extra mouse button (4 middle, 5 / 6 side) pressed this frame; 0 if none. used by hotkey()
+    // every key (virtual-key code) or extra mouse button (4 middle, 5 / 6 side) pressed since the last frame, in order, each
+    // with its modifiers. the context takes one per frame and keeps the rest for the frames after, so two shortcuts pressed
+    // between two frames (a slow frame, a game at 30 fps) both fire, one frame apart. win32_platform fills it.
+    std::array<key_press, max_key_presses> presses{};
+    u32                                    press_count{};
+    // the simple form for a host that only knows one key per frame: used when press_count is 0, with the modifiers below
     u32                                   pressed_key{};
     // text the IME is composing (utf-8) and its caret in bytes. a state, not an event: the same string every frame until
     // the user confirms it, which then arrives as `typed`
@@ -138,6 +165,25 @@ struct clipboard_hooks {
     void* user                                              = nullptr;
 };
 
+// things that went wrong quietly -- the ui drew something other than what was asked for -- reported to the application
+// (a log, an assert in its tests) instead of only to stderr. each distinct problem is reported once per context.
+enum class diagnostic_kind : u8 {
+    limit,         // a fixed-size table or stack ran out (max_windows, push_id nesting ...): what did not fit was dropped
+    id_collision,  // two widgets submitted the same id in one frame (debug builds only): give one a "##suffix" / push_id
+    draw_overflow, // the draw list ran out of vertices / indices / commands (raise draw_list_limits), or of clip / alpha nesting
+};
+
+struct diagnostic {
+    diagnostic_kind  kind{};
+    std::string_view message; // one line, readable as it is
+};
+
+// called on the ui thread, from inside the frame that hit the problem. `message` is valid only during the call
+struct diagnostics_hook {
+    void (*report)(void* user, const diagnostic& d) noexcept = nullptr;
+    void* user                                               = nullptr;
+};
+
 // style ---------------------------------------------------------------------
 
 struct style {
@@ -149,6 +195,9 @@ struct style {
     f32  gradient     = 0.10f;   // vertical lighten/darken applied to widget fills
     f32  anim_speed   = 12.0f;
     f32  tooltip_delay_s = 0.4f; // how long the pointer has to rest on a widget before its tooltip shows
+    // light text on a dark background reads thinner than dark text on light at the same glyph coverage; this thickens
+    // glyph edges in proportion to how light the text is (0 = coverage as rasterised, 1 = strong). the renderer applies it
+    f32  text_contrast = 0.0f;
     vec2 frame_padding{10.0f, 5.0f};
     f32  blur_radius   = 18.0f;   // acrylic panels: how far what is behind them is blurred (logical pixels)
     f32  acrylic_alpha = 0.62f;   // acrylic windows: the window_bg alpha is multiplied by this
@@ -170,19 +219,27 @@ struct style {
     color text_dim      = color::from_hex(0x8a91a6ff);
     color shadow        = color::from_hex(0x000000a8);
     color modal_dim     = color::from_hex(0x000000a8); // what covers everything below a modal window
+    // meaning rather than decoration: toasts and badges of a kind, log levels, validation. a light theme wants darker ones
+    color success       = color::from_hex(0x4ade80ff);
+    color warning       = color::from_hex(0xffb454ff);
+    color error         = color::from_hex(0xff5d6cff);
+    // the colours charts give their series in turn (plot_series::col left empty); alpha 0 = the accent
+    std::array<color, 6> series{color{0, 0, 0, 0}, color::from_hex(0x19c2b4ff), color::from_hex(0xffb454ff),
+                                color::from_hex(0xf0568fff), color::from_hex(0xa78bfaff), color::from_hex(0x7bc74dff)};
 };
 
 // which style members push_color / push_var can override temporarily
 enum class style_color : u8 {
     window_bg, title_bg, border, widget_bg, widget_hover, widget_active, widget_border,
     accent, accent_hover, text, text_dim, shadow, modal_dim,
+    success, warning, error,
     count_
 };
 
 enum class style_var : u8 {
     padding, item_spacing, rounding, border_width, shadow_blur, gradient, anim_speed,
     frame_padding_x, frame_padding_y, blur_radius, acrylic_alpha, acrylic_noise,
-    acrylic_saturation, acrylic_brightness, popup_acrylic, tooltip_delay,
+    acrylic_saturation, acrylic_brightness, popup_acrylic, tooltip_delay, text_contrast,
     count_
 };
 
@@ -209,6 +266,7 @@ struct context_config {
     u32                          max_atlas_size = 4096;
     strata::style                theme{};
     draw_list_limits             limits{};
+    diagnostics_hook             diagnostics{};   // none: problems are written to stderr and the debugger output
 };
 
 // widget parameters ------------------------------------------------------------
@@ -242,6 +300,7 @@ struct frame_stats {
     u32 clip_overflows{};
     u32 alpha_overflows{};
     u32 id_collisions{};    // ids submitted more than once this frame (debug builds only; see id_collision())
+    u32 limits_hit{};       // times a fixed-size table / stack ran out this frame (see diagnostics_hook)
     // whether anything the renderer sees changed since the previous frame, and whether animations are still moving.
     // a host that owns its window can skip the present when both say no; see context::frame_unchanged().
     bool unchanged{};
@@ -648,6 +707,7 @@ private:
 };
 
 class context;
+class config;
 
 namespace internal { // (src/dock_state.hpp)
 struct dock_state;
@@ -897,45 +957,42 @@ public:
     // zeroes the typed-text bytes of the temporary once read: begin_frame(platform.new_frame())
     void begin_frame(input_state&& input);
     void end_frame();
-    [[nodiscard]] draw_data render_data() const noexcept
-    {
-        draw_data d = dl_.data();
-        d.content_hash = geometry_hash_; // lets the renderers skip an upload of geometry they already hold
-        return d;
-    }
+    [[nodiscard]] draw_data render_data() const noexcept;
 
     // true while the pointer is over a window / open popup or a widget is dragged: the host should not use mouse input
-    [[nodiscard]] bool want_capture_mouse() const noexcept
-    {
-        return hovered_window_prev_ != 0 || active_ != 0 || dock_chrome_prev_ || toast_hover_prev_ || modal_count_ != 0 ||
-               menu_hit_prev_ || (popup_open_prev_ && popup_rect_prev_.contains(mouse_));
-    }
+    [[nodiscard]] bool want_capture_mouse() const noexcept;
     // true while a text field has keyboard focus: the host should not treat keys as hotkeys
-    [[nodiscard]] bool want_text_input() const noexcept { return focus_id_ != 0 || hotkey_capture_ != 0; }
+    [[nodiscard]] bool want_text_input() const noexcept;
     // a popup (combo list, color picker) is open: it handles Esc itself
-    [[nodiscard]] bool popup_open() const noexcept { return popup_open_prev_; }
+    [[nodiscard]] bool popup_open() const noexcept;
     // pointer shape the ui wants right now (resize grips, text fields); apply it with win32_platform::set_cursor
-    [[nodiscard]] cursor_kind cursor() const noexcept { return cursor_; }
+    [[nodiscard]] cursor_kind cursor() const noexcept;
     // enter was pressed in a text field during this frame
-    [[nodiscard]] bool input_submitted() const noexcept { return submitted_; }
+    [[nodiscard]] bool input_submitted() const noexcept;
 
-    void set_clipboard(const clipboard_hooks& hooks) noexcept { clipboard_ = hooks; }
+    void set_clipboard(const clipboard_hooks& hooks) noexcept;
+    // where problems go (see diagnostics_hook); a hook with no `report` restores the stderr / debugger output
+    void set_diagnostics(const diagnostics_hook& hook) noexcept;
 
     // dpi / ui scale -------------------------------------------------------
     // the ui lays out in logical pixels; `scale` physical pixels make one. input arrives in physical pixels and is
     // converted, draw commands leave in physical pixels.
-    [[nodiscard]] f32 scale() const noexcept { return scale_; }
+    [[nodiscard]] f32 scale() const noexcept;
     // scale 0.5 .. 4. rebuilds the font atlas (slow): the host then re-uploads it (renderer.update_atlas(ui.font())) and
     // calls release_font_pixels(); font_generation() changes so it can tell. on error nothing changes. font data given to
     // create() must still be alive; a context not made by create() cannot rescale.
     std::expected<void, font_error> set_scale(f32 scale);
-    [[nodiscard]] u32 font_generation() const noexcept { return font_generation_; }
+    [[nodiscard]] u32 font_generation() const noexcept;
     // the same thing as a percentage, which is what a "UI scale" setting shows. 100 is one logical pixel per
     // physical pixel; the monitor's dpi scale is a sensible starting point, not a ceiling -- an overlay on a 4K
     // screen often wants 150 % of it. Steps of 5 or 10 are what a +/- pair should use; the atlas is rebuilt on every
     // change (tens of milliseconds per font), so drive it from a stepper or apply a slider when it is let go.
-    [[nodiscard]] int scale_percent() const noexcept { return static_cast<int>(scale_ * 100.0f + 0.5f); }
+    [[nodiscard]] int scale_percent() const noexcept;
     std::expected<void, font_error> set_scale_percent(int percent) { return set_scale(static_cast<f32>(percent) / 100.0f); }
+    // builds the font atlas again at the current scale, for a renderer that has to be created anew after
+    // release_font_pixels() dropped the cpu copy: the device was lost, or an overlay's game replaced its device. slow
+    // like set_scale; then create the renderer from font(), and release_font_pixels() again. font_generation() changes
+    std::expected<void, font_error> rebuild_font_atlas();
 
     // windows --------------------------------------------------------------
     [[nodiscard]] window_scope window(std::string_view title, vec2 initial_pos, f32 width = 280.0f)
@@ -980,23 +1037,41 @@ public:
     [[nodiscard]] std::string dock_save_layout() const;
     bool dock_load_layout(std::string_view text);
     [[nodiscard]] bool is_docked(std::string_view title) const noexcept;
+
+    // everything the user arranged, in one section of a config (config.hpp): the dock layout with the windows' places,
+    // sizes and collapsed state, table columns (order, widths, hidden ones), which tree nodes are open, and how far windows
+    // and child regions are scrolled. load it before the ui is first shown, or at any time after: windows, tables and
+    // nodes are matched by id, what is not there yet is applied when it appears.
+    //   strata::config_file settings{"ui.ini"};
+    //   settings.load();  ui.load_state(settings.data());
+    //   ...  ui.save_state(settings.data());  settings.save();     // on exit, or now and then with auto-save
+    // save_state replaces what the section held. load_state is false (and changes nothing) for a section that is not a
+    // saved state of this version.
+    void save_state(config& cfg, std::string_view section = "ui") const;
+    bool load_state(const config& cfg, std::string_view section = "ui");
     // screen rectangle of a window as of its last begin_window / end_window ({} if it does not exist)
     [[nodiscard]] rect window_rect(std::string_view title) const noexcept;
 
     // widgets --------------------------------------------------------------
-    void text(std::string_view s) { text_colored(style_.text, s); }
-    void text_dim(std::string_view s) { text_colored(style_.text_dim, s); }
+    void text(std::string_view s);
+    void text_dim(std::string_view s);
     void text_colored(color c, std::string_view s);
     // like text(), wrapped at word boundaries to the width of the layout (or set_next_item_width)
-    void text_wrapped(std::string_view s) { text_wrapped_colored(style_.text, s); }
+    void text_wrapped(std::string_view s);
     void text_wrapped_colored(color c, std::string_view s);
 
+    // formatted on the stack; text longer than that is formatted again into a string rather than cut (a cut could split a
+    // utf-8 sequence and end the line in a replacement glyph)
     template <class... args>
     void textf(std::format_string<args...> fmt, args&&... a)
     {
         std::array<char, 512> buf;
         const auto r = std::format_to_n(buf.data(), static_cast<std::ptrdiff_t>(buf.size()), fmt, std::forward<args>(a)...);
-        text({buf.data(), std::min<std::size_t>(static_cast<std::size_t>(r.size), buf.size())});
+        if (static_cast<std::size_t>(r.size) <= buf.size()) {
+            text({buf.data(), static_cast<std::size_t>(r.size)});
+        } else {
+            text(std::format(fmt, std::forward<args>(a)...)); // (formatting never moves from its arguments: forwarding twice is fine)
+        }
     }
 
     bool button(std::string_view label);
@@ -1007,22 +1082,14 @@ public:
     void progress_bar(f32 fraction, std::string_view overlay = {});
     void separator();
     void spacing(f32 height = 0.0f);
-    void same_line() noexcept { layout_.same_line = true; }
+    void same_line() noexcept;
     // continue on the current line, `offset_x` pixels from the left edge of the content area
-    void same_line(f32 offset_x) noexcept
-    {
-        layout_.same_line = true;
-        layout_.cursor_x  = layout_.origin.x + offset_x - style_.item_spacing;
-    }
+    void same_line(f32 offset_x) noexcept;
     // continue on the current line with an item `width` wide that ends at the right edge of the content area. the edge
     // already accounts for the window padding and for a scrollbar that is showing, so a right-aligned control does not
     // have to be placed by hand and does not move when either changes. inside a right gutter (push_right_gutter) the
     // edge is the real one, not the reduced one the items before it were laid out in.
-    void same_line_right(f32 width) noexcept
-    {
-        layout_.same_line = true;
-        layout_.cursor_x  = layout_.origin.x + layout_.width + layout_.gutter - width - style_.item_spacing;
-    }
+    void same_line_right(f32 width) noexcept;
     // reserves `w` pixels at the right of the content area: everything laid out until pop_right_gutter() is that much
     // narrower (so a full-width row ends where the gutter starts and its label is ellipsized there), while
     // same_line_right() still reaches the real edge, which is what the gutter is for.
@@ -1032,7 +1099,7 @@ public:
     void pop_right_gutter() noexcept;
     [[nodiscard]] gutter_scope right_gutter(f32 w) noexcept { push_right_gutter(w); return gutter_scope{*this}; }
     // width of the next widget (slider, input, combo, progress, button)
-    void set_next_item_width(f32 w) noexcept { layout_.next_width = w; }
+    void set_next_item_width(f32 w) noexcept;
 
     // icon widgets: `icon` is drawn with `icon_font` (see icons.hpp), the label with the current font
     bool icon_button(font_id icon_font, std::string_view icon, std::string_view label = {});
@@ -1105,11 +1172,11 @@ public:
     // input methods: composed text is shown at the caret and only inserted once confirmed. while ime_wanted() the host
     // enables its IME and puts the candidate window at ime_position() (physical pixels, bottom left of the caret) with a
     // caret height of ime_line_height() (win32_platform::set_ime()).
-    [[nodiscard]] bool             ime_wanted() const noexcept { return ime_want_; }
-    [[nodiscard]] vec2             ime_position() const noexcept { return ime_pos_; }
-    [[nodiscard]] f32              ime_line_height() const noexcept { return ime_line_h_; }
-    [[nodiscard]] bool             ime_composing() const noexcept { return ime_len_ != 0; }
-    [[nodiscard]] std::string_view ime_composition() const noexcept { return {ime_text_.data(), ime_len_}; }
+    [[nodiscard]] bool             ime_wanted() const noexcept;
+    [[nodiscard]] vec2             ime_position() const noexcept;
+    [[nodiscard]] f32              ime_line_height() const noexcept;
+    [[nodiscard]] bool             ime_composing() const noexcept;
+    [[nodiscard]] std::string_view ime_composition() const noexcept;
 
     // dropdown. `current` is the selected index; returns true when it changed.
     bool combo(std::string_view label, int& current, const std::string_view* items, std::size_t count);
@@ -1168,7 +1235,7 @@ public:
     }
     bool tree_leaf(std::string_view label, bool selected = false);         // returns true when clicked
     bool selectable(std::string_view label, bool selected = false);        // full-width row, true when clicked
-    [[nodiscard]] bool item_pressed() const noexcept { return item_pressed_; } // last tree row / selectable was clicked
+    [[nodiscard]] bool item_pressed() const noexcept; // last tree row / selectable was clicked
     void text_ellipsis(std::string_view s); // like text(), but cut with "..." to the available width (item_truncated())
 
     // small controls that belong to the row just submitted, laid into its right end: strata places them (right to
@@ -1183,7 +1250,7 @@ public:
     bool row_accessory_checkbox(std::string_view id, bool& value);
     bool row_accessory_toggle(std::string_view id, bool& value);
     // room reserved at the right end of the next row for its accessories (see above); one row only
-    void set_next_item_gutter(f32 width) noexcept { next_gutter_ = width; }
+    void set_next_item_gutter(f32 width) noexcept;
 
     // applies a click on row `index` to a selection: plain = only this row, Ctrl = toggle it, Shift = the range from
     // the row the last plain / Ctrl click was on. Returns true when the selection changed.
@@ -1202,9 +1269,9 @@ public:
     }
 
     // the state of the next tree_node / table_tree_node, whatever it was before (a "expand to the selection" button)
-    void set_next_item_open(bool open) noexcept { next_open_ = open ? 1 : 2; }
+    void set_next_item_open(bool open) noexcept;
     // ... and of it and everything under it. Ctrl or Shift held while its arrow is clicked does the same.
-    void set_next_item_open_recursive(bool open) noexcept { next_open_ = open ? 3 : 4; }
+    void set_next_item_open_recursive(bool open) noexcept;
     // opens / closes every tree node whose id starts in the current id scope (push_id("scene") scopes it to that
     // subtree; at the top level it is every node of the ui). takes effect the next time they are submitted.
     void open_all_tree_nodes() noexcept { tree_set_bulk(current_seed(), true); }
@@ -1245,10 +1312,10 @@ public:
     void nav_end();
     [[nodiscard]] nav_scope navigation(std::string_view id) { nav_begin(id); return nav_scope{*this}; }
     // the navigable scope had the keyboard this frame (a text field takes precedence)
-    [[nodiscard]] bool nav_active() const noexcept { return nav_.active; }
+    [[nodiscard]] bool nav_active() const noexcept;
     // the last submitted item has the keyboard: it is where a nav scope's cursor sits, or it is the text field that
     // is being typed into
-    [[nodiscard]] bool item_focused() const noexcept { return last_item_focused_ || (focus_id_ != 0 && focus_id_ == last_item_key_); }
+    [[nodiscard]] bool item_focused() const noexcept;
 
     // tables ---------------------------------------------------------------
     //   if (ui.begin_table("files", 2)) {
@@ -1312,9 +1379,9 @@ public:
     //   if (auto href = ui.rich_link_clicked(); !href.empty()) { open(href); }
     //
     // links in widget captions (under rich_labels()) are drawn but not clickable: the widget owns the click.
-    [[nodiscard]] std::string_view rich_link_clicked() const noexcept { return rich_clicked_; }
+    [[nodiscard]] std::string_view rich_link_clicked() const noexcept;
     // the href under the pointer right now, for a status bar or a tooltip
-    [[nodiscard]] std::string_view rich_link_hovered() const noexcept { return rich_hovered_; }
+    [[nodiscard]] std::string_view rich_link_hovered() const noexcept;
 
     void rich_text(std::string_view markup);
     // the same, wrapped at word boundaries to the width of the layout (or set_next_item_width)
@@ -1322,17 +1389,21 @@ public:
 
     // while active, widget labels (buttons, checkboxes, tabs, tree rows, cards, tooltips, text() ...) are read as the same
     // markup. widget ids still come from the raw string:   auto rich = ui.rich_labels();  ui.button("<f=1>save</f>");
-    void push_rich_labels() noexcept { ++rich_depth_; }
-    void pop_rich_labels() noexcept  { if (rich_depth_ > 0) { --rich_depth_; } }
+    void push_rich_labels() noexcept;
+    void pop_rich_labels() noexcept;
     [[nodiscard]] rich_scope rich_labels() noexcept { push_rich_labels(); return rich_scope{*this}; }
-    [[nodiscard]] bool       rich_labels_active() const noexcept { return rich_depth_ > 0; }
+    [[nodiscard]] bool       rich_labels_active() const noexcept;
 
     template <class... args>
     void rich_textf(std::format_string<args...> fmt, args&&... a)
     {
-        std::array<char, 512> buf;
+        std::array<char, 512> buf; // (see textf)
         const auto r = std::format_to_n(buf.data(), static_cast<std::ptrdiff_t>(buf.size()), fmt, std::forward<args>(a)...);
-        rich_text({buf.data(), std::min<std::size_t>(static_cast<std::size_t>(r.size), buf.size())});
+        if (static_cast<std::size_t>(r.size) <= buf.size()) {
+            rich_text({buf.data(), static_cast<std::size_t>(r.size)});
+        } else {
+            rich_text(std::format(fmt, std::forward<args>(a)...));
+        }
     }
 
     // containers -----------------------------------------------------------
@@ -1374,22 +1445,36 @@ public:
 
     // transitions and tooltips -------------------------------------------------
     // multiply the alpha of everything drawn until pop_alpha()
-    void push_alpha(f32 a) noexcept { dl_.push_alpha(a); }
-    void pop_alpha() noexcept { dl_.pop_alpha(); }
+    void push_alpha(f32 a) noexcept;
+    void pop_alpha() noexcept;
     // fade + slide the content that follows whenever `page` changes; keep the returned scope alive while drawing the page
     [[nodiscard]] transition_scope page_transition(std::string_view key, int page, f32 slide = 14.0f);
 
     // shows `text` next to the pointer once the last widget has been hovered for style::tooltip_delay_s
     void tooltip(std::string_view text);
-    [[nodiscard]] bool item_hovered() const noexcept { return last_item_hovered_; }
+    [[nodiscard]] bool item_hovered() const noexcept;
 
     // the last hit-tested widget (button, row, field, custom_item): where it is, and what was done to it. the right
     // and middle buttons are reported on the press (there is no press-and-hold state for them), the left one on the
     // release over the widget, exactly like the widget's own return value
-    [[nodiscard]] rect item_rect() const noexcept { return last_item_rect_; }
+    [[nodiscard]] rect item_rect() const noexcept;
     [[nodiscard]] bool item_clicked(mouse_button b = mouse_button::left) const noexcept;
     // a second click on it within the double-click time, e.g. "open" on a row that a single click selects
-    [[nodiscard]] bool item_double_clicked() const noexcept { return last_item_double_; }
+    [[nodiscard]] bool item_double_clicked() const noexcept;
+
+    // edits of the value widget just submitted (checkbox, toggle, slider, drag, text / number field, combo, colour, date,
+    // hotkey ...). the widget's own return value says "changed this frame", which is one undo step per frame of a drag and
+    // per keystroke; these say where an edit starts and ends, which is what an undo history wants:
+    //   ui.slider("volume", volume, 0.0f, 1.0f);
+    //   if (ui.item_activated()) { before = volume; }                                 // a drag / an entry starts
+    //   if (ui.item_deactivated_after_edit()) { undo.push(before, volume); }          // ... and ended with a change
+    // a widget without a held phase (a combo entry picked, a checkbox toggled from the keyboard) is an edit that starts
+    // and ends at once: item_deactivated_after_edit() on the frame it changed.
+    [[nodiscard]] bool item_active() const noexcept;
+    [[nodiscard]] bool item_activated() const noexcept;
+    [[nodiscard]] bool item_deactivated() const noexcept;
+    [[nodiscard]] bool item_edited() const noexcept;
+    [[nodiscard]] bool item_deactivated_after_edit() const noexcept;
 
     // lets the widget that was just submitted share its rectangle with the ones after it: a later overlapping widget
     // takes the press away from it (so a button drawn on top of a full-width row is the one that gets clicked), and
@@ -1402,7 +1487,7 @@ public:
     //   if (row.pressed && !ui.item_claimed()) { select(); }
     void allow_item_overlap() noexcept;
     // a later widget took the press from the one that called allow_item_overlap()
-    [[nodiscard]] bool item_claimed() const noexcept { return overlap_stolen_; }
+    [[nodiscard]] bool item_claimed() const noexcept;
 
     // key binding: click, then press a key or side mouse button. Esc cancels, Backspace / Delete clears.
     // `key_code` is a virtual-key code, 0 = unbound.
@@ -1436,11 +1521,11 @@ public:
     void toggle_popup(std::string_view id);
     bool begin_popup(std::string_view id, f32 width = 0.0f);
     void end_popup();
-    void close_popup() noexcept { popup_id_ = 0; }
+    void close_popup() noexcept;
     [[nodiscard]] bool popup_is_open(std::string_view id) const noexcept;
     [[nodiscard]] popup_scope popup(std::string_view id, f32 width = 0.0f) { return {*this, begin_popup(id, width)}; }
     // the screen rectangle of the last widget that was hit-tested (button, field, row ...)
-    [[nodiscard]] rect last_item_rect() const noexcept { return last_item_rect_; }
+    [[nodiscard]] rect last_item_rect() const noexcept;
 
     // drag and drop ----------------------------------------------------------
     // pick something up with the mouse and drop it on a widget that wants it. the payload is a small copy of your data
@@ -1467,8 +1552,8 @@ public:
         return {*this, active};
     }
     [[nodiscard]] drop_result drop_target(std::string_view type, drop_flags flags = drop_flags::none);
-    [[nodiscard]] bool dragging() const noexcept { return dd_active_; }
-    [[nodiscard]] std::string_view drag_payload_type() const noexcept { return dd_active_ ? std::string_view{dd_type_} : std::string_view{}; }
+    [[nodiscard]] bool dragging() const noexcept;
+    [[nodiscard]] std::string_view drag_payload_type() const noexcept;
 
     // date and time pickers ---------------------------------------------------
     // a field showing the value; clicking it opens a popup: a month calendar (arrows for months and years, today marked,
@@ -1537,8 +1622,8 @@ public:
     void text_selectable(std::string_view text) { text_selectable(text, text); }
     void text_selectable(std::string_view id, std::string_view text);
     // while alive, text() / text_dim() / textf() / text_wrapped() draw selectable text
-    void push_selectable_text() noexcept { ++selectable_depth_; }
-    void pop_selectable_text() noexcept  { if (selectable_depth_ > 0) { --selectable_depth_; } }
+    void push_selectable_text() noexcept;
+    void pop_selectable_text() noexcept;
     [[nodiscard]] selectable_text_scope selectable_text() noexcept { push_selectable_text(); return selectable_text_scope{*this}; }
 
     // modal windows and dialogs ---------------------------------------------------
@@ -1546,7 +1631,7 @@ public:
     // a modal is centered, dims and blocks everything below it; modals stack and the one opened last has the input.
     void open_modal(std::string_view title);
     void close_modal();                 // closes the topmost
-    [[nodiscard]] bool modal_open() const noexcept { return modal_count_ != 0; }
+    [[nodiscard]] bool modal_open() const noexcept;
     [[nodiscard]] modal_scope modal(std::string_view title, vec2 size = {420.0f, 0.0f}, modal_flags flags = modal_flags::esc_closes)
     {
         return {*this, begin_modal(title, size, flags)};
@@ -1573,7 +1658,7 @@ public:
     void ask_confirm(std::string_view id, std::string_view message, u64 user_data = 0);
     int  confirm(std::string_view id, std::initializer_list<std::string_view> buttons, const confirm_options& options = {});
     // what ask_confirm() was given, valid while that confirm() is open and on the frame it answers
-    [[nodiscard]] u64 confirm_data() const noexcept { return confirm_data_; }
+    [[nodiscard]] u64 confirm_data() const noexcept;
 
     // menus ------------------------------------------------------------------------------------
     // a bar across the top of the display:
@@ -1581,7 +1666,7 @@ public:
     bool begin_main_menu_bar();
     void end_main_menu_bar();
     [[nodiscard]] menu_scope main_menu_bar() { return {*this, begin_main_menu_bar(), menu_scope::kind::main_bar}; }
-    [[nodiscard]] f32 main_menu_bar_height() const noexcept { return menu_bar_h_; }
+    [[nodiscard]] f32 main_menu_bar_height() const noexcept;
     // a menu in the bar or a submenu inside another menu
     bool begin_menu(std::string_view label, bool enabled = true);
     void end_menu();
@@ -1618,7 +1703,7 @@ public:
         return {*this, begin_context_menu(id, area), menu_scope::kind::popup};
     }
     [[nodiscard]] menu_scope popup_menu(std::string_view id) { return {*this, begin_popup_menu(id), menu_scope::kind::popup}; }
-    [[nodiscard]] bool menu_is_open() const noexcept { return menu_open_[0].key != 0; }
+    [[nodiscard]] bool menu_is_open() const noexcept;
 
     // toasts -----------------------------------------------------------------------------------
     // short-lived notifications stacked in a corner of the display. hovering one pauses it, clicking dismisses it.
@@ -1635,9 +1720,9 @@ public:
     void toast_progress(toast_handle h, f32 fraction, std::string_view text = {});
     void toast_close(toast_handle h);
     [[nodiscard]] bool toast_alive(toast_handle h) const noexcept;
-    void clear_toasts() noexcept { toasts_.clear(); }
-    void set_toast_corner(screen_corner corner) noexcept { toast_corner_ = corner; }
-    [[nodiscard]] std::size_t toast_count() const noexcept { return toasts_.size(); }
+    void clear_toasts() noexcept;
+    void set_toast_corner(screen_corner corner) noexcept;
+    [[nodiscard]] std::size_t toast_count() const noexcept;
 
     // log view ---------------------------------------------------------------------------------
     // a toolbar (filter, level, follow, copy, clear) over the lines of `log`. only visible rows are drawn, so long buffers
@@ -1646,31 +1731,22 @@ public:
 
     // docking animation -----------------------------------------------------------------------
     // panes slide to their new place when a window docks, undocks or a pane closes (on by default)
-    void set_dock_animation(bool on) noexcept { dock_animation_ = on; }
+    void set_dock_animation(bool on) noexcept;
+
+    // smooth scrolling (on by default): a wheel notch is let out over about a tenth of a second instead of jumping, in
+    // every scrolling region alike. the total is the same; off gives the jump
+    void set_scroll_smoothing(bool on) noexcept;
 
     // true when the key was pressed this frame with exactly these modifiers (auto-repeat included). a text field that has
     // the keyboard uses its keys up while it is drawn, so ask before it (or use accelerator() / chord_pressed())
-    [[nodiscard]] bool key_pressed(key k, bool ctrl = false, bool shift = false) const noexcept
-    {
-        for (u32 i = 0; i < key_count_; ++i) {
-            if (keys_[i].k == k && keys_[i].ctrl == ctrl && keys_[i].shift == shift) { return true; }
-        }
-        return false;
-    }
+    [[nodiscard]] bool key_pressed(key k, bool ctrl = false, bool shift = false) const noexcept;
     // the text field with this label (in the current id scope) takes the keyboard the next time it is drawn, its
     // text selected. Calling it every frame is harmless: a field that already has the keyboard is left alone, so the
     // caret is not taken back on every keystroke and no "did I ask already" flag is needed.
-    void request_text_focus(std::string_view label) noexcept
-    {
-        const id key = hash_id(label, current_seed());
-        if (focus_id_ != key) { focus_request_ = key; }
-    }
+    void request_text_focus(std::string_view label) noexcept;
     // which text field has the keyboard: the field's own id (0 = none), and the question by label
-    [[nodiscard]] id   focused_field() const noexcept { return focus_id_; }
-    [[nodiscard]] bool field_focused(std::string_view label) const noexcept
-    {
-        return focus_id_ != 0 && focus_id_ == hash_id(label, current_seed());
-    }
+    [[nodiscard]] id   focused_field() const noexcept;
+    [[nodiscard]] bool field_focused(std::string_view label) const noexcept;
 
     // raw keys, for shortcuts the ui itself has no name for (Delete, F2, F5 ...). `virtual_key` is a windows
     // virtual-key code, so 'A'..'Z', '0'..'9' and VK_* all work. key_pressed is the edge (this frame only) and needs
@@ -1692,14 +1768,14 @@ public:
     [[nodiscard]] bool is_window_focused(std::string_view title) const noexcept;
 
     // modifier keys (as of this frame)
-    [[nodiscard]] bool ctrl_down() const noexcept  { return mod_ctrl_; }
-    [[nodiscard]] bool shift_down() const noexcept { return mod_shift_; }
-    [[nodiscard]] bool alt_down() const noexcept   { return mod_alt_; }
+    [[nodiscard]] bool ctrl_down() const noexcept;
+    [[nodiscard]] bool shift_down() const noexcept;
+    [[nodiscard]] bool alt_down() const noexcept;
 
     // custom drawing -------------------------------------------------------
     // the frame's draw list, in screen space. drawing lands between the widgets submitted before and after the call;
     // outside any window it ends up behind all windows.
-    [[nodiscard]] draw_list& draw() noexcept { return dl_; }
+    [[nodiscard]] draw_list& draw() noexcept;
 
     // reserves a slot in the layout and returns its rectangle plus hover / held / pressed state; draw into it with draw()
     [[nodiscard]] item_result custom_item(std::string_view label, vec2 size);
@@ -1712,7 +1788,7 @@ public:
 
     // what the frame that just ended cost: how many items were submitted and how many of those the clip rectangle
     // culled, the geometry that came out, and how long begin_frame / end_frame took
-    [[nodiscard]] const frame_stats& stats() const noexcept { return stats_prev_; }
+    [[nodiscard]] const frame_stats& stats() const noexcept;
 
     // idling ------------------------------------------------------------------
     // a ui that nobody is touching produces byte-identical geometry every frame. these two say so, from end_frame:
@@ -1722,31 +1798,41 @@ public:
     //   else { renderer.render(ui.render_data()); present(); }
     //
     // `frame_unchanged()` compares this frame's vertices, indices, commands and shapes with the previous frame's
-    // (a hash, so it costs a pass over the geometry, ~10 us for a busy frame); `animations_settling()` is true while
+    // (a hash, so it costs a pass over the geometry, about 0.1 ms per MB of it); `animations_settling()` is true while
     // any hover / press / toggle / custom animation is still moving toward its target, which is the case the hash
     // cannot see coming -- an animation that has one more frame to run produces the same geometry twice in a row
     // near the end, and stopping there would freeze it a pixel short.
     //
     // an overlay drawing into someone else's frame must still re-record and re-render (the game cleared the target);
     // what it can skip is the buffer upload, which the renderers do for it when nothing changed.
-    [[nodiscard]] bool frame_unchanged() const noexcept { return frame_unchanged_; }
-    [[nodiscard]] bool animations_settling() const noexcept { return anim_settling_; }
+    [[nodiscard]] bool frame_unchanged() const noexcept;
+    [[nodiscard]] bool animations_settling() const noexcept;
     // the two together: nothing to draw that is not already on the screen
-    [[nodiscard]] bool can_idle() const noexcept { return frame_unchanged_ && !anim_settling_; }
+    [[nodiscard]] bool can_idle() const noexcept;
     // force the next frame to count as changed (a texture was replaced, the theme was edited, the window was resized
     // under a host that keeps its own back buffers)
-    void invalidate() noexcept { geometry_hash_ = 0; }
+    void invalidate() noexcept;
+
+    // for a host that sleeps instead of spinning: how long it may wait (for input, or at most this many seconds) before
+    // the next frame, because nothing time-driven changes the ui before then -- the caret blinking, a tooltip about to
+    // show. 0: run the next frame right away (this one changed, or something is animating -- a toast counting down
+    // is); no_deadline: nothing will change until there is input.
+    //
+    //   ui.end_frame();
+    //   if (!ui.frame_unchanged()) { renderer.render(ui.render_data()); present(); }
+    //   const f64 wait = ui.next_wake_seconds();
+    //   MsgWaitForMultipleObjects(0, nullptr, FALSE, wait == no_deadline ? INFINITE : DWORD(wait * 1000), QS_ALLINPUT);
+    //
+    // pass the real time that passed to the next begin_frame (input_state::delta_time), sleep included.
+    [[nodiscard]] f64 next_wake_seconds() const noexcept;
 
     // widget ids --------------------------------------------------------------
     // two widgets that hash to the same id in the same scope share their animation, active and focus state: the
     // second one steals the first one's press, and neither is obviously wrong on screen. debug builds count them
     // (`stats().id_collisions`) and remember the first, which is almost always a repeated label -- give one of them
     // a "label##suffix" or wrap it in push_id(). release builds do not check, and this returns 0 / an empty view.
-    [[nodiscard]] id   id_collision() const noexcept { return collision_id_; }
-    [[nodiscard]] std::string_view id_collision_label() const noexcept
-    {
-        return {collision_label_.data(), collision_label_len_};
-    }
+    [[nodiscard]] id   id_collision() const noexcept;
+    [[nodiscard]] std::string_view id_collision_label() const noexcept;
 
     // everything stats() reports, drawn: frame cost, the geometry that came out, how much culling and measure
     // caching saved, the idle state, and -- in red, because they are silent otherwise -- overflows and id
@@ -1764,7 +1850,7 @@ public:
     // smooth per-key value chasing `target` at the theme's animation speed (or `speed`, in 1/seconds). starts at `target`
     [[nodiscard]] f32 animate(std::string_view key, f32 target, f32 speed = 0.0f);
 
-    [[nodiscard]] f32  content_width() const noexcept { return layout_.width; }
+    [[nodiscard]] f32  content_width() const noexcept;
     // the geometry an app would otherwise hardcode: how much room a scrollbar takes (already subtracted from
     // content_width() when one is showing), and the visible rectangle of the innermost scrolling region being built
     // (the child, otherwise the window body) in logical screen coordinates
@@ -1772,12 +1858,12 @@ public:
     [[nodiscard]] rect content_rect() const noexcept;
     // the press that activated the last tree row landed on its arrow, not on the label: what tree_flags::arrow_only
     // tests internally, so a caller does not have to guess the hit zone
-    [[nodiscard]] bool item_arrow_hit() const noexcept { return last_item_arrow_; }
+    [[nodiscard]] bool item_arrow_hit() const noexcept;
     // the label of the last row / text_ellipsis did not fit and was cut with "..."  (so: add a tooltip)
-    [[nodiscard]] bool item_truncated() const noexcept { return last_item_truncated_; }
-    [[nodiscard]] f32  frame_height() const noexcept { return font_.line_height(current_font()) + style_.frame_padding.y * 2.0f; }
-    [[nodiscard]] vec2 mouse_pos() const noexcept { return mouse_; }
-    [[nodiscard]] vec2 display_size() const noexcept { return display_; }
+    [[nodiscard]] bool item_truncated() const noexcept;
+    [[nodiscard]] f32  frame_height() const noexcept;
+    [[nodiscard]] vec2 mouse_pos() const noexcept;
+    [[nodiscard]] vec2 display_size() const noexcept;
 
     // fonts ----------------------------------------------------------------
     // ids follow context_config::font, then extra_fonts. the current font applies to text and widget sizes until popped;
@@ -1785,7 +1871,7 @@ public:
     void push_font(font_id f) noexcept;
     void pop_font() noexcept;
     [[nodiscard]] font_scope with_font(font_id f) noexcept { push_font(f); return font_scope{*this}; }
-    [[nodiscard]] font_id    current_font() const noexcept { return font_stack_[font_depth_]; }
+    [[nodiscard]] font_id    current_font() const noexcept;
 
     // disabled items -------------------------------------------------------
     // everything submitted until end_disabled() is drawn faded and does not react: no hover highlight, no press, no
@@ -1795,7 +1881,7 @@ public:
     void begin_disabled(bool disabled = true) noexcept;
     void end_disabled() noexcept;
     [[nodiscard]] disabled_scope disabled_if(bool disabled = true) noexcept { begin_disabled(disabled); return disabled_scope{*this}; }
-    [[nodiscard]] bool item_enabled() const noexcept { return disabled_depth_ == 0; }
+    [[nodiscard]] bool item_enabled() const noexcept;
 
     // clipboard ------------------------------------------------------------
     // the hooks the text fields use (set_clipboard), for an app that wants to copy or paste a string of its own
@@ -1814,290 +1900,69 @@ public:
     [[nodiscard]] style_scope style_overrides(std::initializer_list<style_override> list) noexcept;
 
     // access ---------------------------------------------------------------
-    [[nodiscard]] strata::style&       theme() noexcept { return style_; }
-    [[nodiscard]] const strata::style& theme() const noexcept { return style_; }
-    [[nodiscard]] const font_atlas&    font() const noexcept { return font_; }
-    [[nodiscard]] u64                  frame_index() const noexcept { return frame_; }
+    [[nodiscard]] strata::style&       theme() noexcept;
+    [[nodiscard]] const strata::style& theme() const noexcept;
+    [[nodiscard]] const font_atlas&    font() const noexcept;
+    [[nodiscard]] u64                  frame_index() const noexcept;
     // seconds of ui time: the sum of the frame deltas passed to begin_frame
-    [[nodiscard]] f64                  time() const noexcept { return time_; }
+    [[nodiscard]] f64                  time() const noexcept;
 
     // zeroes and frees the cpu copy of the font bitmap; call once the renderer exists
-    void release_font_pixels() noexcept { font_.discard_pixels(); }
+    void release_font_pixels() noexcept;
 
 private:
-    struct interaction {
-        bool hovered{};
-        bool held{};
-        bool pressed{};
-    };
+    struct interaction;
 
-    struct anim_slot {
-        id   key{};
-        u64  last_frame{};
-        f32  hover{};
-        f32  active{};
-        f32  toggle{};
-        f32  custom{};
-        bool custom_init{};
-    };
+    struct anim_slot;
 
-    struct window_state {
-        id   key{};
-        vec2 pos{};
-        f32  width{};
-        f32  height{};      // 0: follows the content
-        f32  content_h{};
-        f32  scroll{};
-        f32  grab{};        // scrollbar: where in the thumb it was pressed
-        bool collapsed{};
-        bool resizable{};
-        bool size_set{};
-        bool overflow{};    // content taller than the body last frame (scrolling windows)
-        f32  capped_h{};    // auto-height window that would reach past the display: the height it is shown at, 0 = not capped
-        // docking
-        u32  dock{};        // 1 + index of the dock node the window sits in, 0 = floating
-        u32  dock_order{};  // position among the tabs of its node
-        vec2 float_size{};  // size to go back to when un-docked
-        bool docked_now{};  // drawn as a docked window this frame
-        f32  ghost{};       // 0..1: see-through while it is carried over a dock target
-        f32  title_h{};
-        u64  last_frame{};
-        id   dock_owner{};     // docked in a floating dock: that dock's window (the windows stack together)
-        bool menubar{};        // the main menu bar (no padding, above the other windows)
-        u32  modal_level{};    // 1 + index in the modal stack, 0 = not a modal
-        u8   title_len{};
-        std::array<char, 48> title{}; // visible part of the title, for dock tabs
-    };
+    struct window_state;
 
-    struct layout_state {
-        vec2 origin{};
-        f32  width{};
-        f32  cursor_x{};
-        f32  line_top{};
-        f32  line_h{};
-        f32  bottom{};
-        f32  next_width{};
-        f32  bound_bottom{}; // bottom of the space a fill-height child / strip may use (0 = unbounded)
-        f32  right{};        // the furthest right edge of anything placed
-        f32  gutter{};       // width taken off `width` by push_right_gutter (same_line_right adds it back)
-        bool same_line{};
-        bool first{true};
-    };
+    struct layout_state;
 
-    struct saved_color {
-        style_color which{};
-        color       previous{};
-    };
-    struct saved_var {
-        style_var which{};
-        f32       previous{};
-    };
+    struct saved_color;
+    struct saved_var;
 
     // a contiguous slice of draw commands and who emitted it: windows are restacked and popups lifted by reordering runs
-    struct cmd_run {
-        u32 first{};
-        u32 count{};
-        u32 owner{};
-    };
+    struct cmd_run;
 
-    struct field_layout {
-        rect control;
-        rect label_row;
-        bool has_label{};
-    };
+    struct field_layout;
 
     static constexpr u32 max_tree_depth    = 16;
     static constexpr u32 max_table_columns = 16;
     static constexpr u32 max_tables        = 32;
     static constexpr u32 max_table_depth   = 4;
 
-    struct tree_frame {
-        f32 arrow_x{};
-        f32 children_top{};
-        f32 saved_origin_x{};
-        f32 saved_width{};
-    };
-    struct tree_state {
-        id   key{};
-        id   seed{};  // the id scope it was submitted in: its parent node, for the recursive open / close
-        bool open{};
-    };
+    struct tree_frame;
+    struct tree_state;
 
-    struct table_state { // persists across frames
-        id                                 key{};
-        u64                                last_frame{};
-        u32                                columns{};
-        std::array<f32, max_table_columns> frac{}; // column widths as fractions of the table width
-        std::array<u8, max_table_columns>  order{}; // the column shown at each position (reorderable tables)
-        u16                                hidden{}; // a bit per column
-        u8                                 press_col1{}; // 1 + the header that was pressed / is being dragged, 0 = none
-        u8                                 drag_col1{};
-        f32                                press_x{};
-        f32                                row_hint{};
-        f32                                scroll{};
-        f32                                grab{};
-        f32                                content_h{};
-        bool                               inited{};
-    };
-    struct table_column {
-        std::string_view   label;
-        f32                fixed{};
-        f32                weight{1.0f};
-        table_column_flags flags{};
-    };
-    struct table_frame { // the table being built this frame
-        bool                                      active{};
-        table_state*                              state{};
-        table_flags                               flags{};
-        u32                                       ncols{};
-        u32                                       setup_count{};
-        std::array<table_column, max_table_columns> cols{};
-        std::array<f32, max_table_columns + 1>    col_x{};   // the edges of the visible columns, left to right
-        std::array<f32, max_table_columns>        x0{}, x1{}; // where each column is (by declared index; hidden: empty)
-        std::array<u8, max_table_columns>         vis{};     // the declared index of each visible column, left to right
-        u32                                       nvis{};
-        f32                                       frac_total{1.0f}; // the widths of the visible columns add up to this
-        u32                                       tree_depth{};
-        f32                                       height_limit{};
-        vec2                                      origin{};
-        f32                                       width{};
-        layout_state                              outer{};
-        f32                                       pad_x{}, pad_y{}, min_row_h{};
-        f32                                       row_y{};
-        f32                                       row_top{}, row_bottom{};
-        u32                                       row_index{};
-        int                                       col{-1};
-        bool                                      columns_ready{};
-        bool                                      header_done{};
-        bool                                      body_started{};
-        bool                                      in_row{};
-        bool                                      row_visible{};
-        bool                                      row_had_content{};
-        bool                                      scroll_mode{};
-        bool                                      clip_pushed{};
-        bool                                      cell_clip{}; // the current cell has its own clip rectangle
-        f32                                       body_top{}, body_h{};
-    };
+    struct table_state;
+    struct table_column;
+    struct table_frame;
 
-    struct child_state { // persists across frames
-        // horizontal counterparts of scroll / grab / content_h / overflow, used by child_flags::horizontal
-        f32  scroll_x{};
-        f32  grab_x{};
-        f32  content_w{};
-        bool overflow_x{};
-        id   key{};
-        u64  last_frame{};
-        f32  scroll{};
-        f32  grab{};
-        f32  content_h{};
-        bool overflow{};
-    };
-    struct child_frame { // the child being built
-        child_state* state{};
-        rect         bounds;
-        rect         inner;
-        layout_state outer{};
-        child_flags  flags{};
-    };
-    struct card_state {
-        id   key{};
-        u64  last_frame{};
-        f32  content_h{};
-    };
-    struct card_frame {
-        card_state*  state{};
-        layout_state outer{};
-    };
+    struct child_state;
+    struct child_frame;
+    struct card_state;
+    struct card_frame;
 
     // docking: the tree of panes and the drag state are in internal::dock_state (src/dock_state.hpp)
     static constexpr u8 no_node = 0xff;
 
     // text editing: undo history of the focused field
-    enum class edit_kind : u8 { other, typing, erase_back, erase_fwd };
-    struct edit_op {
-        std::size_t pos{};      // where the change happened
-        std::size_t off{};      // in the history text: removed bytes, then inserted bytes
-        std::size_t rem_len{};
-        std::size_t ins_len{};
-        std::size_t cursor_before{};
-        std::size_t anchor_before{};
-        std::size_t cursor_after{};
-        edit_kind   kind{};
-        f64         time{};
-    };
-    struct edit_history {
-        std::vector<edit_op> ops;
-        secure_string        text; // the typed text lives here, so it is zeroed like the edit buffer
-    };
-    struct ml_line {
-        u32 start{}; // byte range of the line, without its newline
-        u32 end{};
-    };
+    enum class edit_kind : u8;
+    struct edit_op;
+    struct edit_history;
+    struct ml_line;
 
     // rich text layout scratch
-    struct rich_run {
-        std::string_view text;
-        font_id          font{};
-        color            col;
-        text_flags       style{};
-        std::string_view link;      // the href of the enclosing <a=...>, empty when this run is not a link
-        bool             own_col{}; // a <c=> inside the link set the colour: do not repaint it with the accent
-    };
-    struct rich_seg {
-        std::string_view text;
-        font_id          font{};
-        color            col;
-        text_flags       style{};
-        f32              x{};
-        std::string_view link;
-        bool             own_col{};
-    };
-    struct rich_line {
-        u32 first{};
-        u32 count{};
-        f32 width{};
-        f32 asc{};
-        f32 height{};
-        f32 y{};
-    };
+    struct rich_run;
+    struct rich_seg;
+    struct rich_line;
 
     // menus: the chain of open popups (0 = the root: a context menu or a menu of the bar, 1.. = submenus)
     static constexpr u32 max_menu_levels = 4;
-    struct menu_level {
-        id   key{};
-        vec2 pos{};       // where the popup wants to open
-        rect anchor{};    // the header / row it opened from: pressing it is not "outside"
-        vec2 size{};      // measured last frame
-        rect rect_cur{};
-        rect rect_prev{};
-        f32  age{};
-        bool seen{};      // built this frame
-        bool from_bar{};
-    };
-    struct menu_frame { // a popup being built
-        layout_state saved_layout{};
-        u32          prev_owner{};
-        f32          saved_spacing{};
-        f32          content_w{};
-        u32          level{};
-        bool         saved_overlay{};
-        bool         keys_ok{};   // the deepest open popup: letter keys activate mnemonics here
-    };
-    struct toast_entry {
-        std::string title;
-        std::string text;
-        toast_kind  kind{};
-        f32         duration{};
-        f32         age{};
-        f32         anim{};   // slide / fade in, 0..1
-        bool        dismissed{};
-        u64         seq{};
-        std::vector<std::string> actions;
-        f32         progress{-1.0f};
-        bool        sticky{};       // no timer until it completes / is closed
-        f32         busy_phase{};
-    };
-    std::vector<std::pair<u64, int>> toast_results_; // (toast, button) pressed and not yet read
+    struct menu_level;
+    struct menu_frame;
+    struct toast_entry; // (toast, button) pressed and not yet read
 
     static constexpr u32 max_children = 32;
     static constexpr u32 max_child_depth = 4;
@@ -2114,7 +1979,7 @@ private:
     static constexpr u32 run_overlay   = 0xfffffffeu;
     static constexpr u32 run_backdrop  = 0xfffffff0u; // + modal level - 1: the dimmed area behind a modal window
 
-    [[nodiscard]] id       current_seed() const noexcept { return id_stack_[id_depth_]; }
+    [[nodiscard]] id       current_seed() const noexcept;
     // the id of a widget from its label, in the current id scope: hash_id(label, current_seed()) plus, in debug
     // builds, remembering the label so a collision on this id can name it. every widget that keys itself off a
     // label goes through here.
@@ -2124,11 +1989,22 @@ private:
     [[nodiscard]] anim_slot& anim_for(id key) noexcept;            // finds or creates (and keeps alive)
     [[nodiscard]] anim_slot* anim_find(id key) noexcept;           // finds only
     void                     anim_rehash() noexcept;
-    struct press_anim { f32 hover{}; f32 active{}; };
+    struct press_anim;
     // idle buttons own no animation state
     [[nodiscard]] press_anim button_anim(id key, const interaction& in) noexcept;
     [[nodiscard]] f32      approach(f32 current, f32 target, f32 speed = 0.0f) const noexcept;
     [[nodiscard]] window_state* window_for(id key, vec2 pos, f32 width) noexcept;
+    // a value widget reports its edit state: `session` its id, `changed` what it returns, `engaged` whether it is held /
+    // typed into / has its popup open right now. sets what item_activated() ... item_deactivated_after_edit() answer
+    void track_edit(id session, bool changed, bool engaged) noexcept;
+    // a widget made of other widgets reports for all of them: the parts it uses keep quiet while this lives
+    struct edit_mute;
+    std::expected<void, font_error> build_font_atlas(f32 scale);
+    void                   forget_window(id key) noexcept;
+    // a fixed-size table / stack ran out: counted in frame_stats and reported (once per `what`) through diag_
+    void                   report_limit(const char* what, u32 capacity) noexcept;
+    // hands `message` to the diagnostics hook (or stderr) unless `once_key` was reported before
+    void                   diagnose(diagnostic_kind kind, std::string_view message, u64 once_key) noexcept;
     [[nodiscard]] rect     layout_place(vec2 size) noexcept;
     // a row whose rectangle is outside the clip rectangle does no work at all: no hit test, no animation slot, no
     // measuring, no geometry. the layout has already been advanced when this is asked, so the scrollbar range, the
@@ -2147,11 +2023,7 @@ private:
     // the accessory strip of the row just submitted: its rectangle, and false when there is no row to attach to
     [[nodiscard]] bool     accessory_slot(f32 width, rect& out) noexcept;
     // a row that accessories may be hung on (see row_anchor_)
-    void                   note_row_anchor(id key, const rect& r) noexcept
-    {
-        row_anchor_      = key;
-        row_anchor_rect_ = r;
-    }
+    void                   note_row_anchor(id key, const rect& r) noexcept;
     void                   allow_item_overlap_at(id key, const rect& r) noexcept;
     // the scroll offset / view of the innermost scrolling region being built, or nullptr when nothing scrolls
     [[nodiscard]] f32*     scroll_slot(rect& view) noexcept;
@@ -2269,474 +2141,65 @@ private:
     void draw_combo_popup(id key, const rect& anchor, const std::string_view* items, std::size_t count,
                           int& current, bool& changed);
 
-    font_atlas font_;
-    draw_list  dl_;
-    strata::style style_;
-
     // what set_scale needs to rebuild the atlas (strings are owned, the font_config views are re-pointed)
-    struct font_source {
-        std::string face;
-        std::string file;
-        font_config cfg;
-    };
-    std::vector<font_source> font_sources_;
-    u32  max_atlas_size_{4096};
-    f32  scale_{1.0f};
-    u32  font_generation_{1};
-
-    u64  frame_{};
-    f64  time_{};
-    f32  dt_{1.0f / 60.0f};
-    vec2 display_{};
-    vec2 mouse_{};
-    vec2 mouse_delta_{};
-    f32  wheel_{};
-    f32  wheel_x_{};   // horizontal wheel this frame (see input_state::wheel_x)
-    bool mouse_down_{};
-    bool mouse_pressed_{};
-    bool mouse_released_{};
-    bool have_mouse_{};
-
-    std::array<key_event, max_key_events> keys_{};
-    u32                                   key_count_{};
-    std::array<char, max_typed_bytes>     typed_{};
-    u32                                   typed_len_{};
-    clipboard_hooks                       clipboard_{};
-
-    id active_{};
-    cursor_kind cursor_{};
-    bool        wheel_consumed_{}; // an inner scroller (table, popup list) used this frame's wheel
-    bool        wheel_x_consumed_{};
-    id hovered_window_prev_{};
-    id hovered_window_cur_{};
-    u32 hovered_z_{no_z};
-    id  focused_window_{}; // topmost window of the previous frame
-
-    window_state* cur_{};
-    id            cur_window_{};
-    layout_state  layout_{};
-
-    std::array<id, max_id_depth + 1> id_stack_{};
-    u32                              id_depth_{};
-
-    std::array<saved_color, max_overrides> color_stack_{};
-    std::array<saved_var, max_overrides>   var_stack_{};
-    u32                                    color_depth_{};
-    u32                                    var_depth_{};
-
-    std::array<font_id, max_font_depth + 1> font_stack_{};
-    u32                                     font_depth_{};
-
-    // back-to-front window stacking, persistent across frames
-    std::array<id, max_windows> z_order_{};
-    u32                         z_count_{};
-    // windows submitted this frame, in call order
-    std::array<window_state*, max_windows> frame_windows_{};
-    u32                                    frame_window_count_{};
-
-    // draw-command runs of this frame, in emission order
-    std::array<cmd_run, max_runs> runs_{};
-    u32                           run_count_{};
-    u32                           run_owner_{run_base};
-    u32                           run_start_{};
-    bool                          runs_overflow_{};
-
-    // input extras
-    bool          mouse_right_down_{};
-    bool          mouse_right_pressed_{};
-    bool          mouse_middle_down_{};
-    bool          mouse_middle_pressed_{};
-    bool          mod_ctrl_{};
-    bool          mod_shift_{};
-    bool          mod_alt_{};
-
-    // number widgets
-    id            number_edit_{};       // the drag field being typed into
-    std::string   number_buf_;
-    f32           drag_frac_{};         // integer drags: the part of a step not applied yet
-    vec2          drag_start_{};        // where the drag field was pressed
-    bool          drag_moved_{};        // the pointer left the dead zone around it: this is a drag, not a click
-    bool          input_rect_set_{};    // the next input_core takes this rectangle instead of laying itself out
-    rect          input_rect_{};
-
-    // selectable text
-    u32           selectable_depth_{};
-    color         ml_color_{0, 0, 0, 0}; // text color for the next input_multiline_core (alpha 0: the theme's)
-    std::vector<vec2> plot_scratch_;
+    struct font_source;
     // the view a zoomable chart is showing (zoom / pan survive between frames)
-    struct chart_view {
-        id   key{};
-        bool x_set{};
-        bool y_set{};
-        f32  x_lo{}, x_hi{}, y_lo{}, y_hi{}; // the user's view
-        f32  sx_lo{}, sx_hi{}, sy_lo{}, sy_hi{}; // what was drawn last frame
-        rect inner;                          // ... and where
-        f64  last_click{-10.0};
-        u64  last_frame{};
-    };
-    std::array<chart_view, 16> chart_views_{};
+    struct chart_view;
     [[nodiscard]] chart_view& chart_view_for(id key) noexcept;
     void chart_impl(std::string_view label, std::span<const plot_series> series, const plot_options& o);
 
     // modals
     static constexpr u32 max_modals = 4;
-    std::array<id, max_modals> modal_stack_{};
-    u32           modal_count_{};
-    u32           next_window_modal_level_{};
-    bool          next_window_menubar_{};
-    struct modal_frame {
-        bool alpha_pushed{};
-    };
-    std::array<modal_frame, max_modals> modal_frames_{};
-    u32           modal_depth_{};       // modals being built right now
-    id            modal_top_prev_{};    // the modal that has the input (as of the last frame)
-
-    // menus
-    std::array<menu_level, max_menu_levels> menu_open_{};
-    std::array<menu_frame, max_menu_levels> menu_stack_{};
-    u32           menu_depth_{};
-    bool          menu_close_all_{};
-    bool          menu_hit_prev_{};     // the pointer is over an open menu (previous frame's rectangles)
-    bool          in_menu_bar_{};
-    f32           menu_bar_h_{};
-    f32           menu_bar_saved_spacing_{};
-
-    // toasts
-    std::vector<toast_entry> toasts_;
-    screen_corner toast_corner_{screen_corner::bottom_right};
-    bool          toast_hover_cur_{};
-    bool          toast_hover_prev_{};
-    u64           toast_seq_{};
-
-    // docking animation
-    bool          dock_animation_{true};
-
-    // text input
-    edit_history  undo_;
-    edit_history  redo_;
-    bool          edit_history_on_{};
-    bool          edit_readonly_{};
-    std::size_t   edit_max_bytes_{};
-    u64           edit_version_{};     // bumped on every change of the edit buffer
-    f32           edit_pref_x_{-1.0f}; // multi-line: column kept while moving up / down
-    std::vector<ml_line> ml_lines_;
-    u64           ml_cache_key_{};
-    id          focus_id_{};
-    bool        focus_seen_{};
-    bool        press_claimed_{};
-    bool        submitted_{};
-    secure_string edit_buf_; // the live text of the focused field; zeroed as soon as focus goes away
-    std::size_t edit_cursor_{};
-    std::size_t edit_anchor_{};
-    f32         edit_scroll_{};
-    f64         caret_time_{};
-    f64         last_click_time_{-10.0};
-    vec2        last_click_pos_{};
-    u32         click_count_{};      // 1, 2, 3 for single / double / triple clicks (a fourth starts over)
+    struct modal_frame;      // 1, 2, 3 for single / double / triple clicks (a fourth starts over)
     [[nodiscard]] u32 register_click() noexcept;
-
-    // styled contents (input_spans), for the field being built
-    std::vector<text_span> edit_spans_pending_;
-    std::vector<text_span> edit_spans_;
-    u64         edit_spans_hash_{};
+    // the text caret's blink phase: on for caret_blink_, off for as long (always on when the system says not to blink)
+    [[nodiscard]] bool caret_visible() const noexcept;
     void ed_prepare_spans(std::size_t text_size, font_id base, f32& line_h, f32& ascent, bool ignore);
     [[nodiscard]] f32 ed_measure(font_id base, std::string_view t, std::size_t a, std::size_t b) const;
     [[nodiscard]] font_id ed_font_at(font_id base, std::size_t i) const noexcept;
     void ed_draw(vec2 pos, f32 line_ascent, color col, std::string_view t, std::size_t a, std::size_t b, font_id base);
-
-    // input method: the composition (from input_state) and what the focused field tells the host
-    std::array<char, 256> ime_text_{};
-    u32         ime_len_{};
-    u32         ime_cursor_{};
-    bool        ime_want_{};
-    vec2        ime_pos_{};
-    f32         ime_line_h_{};
     void draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f);
-
-    // table layouts loaded before the table was drawn: applied once when it is
-    std::vector<std::pair<id, std::string>> table_pending_;
-
-    // tab bars: scratch for the cells of the bar being built, and the tab that is being dragged to a new place
-    std::vector<rect> tab_cells_;
-    std::vector<f32>  tab_emph_;
-    id                tabdrag_tab_{};
-    id                tabdrag_cand_{};
-    f32               tabdrag_grab_{};
-    f32               tabdrag_press_x_{};
-
-    // input masks and code fields: what the text field being built has to do beyond plain editing
-    std::string_view edit_mask_;         // input_masked: the mask (only while the call runs)
-    id               focus_request_{};   // a text field that should take the keyboard when it is drawn next
-    struct code_mode {
-        bool                                          on{};
-        code_flags                                    flags{};
-        int                                           tab_size{4};
-        std::span<const std::pair<u32, u32>>          marks{}; // find matches (start, length), sorted
-        int                                           mark_active{-1};
-        std::size_t                                   goto_offset{~std::size_t{0}};
-    };
-    code_mode code_;
-    struct code_state { // per code field, across frames
-        id          key{};
-        u64         last_frame{};
-        bool        find_open{};
-        bool        replace_open{};
-        bool        match_case{};
-        bool        open_request{}; // code_find(): give the find field the keyboard
-        int         active{-1};
-        int         want_line{};
-        std::string find;
-        std::string replace;
-    };
-    std::vector<code_state>                code_states_;
-    std::vector<std::pair<u32, u32>>       code_marks_;
+    void apply_pending_scroll(id key, f32& scroll_y, f32* scroll_x) noexcept;
+    [[nodiscard]] static std::string table_layout_text(const table_state& t);   // a text field that should take the keyboard when it is drawn next
+    struct code_mode;
+    struct code_state;
     [[nodiscard]] code_state& code_state_for(id key);
-
-    // date picker: the month being shown, and the popup it belongs to
-    id  cal_key_{};
-    i32 cal_year_{};
-    i32 cal_month_{};
-
-    // generic popups (open_popup): where it opened from and how big its content was last frame
-    rect gpopup_anchor_{};
-    vec2 gpopup_size_{};
-    id   gpopup_key_{};       // the popup gpopup_size_ was measured for
-    bool gpopup_hidden_{};    // this frame's popup is only being measured
-
-    // drag and drop
-    bool            dd_active_{};     // a payload is being dragged
-    bool            dd_cancelled_{};  // Esc: ignored until the button is let go
-    id              dd_source_{};     // the widget it was picked up from
-    id              dd_candidate_{};  // a pressed widget that becomes a drag source once the pointer has moved
-    vec2            dd_press_pos_{};
-    std::string     dd_type_;
-    std::vector<u8> dd_data_;
-    vec2            dd_size_{};       // the preview panel, measured last frame
-    bool            dd_hidden_{};
-    bool            dd_saved_overlay_{};
-    u32             dd_prev_owner_{};
-    layout_state    dd_saved_layout_{};
-    rect            last_item_rect_{};
-
-    // popup (combo)
-    id   popup_id_{};
-    bool in_overlay_{};
-    bool popup_open_cur_{};
-    bool popup_open_prev_{};
-    rect popup_rect_cur_{};
-    rect popup_rect_prev_{};
-    rect popup_anchor_cur_{};  // the combo box that owns the popup
-    rect popup_anchor_prev_{};
-    bool swallow_press_{};     // this frame's press only closed a popup: widgets must ignore it
-    f32  popup_scroll_{};
-    int  popup_hover_{-1};
-
-    // color picker (the one being edited)
-    id    pick_key_{};
-    f32   pick_h_{}, pick_s_{}, pick_v_{};
-    color pick_last_{};
-    // generic popup content
-    layout_state popup_saved_layout_{};
-    u32          popup_prev_owner_{run_base};
-
-    // trees, tables
-    std::array<tree_frame, max_tree_depth> tree_stack_{};
-    u32                                    tree_depth_{};
-    std::vector<tree_state>                tree_states_; // sorted by key
-    bool                                   item_pressed_{};
-    std::array<table_state, max_tables>    tables_{};
-    table_frame                            table_{};
-    std::array<table_frame, max_table_depth> table_stack_{}; // the tables around the current one
-    u32                                    table_depth_{};
-
-    // rich text
-    u32                                    rich_depth_{};
-    std::vector<rich_run>                  rich_runs_;
-    std::vector<rich_seg>                  rich_segs_;
-    std::vector<rich_line>                 rich_lines_;
-
-    // docking
-    std::unique_ptr<internal::dock_state>  dock_;
-    bool                                   dock_chrome_cur_{};
-    bool                                   dock_chrome_prev_{};
-    bool                                   hovered_docked_cur_{};
-    bool                                   hovered_docked_prev_{};
-    bool                                   window_faded_{};   // the window being built pushed an alpha that end_window pops
-    // child regions, cards
-    std::array<child_state, max_children>  children_{};
-    std::array<child_frame, max_child_depth> child_stack_{};
-    u32                                    child_depth_{};
-    std::array<card_state, max_cards>      cards_{};
-    std::array<card_frame, max_card_depth> card_stack_{};
-    u32                                    card_depth_{};
-
-    // window flags of the window being built, and its frame (for drag_by_body)
-    window_flags cur_flags_{};
-    rect         cur_frame_{};
-
-    // per-frame instrumentation: the frame being built, and the one stats() reports
-    frame_stats stats_cur_{};
-    frame_stats stats_prev_{};
-    f64         begin_frame_ms_{};   // how long the last begin_frame took
-    f64         frame_clock_{};      // when it started
-
-    // idling: a hash of everything the renderer sees, so an untouched ui can be recognised and skipped.
-    // 0 is "no previous frame", which invalidate() writes to force the next one to count as changed.
-    u64  geometry_hash_{};
-    bool frame_unchanged_{};
-    bool anim_settling_{};
-    // set by approach() whenever it returned something short of its target: the frame after this one will look
-    // different even if nothing is touched. mutable because approach() is const.
-    mutable bool anim_moved_{};
-
-    // rich-text links. the hrefs are views into the caller's markup, so what is reported is copied out: the strings
-    // are reused every frame and never reallocate in steady state. `rich_links_live_` is set only by rich_text /
-    // rich_text_wrapped -- a link inside a button's caption is drawn but must not steal the button's click.
-    std::string rich_clicked_;
-    std::string rich_hovered_;
-    bool        rich_links_live_{};
 
     // debug-only duplicate-id detection. a direct-mapped table of the ids submitted this frame: a hit whose id
     // matches is a collision. direct-mapped (not a set) so it cannot allocate or grow mid-frame; a collision between
     // two ids that land in different slots is missed, which is the usual trade for a fixed table -- the common case
     // (the very same label twice) always lands in the same slot and is always caught.
-    static constexpr u32 id_seen_size = 2048; // power of two
-    std::vector<id>       id_seen_;
-    id                    collision_id_{};
-    std::array<char, 64>  collision_label_{};
-    u32                   collision_label_len_{};
+    static constexpr u32 id_seen_size = 2048;
     // ... and the label each id came from, so the report can name it. same direct-mapped shape.
-    struct id_label_slot {
-        id                   key{};
-        std::array<char, 48> text{};
-        u8                   len{};
-    };
-    static constexpr u32       id_label_size = 1024; // power of two
-    std::vector<id_label_slot> id_labels_;
+    struct id_label_slot;
+    static constexpr u32       id_label_size = 1024;
 
     // label_size() cache: a direct-mapped table of (font, string) -> size, thrown away when the atlas changes.
     // rich (markup) labels are never cached: their size depends on the style stack.
-    struct measure_slot {
-        u64  key{};   // 0 = empty
-        vec2 size{};
-    };
-    static constexpr u32 measure_cache_size = 4096; // power of two
-    std::vector<measure_slot> measure_cache_;
-    u32                       measure_cache_gen_{};
-
-    // items submitted on top of an earlier one that called allow_item_overlap()
-    id   overlap_key_{};        // the item that offered its rectangle, this frame
-    rect overlap_rect_{};
-    bool overlap_stolen_{};     // a later item took the press from it
-    id   overlap_taken_cur_{};  // ... or was merely hovered over it: its hover is suppressed next frame
-    id   overlap_taken_prev_{};
-
-    // set_next_item_open: 0 none, 1 open, 2 close, 3 open recursively, 4 close recursively
-    u8   next_open_{};
-    // open_all_tree_nodes / close_all_tree_nodes / a recursive arrow click: 0 none, 1 open, 2 close
-    u8   tree_bulk_{};
-    id   tree_bulk_seed_{};
-    u32  tree_bulk_frames_{};   // a bulk open also applies to nodes that only appear as their parents open
+    struct measure_slot;
+    static constexpr u32 measure_cache_size = 4096;   // a bulk open also applies to nodes that only appear as their parents open
 
     // keyboard navigation of a list or tree (nav_begin / nav_end)
-    struct nav_item {
-        id   key{};
-        rect bounds{};
-        u32  depth{};
-        bool node{};
-        bool open{};
-    };
-    struct nav_state {
-        id                    scope{};      // the scope being built, 0 between nav_end and the next nav_begin
-        id                    scope_key{};  // which list the cursor belongs to (it starts over for another one)
-        id                    cursor{};     // the row the cursor is on, kept across frames
-        id                    activate_pending{}; // a row Enter picked last frame, reported as a press on this one
-        bool                  active{};     // the scope has the keyboard (no text field has it)
-        std::vector<nav_item> items;        // every row submitted this frame, culled ones included
-    };
-    nav_state nav_{};
+    struct nav_item;
+    struct nav_state;
     // right gutters (push_right_gutter), so they nest
     static constexpr u32 max_gutter_depth = 8;
-    std::array<f32, max_gutter_depth> gutter_stack_{};
-    u32                               gutter_depth_{};
 
     // disabled scopes (begin_disabled): the depth, whether the outermost one pushed the fade, and which of the
     // open scopes actually counted, so end_disabled() stays balanced when enabled and disabled ones nest
     static constexpr u32 max_disabled_depth = 16;
-    u32                                disabled_depth_{};
-    bool                               disabled_alpha_{};
-    std::array<bool, max_disabled_depth> disabled_stack_{};
-    u32                                disabled_count_{};
-
-    // every key held this frame, straight from input_state
-    std::array<u8, 32> keys_held_{};
-    // the window the keyboard belongs to: the last one pressed in, docked ones included (they do not restack, so
-    // focused_window_, which is the topmost, cannot answer this)
-    id   key_window_{};
-
-    // row accessories: the row they hang on -- which is the last selectable / tree row / custom_item, not simply the
-    // last item, because an accessory is an item itself and would otherwise become the anchor for the next one
-    f32  next_gutter_{};
-    id   row_anchor_{};
-    rect row_anchor_rect_{};
-    id   accessory_row_{};   // the row the accessories laid out so far belong to
-    f32  accessory_x_{};     // their left edge, which each one moves further left
-    rect accessory_row_rect_{};
-
-    // the self-contained confirmation (ask_confirm / confirm)
-    id          confirm_key_{};
-    u64         confirm_data_{};
-    std::string confirm_message_;
-    int         confirm_answer_{};   // set on the frame a button is pressed, read once by confirm()
-    id          confirm_answer_key_{};
-    id          confirm_open_{};     // the confirm() whose modal is up
-    bool        confirm_pending_{};  // ask_confirm() ran; the next confirm() with that id opens the modal
-    bool        confirm_remember_{}; // the state of the "don't ask again" checkbox while the dialog is open
-
-    // combo_filtered: the text of the search field in the open popup, what is left after it, and the row the
-    // keyboard is on
-    std::string      combo_filter_;
-    int              combo_filter_hover_{};
-    bool             combo_filter_focus_{};
-    std::vector<u32> combo_filter_hits_;
 
     static constexpr f32 scrollbar_w = 10.0f;
 
-    // tooltips: what the pointer rests on
-    id   last_item_key_{};
-    bool last_item_hovered_{};
-    bool last_item_focused_{};  // ... and it is where the nav cursor is
-    bool last_item_pressed_{};
-    bool last_item_double_{};   // the press that ended on it was the second of a pair
-    bool last_item_arrow_{};    // ... and it landed on a tree row's arrow
-    bool last_item_truncated_{}; // the last label did not fit and was cut
-    // double clicks on widgets, tracked apart from register_click() (whose 1 / 2 / 3 run belongs to text fields)
-    id   item_click_key_{};
-    f64  item_click_time_{-10.0};
-    vec2 item_click_pos_{};
-    bool item_dbl_pending_{};
-    id   hover_key_cur_{};
-    id   hover_key_prev_{};
-    f32  hover_time_{};
+    // edit sessions (track_edit): the flags of the value widget submitted last, the session that is open and whether it
+    // changed anything yet, and the widgets that were engaged this frame / the one before
+    struct edit_flags;     // the item (last_item_key_) the flags belong to
+    struct edit_session;
 
-    // hotkey binding
-    u32  pressed_key_{};
-    id   hotkey_capture_{};
-    bool hotkey_seen_{};
-    // hotkey_sequence(): the steps captured so far of the field currently capturing (hotkey_capture_ ensures only one)
-    std::array<key_chord, key_sequence::max_steps> seq_edit_capture_{};
-    u8   seq_edit_count_{};
-    f64  seq_edit_deadline_{};
-    // sequence_pressed(): the prefix of steps matched so far, across whichever sequences are asked about each frame;
-    // mutable so the method that only reads a chord you keep can stay const, like chord_pressed
-    mutable std::array<key_chord, key_sequence::max_steps - 1> seq_pending_{};
-    mutable u8   seq_pending_count_{};
-    mutable f64  seq_pending_time_{};
-    mutable bool seq_pending_touched_{}; // some call advanced or completed the pending prefix this frame (see begin_frame)
-
-    std::array<window_state, max_windows> windows_{};
-    std::vector<anim_slot>                anims_;     // open addressing, power-of-two size, grows on demand
-    u32                                   anim_used_{}; // occupied slots, live or stale
+    // the state (src/context_impl.hpp): private members live there, so this header does not have to change -- nor the
+    // programs built against it recompile -- when they do
+    struct impl;
+    std::unique_ptr<impl> m_;
 };
 
 

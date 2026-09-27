@@ -33,6 +33,11 @@ namespace strata::themes {
     s.shadow        = color::from_hex(0x1a25404a);
     s.modal_dim     = color::from_hex(0x1a254070);
     s.gradient      = 0.06f;
+    s.success       = color::from_hex(0x1f9d55ff); // (darker: they are read on white)
+    s.warning       = color::from_hex(0xc2610cff);
+    s.error         = color::from_hex(0xd92d3aff);
+    s.series        = {color{0, 0, 0, 0}, color::from_hex(0x0f9488ff), color::from_hex(0xd97706ff),
+                       color::from_hex(0xdb2777ff), color::from_hex(0x7c3aedff), color::from_hex(0x4d7c0fff)};
     return s;
 }
 
@@ -142,6 +147,9 @@ namespace strata::themes {
     s.shadow        = color::from_hex(0x50402040);
     s.modal_dim     = color::from_hex(0x50402060);
     s.gradient      = 0.05f;
+    s.success       = color::from_hex(0x859900ff); // solarized green / orange / red
+    s.warning       = color::from_hex(0xcb4b16ff);
+    s.error         = color::from_hex(0xdc322fff);
     return s;
 }
 
@@ -163,6 +171,9 @@ namespace strata::themes {
     s.border_width  = 2.0f;
     s.gradient      = 0.0f;
     s.shadow_blur   = 0.0f;
+    s.success       = color::from_hex(0x3ff23fff); // pure, bright hues: meaning must not depend on subtle shades here
+    s.warning       = color::from_hex(0xffdd00ff);
+    s.error         = color::from_hex(0xff4040ff);
     return s;
 }
 
@@ -235,6 +246,11 @@ namespace strata::themes {
 [[nodiscard]] std::span<const std::string_view> names() noexcept;
 // case-insensitive; false (and `out` untouched) for an unknown name
 [[nodiscard]] bool by_name(std::string_view name, style& out) noexcept;
+
+// the theme that follows the user's system settings (win32_platform::appearance() reads them): high contrast when that
+// is on, otherwise midnight for dark apps or light for light ones, with the system accent colour when it is known
+// (alpha 0 = keep the theme's). re-apply it when win32_platform::appearance_changed() says the user changed them
+[[nodiscard]] style for_appearance(bool dark, bool high_contrast, color accent = color{0, 0, 0, 0}) noexcept;
 
 // theme files: one `key = value` per line; blank lines and lines starting with `#`, `;` or `//` are comments.
 //     # my theme

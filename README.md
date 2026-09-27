@@ -28,8 +28,9 @@ Tests: `ctest --test-dir build/x64-release` runs the headless self-test and comp
 is meant to look different, `cmake --build build/x64-release --target strata_update_goldens` rewrites the goldens (review the
 diff of the images!). A golden is what one machine drew: another machine with other fonts needs its own.
 
-Requirements: `/arch:AVX2` binaries fault with an illegal instruction on CPUs without AVX2 - configure with
-`-DSTRATA_AVX2=OFF` for older machines. `fxc.exe` (Windows SDK) compiles the shaders at build time and
+Requirements: `STRATA_AVX2` is off by default, so the binaries run on any x64 CPU. Turned on, `/arch:AVX2` binaries
+fault with an illegal instruction on CPUs without AVX2 (pre-2013 Intel / pre-2015 AMD) - only for a program that controls
+the machines it runs on, never for an overlay dll. `fxc.exe` (Windows SDK) compiles the shaders at build time and
 embeds the bytecode, so no shader files or `d3dcompiler` DLL are needed at runtime.
 
 ## Sandbox
@@ -298,10 +299,11 @@ ui.dock_load_layout(layout);                     // ... and bring it back (befor
   travels: a ghost of the tab bar follows the pointer, the same drop previews show where it lands (a pane cannot be dropped on
   itself), and on release the tabs join / split the target together, keeping their order and the selected one. Let go over no dock
   and the windows float again, fanned out from the pointer.
-- **Saving a layout:** `dock_save_layout()` returns plain text (`strata-dock 1`, then per space its splits, ratios, tabs, selected
+- **Saving a layout:** `dock_save_layout()` returns plain text (`strata-dock 2`, then per space its splits, ratios, tabs, selected
   tab and edge-dock size, and per window its position, size and collapsed state). `dock_load_layout(text)` replaces the current
   arrangement: windows and spaces are matched by name, so what is not shown any more is skipped and what is not in the text keeps
-  floating; text that is not a layout (or does not fit in 32 panes) returns false and changes nothing. Save it whenever you like,
+  floating; text that is not a layout (or does not fit in 32 panes) returns false and changes nothing -- that includes a
+  `strata-dock 1` layout, saved before ids were 64-bit, whose window keys no longer match anything. Save it whenever you like,
   e.g. at exit, and load it at start up.
 
 ## DPI and UI scale
@@ -926,7 +928,19 @@ if (ui.can_idle()) {
 - `animations_settling()` -- something will look different next frame even if nobody touches anything: an animation
   still short of its target, a toast counting down, the pause before a tooltip appears. Without this the hash alone
   would idle a fading animation one frame short and freeze a toast on the screen forever.
-- `can_idle()` is both: unchanged and not settling.
+- `can_idle()` is both: unchanged and not settling. A toast that stays until it is closed does not count once it has
+  slid in (it used to keep the UI awake forever).
+- `next_wake_seconds()` -- for a host that sleeps instead of spinning: how long it may wait for input before the next
+  frame, because nothing time-driven changes the UI before then (the caret blink, a tooltip's delay). `0` means run the
+  next frame now, `no_deadline` means wait for input. Pass the real elapsed time -- sleep included -- as
+  `input_state::delta_time`: timers take all of it, animations at most 0.1 s of it.
+
+```cpp
+ui.end_frame();
+if (!ui.frame_unchanged()) { renderer.render(ui.render_data()); present(); }
+const f64 wait = ui.next_wake_seconds();
+MsgWaitForMultipleObjects(0, nullptr, FALSE, wait == strata::no_deadline ? INFINITE : DWORD(wait * 1000), QS_ALLINPUT);
+```
 - `invalidate()` forces the next frame to count as changed (a texture was replaced, the host rebuilt its back
   buffers, the theme was edited between frames).
 
@@ -941,7 +955,8 @@ touches -- about forty driver calls per frame spent putting back state nobody wi
 on (the default); an application that owns its device does not, and then has to set what it needs before whatever it
 draws next.
 
-In the sandbox, `--idle` does the skip and reports it: `--scene icons --idle --frames 300` idles 299 of 300 frames.
+In the sandbox, `--idle` does the skip, sleeps until the next deadline and reports it: `--scene icons --idle --frames 300`
+idles 299 of 300 frames. `strata::app` (below) idles this way by itself.
 The busier scenes idle none of them, because a progress bar, a spinner or an fps readout really does change the
 geometry every frame.
 
@@ -1143,7 +1158,11 @@ opt.ui = [](strata::context& ui) { if (auto w = ui.window("my tool", {40, 40}, {
 strata::overlay::install(opt);       // from a thread of your own, not from DllMain; F1 (opt.toggle_key) shows / hides it
 ```
 - **The hook:** a dummy swap chain gives the address of `IDXGISwapChain`'s vtable (all swap chains of that implementation share it);
-  `Present`, `Present1` and `ResizeBuffers` are replaced in it, no code is patched, and `uninstall()` puts the slots back. The first swap
+  `Present`, `Present1` and `ResizeBuffers` are replaced in it, no code is patched, and `uninstall()` puts the slots back. The dummy is
+  made with the api the game has already loaded -- direct3d 11, or direct3d 12 when only `d3d12.dll` is in the process -- so the
+  overlay never loads the other api (and its driver) into the game; `strata_overlay_host` checks that. When the game replaces
+  its swap chain (a resolution or display-mode change), the overlay follows to the new one and keeps its UI; it holds no view
+  of the game's buffers between frames, so the game can always make the new one. The first swap
   chain that presents with a real window is the game's: the ui goes into its back buffer just before Present (the render target bindings
   are restored, `d3d11_renderer` restores the rest), a target view is made per buffer size and released on `ResizeBuffers`. While hidden
   nothing is drawn.
@@ -1157,8 +1176,9 @@ strata::overlay::install(opt);       // from a thread of your own, not from DllM
   loads the dll like an injector, sends F1 to its window and checks that frames are drawn while open and only then; ctest runs it and writes
   a png of the frame). `STRATA_OVERLAY_SHOW=1` starts open, `STRATA_OVERLAY_CAPTURE=file.png` writes the back buffer once, `STRATA_OVERLAY_LOG=file`
   logs what the hook does.
-- **Direct3D 12:** the same swap chain class is hooked, and a dummy queue gives the vtable of `ID3D12CommandQueue`, where
-  `ExecuteCommandLists` is replaced: the direct queue that was seen executing command lists is the game's. Per frame the overlay records its
+- **Direct3D 12:** the same swap chain class is hooked. When the game's swap chain first presents, a queue made on the game's own
+  device gives the vtable of `ID3D12CommandQueue`, where `ExecuteCommandLists` is replaced: the direct queue that was seen executing
+  command lists is the game's. Per frame the overlay records its
   own command list (transition of the current back buffer to render target, `d3d12_renderer::render`, transition back), runs it on that
   queue right before Present and signals a fence, so a frame slot's allocator and upload buffers are reused only after the gpu is done
   (waits are per back buffer index, normally free). `ResizeBuffers` waits for the overlay's work and rebuilds the render target views. The
@@ -1167,6 +1187,47 @@ strata::overlay::install(opt);       // from a thread of your own, not from DllM
   is served by the one that ran last. A game that recenters or locks the cursor every frame for mouse-look fights for it (in Unity set
   `Cursor.lockState = None` while the overlay is open). The overlay does not need the game's cooperation but the game's own anti-cheat
   may not like an injected dll: do not use it in online games.
+
+## Hosting, state, HDR and diagnostics
+
+**`strata::app`** (target `strata::app`, `strata/app.hpp`) is a ready-made host: a per-monitor-dpi window, a flip-model
+direct3d 11 swap chain with a frame latency object, DPI changes, resizing, sleeping while nothing changes, a lost device
+(`on_device_reset` is where textures are made again), a close request that can be refused (`on_close_request`),
+following the system's dark / light mode and accent (`follow_system_theme`), and the user's arrangement kept in a file
+(`state_file`). strata itself still never creates a window or a device, so it can live inside someone else's (an overlay).
+
+```cpp
+auto app = strata::app::create({.title = "tool", .follow_system_theme = true, .state_file = "tool.ini"});
+return app->run([&](strata::app&, strata::context& ui) { if (auto w = ui.window("hello", {40, 40}, 300.0f)) { ui.text("hi"); } });
+```
+
+- **State:** `ui.save_state(config)` / `ui.load_state(config)` put the dock layout, window places / sizes / collapsed,
+  table columns, open tree nodes and scroll offsets into one config section; loading works before the UI is first shown.
+- **Ids:** 64 bit. `"Downloads (3)###dl"` shows the text before `###` and keys the item by what follows, so a title that
+  changes keeps its window. Window slots of windows no longer shown are given back when all 32 are in use.
+- **Edits:** `item_activated()`, `item_deactivated()`, `item_edited()`, `item_deactivated_after_edit()` after any value
+  widget -- one undo step per drag or text entry instead of one per frame.
+- **Input:** `input_state::presses` queues every key press between two frames with the modifiers it had (they are handled
+  one per frame, none is lost); typed text holds 1 KiB per frame (a whole IME sentence); key events carry `alt`; caret
+  blink and double-click time come from the system settings (`win32_platform` fills them).
+- **Smooth scrolling** is on (`set_scroll_smoothing(false)` for the jump).
+- **Themes** have `success`, `warning`, `error` and a six-colour chart palette `series`, in theme files too;
+  `win32_platform::appearance()` + `themes::for_appearance()` follow the system; `style::text_contrast` (0 = off, per
+  theme) thickens light text on dark backgrounds.
+- **HDR / srgb targets:** `renderer.set_output({output_space::scrgb | hdr10 | srgb_view, paper_white_nits})` encodes the
+  UI for an FP16 scRGB, a 10-bit HDR10 or a `*_SRGB` target. The overlay works it out from the game's swap chain
+  (`options::output` overrides it).
+- **Lost device:** `renderer.device_lost()`; recover with a new device, `ui.rebuild_font_atlas()`, `renderer.create()`,
+  new textures.
+- **Worker threads** log through `strata::log_queue` (`add` anywhere, `drain_into(log)` on the UI thread).
+- **Diagnostics:** `context_config::diagnostics` (or `set_diagnostics`) receives each distinct problem once -- a fixed
+  table that ran out, a duplicate id (debug builds), a draw list overflow; `frame_stats::limits_hit` counts them.
+- **D3D12 textures** are staged and copied at the start of the next `render()` (no CPU wait), and `destroy_texture()` may
+  be called any time.
+- **Tests:** `strata_render_test` (renderers on a real device: hostile pipeline state, output encodings, text contrast,
+  device recovery), `strata_app_test`, overlay runs on FP16 swap chains and across a replaced swap chain. The `x64-asan`
+  preset builds everything with AddressSanitizer plus `strata_fuzz` (libFuzzer over config, theme, dock layout, saved
+  state, rich text, key chords and text editing; ctest runs it briefly from `tests/fuzz/corpus`).
 
 ## TODO
 

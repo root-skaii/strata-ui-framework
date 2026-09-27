@@ -109,22 +109,29 @@ namespace literals {
 }
 } // namespace literals
 
-// widget identity. 0 is reserved for "none".
-using id = u32;
+// widget identity. 0 is reserved for "none". 64 bits: state that outlives a frame (tree nodes, tables, windows) is keyed by
+// it, and with 32 bits a big tree has even odds of two nodes sharing an id somewhere past ~77k of them
+using id = u64;
 
 // a texture owned by a renderer backend (create_texture); 0 means "none" / the font atlas
 using texture_id = u32;
 
+// fnv-1a (64 bit), continuing from `seed` (the id of the scope the label is in).
+// "text###key" hashes only "###key": the id stays the same while the text before it changes, so a window titled
+// "Downloads (3)###downloads" keeps its position, size, dock place and scroll when the count changes
 [[nodiscard]] constexpr id hash_id(std::string_view s, id seed = 0) noexcept
 {
-    u32 h = seed != 0 ? seed : 0x811c9dc5u;
+    if (const auto at = s.find("###"); at != std::string_view::npos) {
+        s.remove_prefix(at);
+    }
+    u64 h = seed != 0 ? seed : 0xcbf29ce484222325ull;
     for (const char c : s) {
-        h = (h ^ static_cast<u8>(c)) * 0x01000193u;
+        h = (h ^ static_cast<u8>(c)) * 0x100000001b3ull;
     }
     return h != 0 ? h : 1u;
 }
 
-// "label##hidden" shows "label" but hashes the whole string
+// "label##hidden" shows "label" but hashes the whole string ("label###key" shows "label" and hashes only "###key")
 [[nodiscard]] constexpr std::string_view visible_label(std::string_view s) noexcept
 {
     const auto pos = s.find("##");

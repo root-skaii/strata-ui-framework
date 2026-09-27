@@ -1,0 +1,8 @@
+strata-dock 2
+space 1 0
+S h 0.5
+L 0 1
+W 1 a
+L 0 1
+W 2 b
+win 1 10 10 200 150 0

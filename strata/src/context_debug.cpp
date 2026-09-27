@@ -3,6 +3,8 @@
 
 #include "strata/context.hpp"
 
+#include "context_impl.hpp"
+
 #include <algorithm>
 
 namespace strata {
@@ -24,7 +26,7 @@ void context::debug_metrics_window(bool& open)
     if (!open) {
         return;
     }
-    const frame_stats& st = stats_prev_;
+    const frame_stats& st = m_->stats_prev_;
 
     // its own id scope: the labels in here are common words ("vertices", "frame") and would otherwise be a
     // collision report of their own the moment an application uses the same ones
@@ -72,7 +74,7 @@ void context::debug_metrics_window(bool& open)
             text_dim("can idle");
             const std::string_view v = idle ? "yes" : "no";
             same_line_right(label_size(current_font(), v).x);
-            text_colored(idle ? kind_color(toast_kind::success, style_) : style_.text, v);
+            text_colored(idle ? kind_color(toast_kind::success, m_->style_) : m_->style_.text, v);
         }
 
         // the quiet failures. nothing is shown while there are none, so a clean window stays short and anything
@@ -81,7 +83,7 @@ void context::debug_metrics_window(bool& open)
                              st.id_collisions != 0;
         if (trouble) {
             separator();
-            const color bad = kind_color(toast_kind::error, style_);
+            const color bad = kind_color(toast_kind::error, m_->style_);
             if (st.draw_overflow != 0) {
                 text_colored(bad, "draw list overflowed: geometry was dropped");
                 text_dim("raise draw_list_limits (context_config)");
@@ -114,7 +116,7 @@ void context::debug_draw_list_window(bool& open)
     }
     // the commands of the frame being built right now, which is everything submitted before this window. that is
     // the honest thing to show: this window's own commands do not exist yet.
-    const draw_data dd = dl_.data();
+    const draw_data dd = m_->dl_.data();
 
     push_id("##strata_cmds");
     if (auto w = window("strata draw list", {400.0f, 40.0f}, {430.0f, 320.0f},

@@ -43,7 +43,7 @@ struct color_key {
     color style::*   member;
 };
 
-constexpr std::array<number_key, 14> number_keys = {{
+constexpr std::array<number_key, 15> number_keys = {{
     {"padding", &style::padding},
     {"item_spacing", &style::item_spacing},
     {"rounding", &style::rounding},
@@ -58,9 +58,10 @@ constexpr std::array<number_key, 14> number_keys = {{
     {"acrylic_brightness", &style::acrylic_brightness},
     {"popup_acrylic", &style::popup_acrylic},
     {"tooltip_delay_s", &style::tooltip_delay_s},
+    {"text_contrast", &style::text_contrast},
 }};
 
-constexpr std::array<color_key, 13> color_keys = {{
+constexpr std::array<color_key, 16> color_keys = {{
     {"window_bg", &style::window_bg},
     {"title_bg", &style::title_bg},
     {"border", &style::border},
@@ -74,7 +75,18 @@ constexpr std::array<color_key, 13> color_keys = {{
     {"text_dim", &style::text_dim},
     {"shadow", &style::shadow},
     {"modal_dim", &style::modal_dim},
+    {"success", &style::success},
+    {"warning", &style::warning},
+    {"error", &style::error},
 }};
+
+// "series_1" .. "series_6": the chart palette (series_1 = 00000000 follows the accent)
+[[nodiscard]] int series_index(std::string_view key) noexcept
+{
+    if (key.size() != 8 || !(key.starts_with("series_") || key.starts_with("SERIES_") || key.starts_with("Series_"))) { return -1; }
+    const char d = key[7];
+    return d >= '1' && d <= '6' ? d - '1' : -1;
+}
 
 [[nodiscard]] bool iequals(std::string_view a, std::string_view b) noexcept
 {
@@ -198,6 +210,13 @@ std::string to_string(const style& s, std::string_view name)
         append_color(out, s.*k.member);
         out += "\n";
     }
+    for (std::size_t i = 0; i < s.series.size(); ++i) {
+        out += "series_";
+        out += static_cast<char>('1' + i);
+        out += " = ";
+        append_color(out, s.series[i]);
+        out += "\n";
+    }
     return out;
 }
 
@@ -255,9 +274,29 @@ theme_result from_string(std::string_view text, style& s)
                 break;
             }
         }
-        if (!found) { problem(result.unknown); }
+        if (found) { continue; }
+        if (const int si = series_index(key); si >= 0) {
+            color c;
+            if (parse_color(value, c)) { s.series[static_cast<std::size_t>(si)] = c; ++result.applied; } else { problem(result.invalid); }
+            continue;
+        }
+        problem(result.unknown);
     }
     return result;
+}
+
+style for_appearance(bool dark, bool high_contrast, color accent) noexcept
+{
+    if (high_contrast) {
+        return themes::high_contrast(); // (its own accent: the system one may not have the contrast this needs)
+    }
+    style s = dark ? midnight() : light();
+    if (accent.a != 0) {
+        accent.a       = 255;
+        s.accent       = accent;
+        s.accent_hover = lerp(accent, dark ? color{255, 255, 255, 255} : color{0, 0, 0, 255}, 0.2f);
+    }
+    return s;
 }
 
 void to_config(config& cfg, const style& s, std::string_view section)

@@ -33,6 +33,10 @@ if(STRATA_BUILD_SANDBOX)
     add_subdirectory(sandbox)
 endif()
 
+if(STRATA_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
+
 if(STRATA_BUILD_OVERLAY AND STRATA_BUILD_DX11 AND STRATA_BUILD_DX12)
     add_subdirectory(overlay)
 endif()

@@ -1,0 +1,6 @@
+[ui]
+version = 1
+dock_0000 = strata-dock 2
+tree_0000 = 1f:1 2a:0
+scroll_ab = 40 0
+table_12 = order=1,0;hidden=;widths=0.5,0.5

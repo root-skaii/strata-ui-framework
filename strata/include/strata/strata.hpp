@@ -13,6 +13,7 @@
 #include "strata/icons.hpp"
 #include "strata/keybinds.hpp"
 #include "strata/log.hpp"
+#include "strata/log_queue.hpp"
 #include "strata/texture.hpp"
 #include "strata/themes.hpp"
 #include "strata/types.hpp"

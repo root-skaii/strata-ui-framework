@@ -266,7 +266,7 @@ void test_dock_layout()
     std::array<rect, 5> before{};
     for (std::size_t i = 0; i < names.size(); ++i) { before[i] = h.ui.window_rect(names[i]); }
     const std::string text = h.ui.dock_save_layout();
-    CHECK(text.starts_with("strata-dock 1"));
+    CHECK(text.starts_with("strata-dock 2"));
     CHECK(text.find("space ") != std::string::npos && text.find("S h ") != std::string::npos && text.find("W ") != std::string::npos);
 
     // take it apart ...
@@ -301,8 +301,8 @@ void test_dock_layout()
     // bad text changes nothing
     CHECK(!h.ui.dock_load_layout(""));
     CHECK(!h.ui.dock_load_layout("not a layout"));
-    CHECK(!h.ui.dock_load_layout("strata-dock 1\nspace zz 0\n"));
-    CHECK(!h.ui.dock_load_layout("strata-dock 1\nspace 1 0\nS h 0.5\nL 0 0\n")); // a split needs two children
+    CHECK(!h.ui.dock_load_layout("strata-dock 2\nspace zz 0\n"));
+    CHECK(!h.ui.dock_load_layout("strata-dock 2\nspace 1 0\nS h 0.5\nL 0 0\n")); // a split needs two children
     CHECK(!h.ui.dock_load_layout(text.substr(0, text.find("\nL ") + 5)));         // cut off inside a pane
     h.frames(build, 2);
     for (const char* n : names) { CHECK(h.ui.is_docked(n)); }

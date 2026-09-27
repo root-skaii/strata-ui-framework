@@ -117,15 +117,44 @@ bool win32_platform::apply_cursor() noexcept
     return true;
 }
 
+win32_platform::appearance_settings win32_platform::appearance() noexcept
+{
+    appearance_settings a;
+    DWORD value = 1;
+    DWORD size  = sizeof value;
+    if (::RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"AppsUseLightTheme",
+                       RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS) {
+        a.dark = value == 0;
+    }
+    HIGHCONTRASTW hc{sizeof hc};
+    a.high_contrast = ::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0) != FALSE && (hc.dwFlags & HCF_HIGHCONTRASTON) != 0;
+    DWORD accent = 0; // 0xAABBGGRR
+    size = sizeof accent;
+    if (::RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"AccentColor", RRF_RT_REG_DWORD, nullptr, &accent,
+                       &size) == ERROR_SUCCESS) {
+        a.accent = {static_cast<u8>(accent), static_cast<u8>(accent >> 8), static_cast<u8>(accent >> 16), 255};
+    }
+    return a;
+}
+
 clipboard_hooks win32_platform::clipboard() noexcept
 {
     return {&clipboard_set, &clipboard_get, hwnd_};
 }
 
-void win32_platform::push_key(key k, bool ctrl, bool shift) noexcept
+void win32_platform::push_key(key k, bool ctrl, bool shift, bool alt) noexcept
 {
     if (key_count_ < keys_.size()) {
-        keys_[key_count_++] = {k, ctrl, shift};
+        keys_[key_count_++] = {k, ctrl, shift, alt};
+    }
+}
+
+void win32_platform::push_press(u32 key) noexcept
+{
+    pressed_key_ = key;
+    if (press_count_ < presses_.size()) {
+        presses_[press_count_++] = {key, (::GetKeyState(VK_CONTROL) & 0x8000) != 0, (::GetKeyState(VK_SHIFT) & 0x8000) != 0,
+                                    (::GetKeyState(VK_MENU) & 0x8000) != 0};
     }
 }
 
@@ -191,12 +220,12 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         return true;
     case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: press(0); return true;
     case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK: press(1); return true;
-    case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: press(2); pressed_key_ = 4; return true;
+    case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: press(2); push_press(4); return true;
     case WM_LBUTTONUP: release(0); return true;
     case WM_RBUTTONUP: release(1); return true;
     case WM_MBUTTONUP: release(2); return true;
     case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK:
-        pressed_key_ = GET_XBUTTON_WPARAM(wparam) == XBUTTON1 ? 5u : 6u;
+        push_press(GET_XBUTTON_WPARAM(wparam) == XBUTTON1 ? 5u : 6u);
         return true;
     case WM_MOUSEWHEEL:
         wheel_ += static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<f32>(WHEEL_DELTA);
@@ -204,6 +233,16 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
     case WM_MOUSEHWHEEL: // a tilt wheel or a trackpad swipe: positive is towards the right
         wheel_x_ += static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<f32>(WHEEL_DELTA);
         return true;
+    case WM_SETTINGCHANGE: // "ImmersiveColorSet": dark / light mode or the accent; SPI_SETHIGHCONTRAST: high contrast
+        if ((lparam != 0 && std::wstring_view{reinterpret_cast<const wchar_t*>(lparam)} == L"ImmersiveColorSet") ||
+            wparam == SPI_SETHIGHCONTRAST) {
+            appearance_changed_ = true;
+        }
+        return false; // (the window procedure may want it too)
+    case WM_SYSCOLORCHANGE:
+    case WM_DWMCOLORIZATIONCOLORCHANGED:
+        appearance_changed_ = true;
+        return false;
     case WM_KILLFOCUS:
         down_            = {};
         release_pending_ = {};
@@ -297,30 +336,31 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         // remember the key for hotkey binding unless it is a modifier
         if (wparam != VK_SHIFT && wparam != VK_CONTROL && wparam != VK_MENU && (wparam < VK_LSHIFT || wparam > VK_RMENU) &&
             wparam != VK_LWIN && wparam != VK_RWIN) {
-            pressed_key_ = static_cast<u32>(wparam);
+            push_press(static_cast<u32>(wparam));
         }
         const bool ctrl  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
         const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        const bool alt   = (::GetKeyState(VK_MENU) & 0x8000) != 0;
         switch (wparam) {
-        case VK_LEFT:   push_key(key::left, ctrl, shift); break;
-        case VK_RIGHT:  push_key(key::right, ctrl, shift); break;
-        case VK_UP:     push_key(key::up, ctrl, shift); break;
-        case VK_DOWN:   push_key(key::down, ctrl, shift); break;
-        case VK_HOME:   push_key(key::home, ctrl, shift); break;
-        case VK_END:    push_key(key::end, ctrl, shift); break;
-        case VK_BACK:   push_key(key::backspace, ctrl, shift); break;
-        case VK_DELETE: push_key(key::del, ctrl, shift); break;
-        case VK_RETURN: push_key(key::enter, ctrl, shift); break;
-        case VK_ESCAPE: push_key(key::escape, ctrl, shift); break;
-        case VK_TAB:    push_key(key::tab, ctrl, shift); break;
-        case VK_PRIOR:  push_key(key::page_up, ctrl, shift); break;
-        case VK_NEXT:   push_key(key::page_down, ctrl, shift); break;
-        case 'A': if (ctrl) { push_key(key::a, ctrl, shift); } break;
-        case 'C': if (ctrl) { push_key(key::c, ctrl, shift); } break;
-        case 'V': if (ctrl) { push_key(key::v, ctrl, shift); } break;
-        case 'X': if (ctrl) { push_key(key::x, ctrl, shift); } break;
-        case 'Z': if (ctrl) { push_key(key::z, ctrl, shift); } break;
-        case 'Y': if (ctrl) { push_key(key::y, ctrl, shift); } break;
+        case VK_LEFT:   push_key(key::left, ctrl, shift, alt); break;
+        case VK_RIGHT:  push_key(key::right, ctrl, shift, alt); break;
+        case VK_UP:     push_key(key::up, ctrl, shift, alt); break;
+        case VK_DOWN:   push_key(key::down, ctrl, shift, alt); break;
+        case VK_HOME:   push_key(key::home, ctrl, shift, alt); break;
+        case VK_END:    push_key(key::end, ctrl, shift, alt); break;
+        case VK_BACK:   push_key(key::backspace, ctrl, shift, alt); break;
+        case VK_DELETE: push_key(key::del, ctrl, shift, alt); break;
+        case VK_RETURN: push_key(key::enter, ctrl, shift, alt); break;
+        case VK_ESCAPE: push_key(key::escape, ctrl, shift, alt); break;
+        case VK_TAB:    push_key(key::tab, ctrl, shift, alt); break;
+        case VK_PRIOR:  push_key(key::page_up, ctrl, shift, alt); break;
+        case VK_NEXT:   push_key(key::page_down, ctrl, shift, alt); break;
+        case 'A': if (ctrl) { push_key(key::a, ctrl, shift, alt); } break;
+        case 'C': if (ctrl) { push_key(key::c, ctrl, shift, alt); } break;
+        case 'V': if (ctrl) { push_key(key::v, ctrl, shift, alt); } break;
+        case 'X': if (ctrl) { push_key(key::x, ctrl, shift, alt); } break;
+        case 'Z': if (ctrl) { push_key(key::z, ctrl, shift, alt); } break;
+        case 'Y': if (ctrl) { push_key(key::y, ctrl, shift, alt); } break;
         default: break;
         }
         return true;
@@ -387,6 +427,8 @@ input_state win32_platform::new_frame() noexcept
     in.typed_len = std::exchange(typed_len_, 0);
     detail::secure_wipe(typed_.data(), typed_.size()); // the copy in `in` is the only one left
     in.pressed_key = std::exchange(pressed_key_, 0);
+    in.presses     = presses_;
+    in.press_count = std::exchange(press_count_, 0);
     in.ctrl  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
     in.shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
     in.alt   = (::GetKeyState(VK_MENU) & 0x8000) != 0;
@@ -400,6 +442,11 @@ input_state win32_platform::new_frame() noexcept
             in.set_held(static_cast<u32>(i), (vk[i] & 0x80) != 0);
         }
     }
+
+    // the user's settings (Control Panel / accessibility): INFINITE is "do not blink"
+    const UINT blink_ms = ::GetCaretBlinkTime();
+    in.caret_blink_time  = blink_ms == INFINITE || blink_ms == 0 ? 0.0f : static_cast<f32>(blink_ms) / 1000.0f;
+    in.double_click_time = static_cast<f32>(::GetDoubleClickTime()) / 1000.0f;
 
     const std::int64_t now = query_ticks();
     in.delta_time = static_cast<f32>(now - last_ticks_) / static_cast<f32>(tick_frequency());

@@ -5,3 +5,4 @@
 *.png binary
 *.dll binary
 *.lib binary
+tests/fuzz/corpus/* binary

@@ -1,5 +1,7 @@
 #include "strata/backend/d3d12.hpp"
 
+#include "blur_plan.hpp"
+
 #include <windows.h>
 
 #include <d3d12.h>
@@ -88,6 +90,9 @@ struct frame_buffers {
 
 } // namespace
 
+// 32-bit root constants of the blur / backdrop parameters (b1): impl::blur_constants
+constexpr UINT blur_constant_count = 20;
+
 struct d3d12_renderer::impl {
     ComPtr<ID3D12Device>              device;
     ComPtr<ID3D12RootSignature>       root;
@@ -100,7 +105,19 @@ struct d3d12_renderer::impl {
     struct texture_meta {
         texture_image image; // kept (for update_texture) only when the texture is updatable
         bool          updatable{};
+        u32           cooldown{}; // a destroyed texture's slot: renders to go before frames in flight stop reading its descriptor
     };
+    // a copy into a texture, staged by create_texture / update_texture and recorded at the start of the next render()
+    struct pending_copy {
+        ComPtr<ID3D12Resource>              texture;
+        ComPtr<ID3D12Resource>              upload;
+        std::vector<texture_image::region>  regions;
+        std::vector<std::pair<UINT64, UINT>> places; // offset and row pitch of each region in `upload`
+        DXGI_FORMAT                         format{};
+        D3D12_RESOURCE_STATES               before{};
+        D3D12_RESOURCE_STATES               after{};
+    };
+    std::vector<pending_copy>         pending;
     std::array<texture_meta, d3d12_renderer::max_textures> texture_meta_;
     UINT                              srv_size{};
     std::vector<frame_buffers>        frames;
@@ -116,20 +133,42 @@ struct d3d12_renderer::impl {
     ComPtr<ID3D12Resource>            blur_tex[2];
     UINT                              snap_w{}, snap_h{}, blur_w{}, blur_h{};
     DXGI_FORMAT                       snap_format{};
+    DXGI_FORMAT                       blur_format{};
+    DXGI_FORMAT                       blur_rt_format{DXGI_FORMAT_R8G8B8A8_UNORM}; // the blur's own targets: see wide_format
+    output_desc                       output{};
     UINT                              rtv_size{};
     u32                               frames_in_flight{};
     bool                              blur_supported{};
-    // resources that were replaced while the gpu may still be reading them, released a few frames later
-    std::vector<std::pair<ComPtr<ID3D12Resource>, u32>> graveyard;
+    // resources that were replaced while the gpu may still be reading them, released a few renders later (the host waits
+    // on a frame slot's fence before reusing it, so frames_in_flight + 1 renders on, nothing reads them any more). staging
+    // buffers are zeroed first: what was uploaded does not linger in memory the process gives back
+    struct grave {
+        ComPtr<ID3D12Resource> res;
+        u32                    renders{};
+        bool                   wipe{};
+    };
+    std::vector<grave> graveyard;
 
-    void retire(ComPtr<ID3D12Resource>& r)
+    void retire(ComPtr<ID3D12Resource>& r, bool wipe = false)
     {
-        if (r != nullptr) { graveyard.emplace_back(std::move(r), frames_in_flight + 1); }
+        if (r != nullptr) { graveyard.push_back({std::move(r), frames_in_flight + 1, wipe}); }
+    }
+    static void wipe_upload(ID3D12Resource* r) noexcept
+    {
+        void* mapped{};
+        if (SUCCEEDED(r->Map(0, nullptr, &mapped))) {
+            ::SecureZeroMemory(mapped, static_cast<SIZE_T>(r->GetDesc().Width));
+            r->Unmap(0, nullptr);
+        }
     }
     void tick_graveyard()
     {
-        for (auto& g : graveyard) { if (g.second > 0) { --g.second; } }
-        std::erase_if(graveyard, [](const auto& g) { return g.second == 0; });
+        for (grave& g : graveyard) {
+            if (g.renders > 0) { --g.renders; }
+            if (g.renders == 0 && g.wipe) { wipe_upload(g.res.Get()); }
+        }
+        std::erase_if(graveyard, [](const grave& g) { return g.renders == 0; });
+        for (texture_meta& t : texture_meta_) { if (t.cooldown > 0) { --t.cooldown; } }
     }
 
     static void barrier(ID3D12GraphicsCommandList* l, ID3D12Resource* r, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b) noexcept
@@ -182,7 +221,8 @@ struct d3d12_renderer::impl {
 
         const UINT lw = (static_cast<UINT>(td.Width) + 1) / 2;
         const UINT lh = (td.Height + 1) / 2;
-        if (blur_tex[0] == nullptr || blur_w != lw || blur_h != lh) {
+        const DXGI_FORMAT bf = blur_rt_format; // (fixed at create(): the blur pipelines are built for it)
+        if (blur_tex[0] == nullptr || blur_w != lw || blur_h != lh || blur_format != bf) {
             retire(blur_tex[0]);
             retire(blur_tex[1]);
             D3D12_RESOURCE_DESC d{};
@@ -191,7 +231,7 @@ struct d3d12_renderer::impl {
             d.Height           = lh;
             d.DepthOrArraySize = 1;
             d.MipLevels        = 1;
-            d.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+            d.Format           = bf;
             d.SampleDesc.Count = 1;
             d.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             for (u32 k = 0; k < 2; ++k) {
@@ -202,14 +242,15 @@ struct d3d12_renderer::impl {
                 }
                 D3D12_CPU_DESCRIPTOR_HANDLE sh = srv_heap->GetCPUDescriptorHandleForHeapStart();
                 sh.ptr += static_cast<SIZE_T>(snap_slot + 1 + k) * srv_size;
-                sv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                sv.Format = bf;
                 device->CreateShaderResourceView(blur_tex[k].Get(), &sv, sh);
                 D3D12_CPU_DESCRIPTOR_HANDLE rh = rtv_heap->GetCPUDescriptorHandleForHeapStart();
                 rh.ptr += static_cast<SIZE_T>(k) * rtv_size;
                 device->CreateRenderTargetView(blur_tex[k].Get(), nullptr, rh);
             }
-            blur_w = lw;
-            blur_h = lh;
+            blur_w      = lw;
+            blur_h      = lh;
+            blur_format = bf;
         }
         return true;
     }
@@ -218,41 +259,58 @@ struct d3d12_renderer::impl {
         float bp0[4]{};
         float bp1[4]{};
         float bp2[4]{};
+        float bp3[4]{};
+        float bp4[4]{};
     };
+    static_assert(sizeof(blur_constants) == blur_constant_count * 4);
 
+    // one full-screen triangle into blur_tex[dst], written only inside the plan's low-resolution region (the scissor)
     void blur_pass(ID3D12GraphicsCommandList* list, u32 dst, UINT vw, UINT vh, D3D12_GPU_DESCRIPTOR_HANDLE src,
-                   const blur_constants& c, ID3D12PipelineState* state) noexcept
+                   const blur_constants& c, ID3D12PipelineState* state, const internal::blur_plan& plan) noexcept
     {
         barrier(list, blur_tex[dst].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
         D3D12_CPU_DESCRIPTOR_HANDLE rh = rtv_heap->GetCPUDescriptorHandleForHeapStart();
         rh.ptr += static_cast<SIZE_T>(dst) * rtv_size;
         list->OMSetRenderTargets(1, &rh, FALSE, nullptr);
         const D3D12_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(vw), static_cast<float>(vh), 0.0f, 1.0f};
-        const D3D12_RECT     sc{0, 0, static_cast<LONG>(vw), static_cast<LONG>(vh)};
+        const D3D12_RECT     sc{static_cast<LONG>(plan.lx0), static_cast<LONG>(plan.ly0), static_cast<LONG>(plan.lx1), static_cast<LONG>(plan.ly1)};
         list->RSSetViewports(1, &vp);
         list->RSSetScissorRects(1, &sc);
         list->SetPipelineState(state);
-        list->SetGraphicsRoot32BitConstants(0, 12, &c, 0);
+        list->SetGraphicsRoot32BitConstants(0, blur_constant_count, &c, 0);
         list->SetGraphicsRootDescriptorTable(1, src);
         list->DrawInstanced(3, 1, 0, 0);
         barrier(list, blur_tex[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
-    // copies the target, boxes it down and blurs it; on success blur_tex[0] holds the result in its top-left (vw, vh)
-    [[nodiscard]] bool run_blur(ID3D12GraphicsCommandList* list, const d3d12_target& t, float radius_px, UINT& out_vw, UINT& out_vh) noexcept
+    // copies the part of the target around `panel` (physical pixels), boxes it down and blurs it; on success blur_tex[0]
+    // holds the result in its top-left (vw, vh), exact inside `out_exact`
+    [[nodiscard]] bool run_blur(ID3D12GraphicsCommandList* list, const d3d12_target& t, float radius_px, const rect& panel,
+                                UINT& out_vw, UINT& out_vh, rect& out_exact) noexcept
     {
         const D3D12_RESOURCE_DESC td = t.resource->GetDesc();
         if (!ensure_blur(td)) {
             return false;
         }
+        const internal::blur_plan plan = internal::plan_blur(radius_px, panel, snap_w, snap_h);
+        if (plan.x1 <= plan.x0 || plan.y1 <= plan.y0 || plan.lx1 <= plan.lx0 || plan.ly1 <= plan.ly0) {
+            return false;
+        }
 
         barrier(list, t.resource, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
         barrier(list, snap.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-        list->CopyResource(snap.Get(), t.resource);
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource        = snap.Get();
+        dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource        = t.resource;
+        src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        const D3D12_BOX box{plan.x0, plan.y0, 0, plan.x1, plan.y1, 1};
+        list->CopyTextureRegion(&dst, plan.x0, plan.y0, 0, &src, &box);
         barrier(list, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
         barrier(list, snap.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-        const UINT  ds = radius_px <= 8.0f ? 2u : 4u;
+        const UINT  ds = plan.ds;
         const UINT  vw = std::max(1u, (snap_w + ds - 1) / ds);
         const UINT  vh = std::max(1u, (snap_h + ds - 1) / ds);
         const float tw = static_cast<float>(blur_w);
@@ -266,26 +324,26 @@ struct d3d12_renderer::impl {
         c.bp1[0] = 1.0f / static_cast<float>(snap_w); c.bp1[1] = 1.0f / static_cast<float>(snap_h);
         c.bp1[2] = 1.0f - 0.5f * c.bp1[0]; c.bp1[3] = 1.0f - 0.5f * c.bp1[1];
         c.bp2[0] = static_cast<float>(ds) * 0.25f;
-        blur_pass(list, 0, vw, vh, gpu_slot(snap_slot), c, pso_blur_down.Get());
+        blur_pass(list, 0, vw, vh, gpu_slot(snap_slot), c, pso_blur_down.Get(), plan);
 
-        const float sigma_total = std::max(0.6f, radius_px / (2.0f * static_cast<float>(ds)));
-        const int   iterations  = sigma_total > 3.5f ? (sigma_total > 8.0f ? 3 : 2) : 1;
-        const float sigma       = sigma_total / std::sqrt(static_cast<float>(iterations));
         c.bp0[2] = static_cast<float>(vw) / tw; c.bp0[3] = static_cast<float>(vh) / th;
         c.bp1[2] = (static_cast<float>(vw) - 0.5f) / tw; c.bp1[3] = (static_cast<float>(vh) - 0.5f) / th;
-        c.bp2[1] = sigma;
-        for (int it = 0; it < iterations; ++it) {
+        c.bp2[2] = plan.w0;
+        c.bp3[0] = plan.w[0]; c.bp3[1] = plan.o[0]; c.bp3[2] = plan.w[1]; c.bp3[3] = plan.o[1];
+        c.bp4[0] = plan.w[2]; c.bp4[1] = plan.o[2];
+        for (int it = 0; it < plan.iterations; ++it) {
             c.bp1[0] = 1.0f / tw; c.bp1[1] = 0.0f;
-            blur_pass(list, 1, vw, vh, gpu_slot(snap_slot + 1), c, pso_blur_gauss.Get());
+            blur_pass(list, 1, vw, vh, gpu_slot(snap_slot + 1), c, pso_blur_gauss.Get(), plan);
             c.bp1[0] = 0.0f; c.bp1[1] = 1.0f / th;
-            blur_pass(list, 0, vw, vh, gpu_slot(snap_slot + 2), c, pso_blur_gauss.Get());
+            blur_pass(list, 0, vw, vh, gpu_slot(snap_slot + 2), c, pso_blur_gauss.Get(), plan);
         }
 
         D3D12_CPU_DESCRIPTOR_HANDLE host{};
         host.ptr = static_cast<SIZE_T>(t.rtv);
         list->OMSetRenderTargets(1, &host, FALSE, nullptr);
-        out_vw = vw;
-        out_vh = vh;
+        out_vw    = vw;
+        out_vh    = vh;
+        out_exact = plan.exact;
         return true;
     }
 
@@ -293,6 +351,8 @@ struct d3d12_renderer::impl {
     void wipe() noexcept
     {
         for (texture_meta& t : texture_meta_) { t.image.wipe(); } // (the copies kept for update_texture)
+        for (pending_copy& pc : pending) { wipe_upload(pc.upload.Get()); } // staged, never recorded
+        for (grave& g : graveyard) { if (g.wipe) { wipe_upload(g.res.Get()); } }
         for (frame_buffers& f : frames) {
             for (ID3D12Resource* res : {f.vb.Get(), f.ib.Get(), f.shapes.Get()}) {
                 if (res == nullptr) { continue; }
@@ -420,10 +480,12 @@ struct d3d12_renderer::impl {
         return true;
     }
 
-    // copies regions of the levels of `image` into `tex` (blocking): one staging buffer, one copy per region. the texture
-    // goes from `before` to COPY_DEST and on to `after`
-    [[nodiscard]] bool copy_image_regions(ID3D12Resource* tex, const texture_image& image, std::span<const texture_image::region> regions,
-                                          D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) noexcept
+    // stages regions of the levels of `image` for `tex`: one upload buffer, one copy per region, recorded by the next render()
+    // on the host's command list (so nothing here waits for the gpu). the texture goes from `before` to COPY_DEST and on to
+    // `after` there
+    [[nodiscard]] bool copy_image_regions(const ComPtr<ID3D12Resource>& tex, const texture_image& image,
+                                          std::span<const texture_image::region> regions, D3D12_RESOURCE_STATES before,
+                                          D3D12_RESOURCE_STATES after) noexcept
     {
         const DXGI_FORMAT format = dxgi_format_of(image.layout());
         const u32         bpp    = texture_layout_bytes(image.layout());
@@ -456,57 +518,55 @@ struct d3d12_renderer::impl {
         }
         upload->Unmap(0, nullptr);
 
-        ComPtr<ID3D12CommandAllocator>    alloc;
-        ComPtr<ID3D12GraphicsCommandList> list;
-        ComPtr<ID3D12Fence>               fence;
-        if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
-            FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr, IID_PPV_ARGS(&list))) ||
-            FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) {
-            return false;
-        }
-        if (before != D3D12_RESOURCE_STATE_COPY_DEST) {
-            barrier(list.Get(), tex, before, D3D12_RESOURCE_STATE_COPY_DEST);
-        }
-        for (std::size_t i = 0; i < regions.size(); ++i) {
-            const texture_image::region& r = regions[i];
-            D3D12_TEXTURE_COPY_LOCATION dst{};
-            dst.pResource        = tex;
-            dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            dst.SubresourceIndex = r.level;
-            D3D12_TEXTURE_COPY_LOCATION src{};
-            src.pResource                          = upload.Get();
-            src.Type                               = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            src.PlacedFootprint.Offset             = places[i].offset;
-            src.PlacedFootprint.Footprint.Format   = format;
-            src.PlacedFootprint.Footprint.Width    = r.w;
-            src.PlacedFootprint.Footprint.Height   = r.h;
-            src.PlacedFootprint.Footprint.Depth    = 1;
-            src.PlacedFootprint.Footprint.RowPitch = places[i].pitch;
-            list->CopyTextureRegion(&dst, r.x, r.y, 0, &src, nullptr);
-        }
-        barrier(list.Get(), tex, D3D12_RESOURCE_STATE_COPY_DEST, after);
-        if (FAILED(list->Close())) {
-            return false;
-        }
-        ID3D12CommandList* lists[] = {list.Get()};
-        queue->ExecuteCommandLists(1, lists);
-        if (FAILED(queue->Signal(fence.Get(), 1))) {
-            return false;
-        }
-        HANDLE event = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (event == nullptr) {
-            return false;
-        }
-        if (fence->GetCompletedValue() < 1) {
-            fence->SetEventOnCompletion(1, event);
-            ::WaitForSingleObject(event, INFINITE);
-        }
-        ::CloseHandle(event);
-        if (SUCCEEDED(upload->Map(0, nullptr, &mapped))) { // the staging copy must not outlive the upload
-            ::SecureZeroMemory(mapped, static_cast<SIZE_T>(total));
-            upload->Unmap(0, nullptr);
-        }
+        pending_copy pc;
+        pc.texture = tex;
+        pc.upload  = std::move(upload);
+        pc.regions.assign(regions.begin(), regions.end());
+        for (const placement& pl : places) { pc.places.emplace_back(pl.offset, pl.pitch); }
+        pc.format = format;
+        pc.before = before;
+        pc.after  = after;
+        pending.push_back(std::move(pc));
         return true;
+    }
+
+    // what create_texture / update_texture staged since the last render, into the host's command list ahead of the ui
+    void record_pending(ID3D12GraphicsCommandList* list) noexcept
+    {
+        for (pending_copy& pc : pending) {
+            if (pc.before != D3D12_RESOURCE_STATE_COPY_DEST) {
+                barrier(list, pc.texture.Get(), pc.before, D3D12_RESOURCE_STATE_COPY_DEST);
+            }
+            for (std::size_t i = 0; i < pc.regions.size(); ++i) {
+                const texture_image::region& r = pc.regions[i];
+                D3D12_TEXTURE_COPY_LOCATION dst{};
+                dst.pResource        = pc.texture.Get();
+                dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                dst.SubresourceIndex = r.level;
+                D3D12_TEXTURE_COPY_LOCATION src{};
+                src.pResource                          = pc.upload.Get();
+                src.Type                               = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                src.PlacedFootprint.Offset             = pc.places[i].first;
+                src.PlacedFootprint.Footprint.Format   = pc.format;
+                src.PlacedFootprint.Footprint.Width    = r.w;
+                src.PlacedFootprint.Footprint.Height   = r.h;
+                src.PlacedFootprint.Footprint.Depth    = 1;
+                src.PlacedFootprint.Footprint.RowPitch = pc.places[i].second;
+                list->CopyTextureRegion(&dst, r.x, r.y, 0, &src, nullptr);
+            }
+            barrier(list, pc.texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, pc.after);
+            retire(pc.upload, true); // the gpu reads it during this frame: zeroed and released once that is done
+        }
+        pending.clear();
+    }
+
+    // a texture that is going away, with the copies still staged for it
+    void drop_pending(ID3D12Resource* tex) noexcept
+    {
+        for (pending_copy& pc : pending) {
+            if (pc.texture.Get() == tex) { wipe_upload(pc.upload.Get()); }
+        }
+        std::erase_if(pending, [tex](const pending_copy& pc) { return pc.texture.Get() == tex; });
     }
 
     [[nodiscard]] bool upload_atlas(const font_atlas& font) noexcept
@@ -535,7 +595,7 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
     p->queue  = info.queue;
     p->frames.resize(info.frames_in_flight);
 
-    // root signature: [0] four 32-bit constants (vs), [1] atlas srv table t0 (ps), [2] shape table t1 (ps),
+    // root signature: [0] eight 32-bit constants (transform, output encoding), [1] atlas srv table t0 (ps), [2] shape table t1 (ps),
     // [3] image srv table t2 (ps), static linear-clamp sampler
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -550,8 +610,8 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
     D3D12_ROOT_PARAMETER params[6]{};
     params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;
-    params[0].Constants.Num32BitValues = 4;
-    params[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[0].Constants.Num32BitValues = sizeof(internal::ui_constants) / 4;
+    params[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_ALL; // (the pixel shader reads the output encoding)
     params[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[1].DescriptorTable.NumDescriptorRanges = 1;
     params[1].DescriptorTable.pDescriptorRanges   = &range;
@@ -569,7 +629,7 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
     params[4].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
     params[5].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; // blur / backdrop parameters, b1
     params[5].Constants.ShaderRegister = 1;
-    params[5].Constants.Num32BitValues = 12;
+    params[5].Constants.Num32BitValues = blur_constant_count;
     params[5].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler{};
@@ -648,7 +708,7 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
         D3D12_ROOT_PARAMETER bp[2]{};
         bp[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         bp[0].Constants.ShaderRegister = 1;
-        bp[0].Constants.Num32BitValues = 12;
+        bp[0].Constants.Num32BitValues = blur_constant_count;
         bp[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_PIXEL;
         bp[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         bp[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -675,7 +735,9 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
         fp.RasterizerState.DepthClipEnable = TRUE;
         fp.PrimitiveTopologyType           = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         fp.NumRenderTargets                = 1;
-        fp.RTVFormats[0]                   = DXGI_FORMAT_R8G8B8A8_UNORM;
+        p->blur_rt_format = internal::wide_format(static_cast<int>(info.rtv_format)) ? DXGI_FORMAT_R16G16B16A16_FLOAT
+                                                                                    : DXGI_FORMAT_R8G8B8A8_UNORM;
+        fp.RTVFormats[0]                   = p->blur_rt_format;
         fp.SampleDesc.Count                = 1;
         fp.VS = {g_strata_ui_vs_fullscreen, sizeof(g_strata_ui_vs_fullscreen)};
 
@@ -712,6 +774,21 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
     return true;
 }
 
+void d3d12_renderer::set_output(const output_desc& output) noexcept
+{
+    if (impl_ != nullptr) { impl_->output = output; }
+}
+
+output_desc d3d12_renderer::output() const noexcept
+{
+    return impl_ != nullptr ? impl_->output : output_desc{};
+}
+
+bool d3d12_renderer::device_lost() const noexcept
+{
+    return impl_ != nullptr && FAILED(impl_->device->GetDeviceRemovedReason());
+}
+
 bool d3d12_renderer::update_atlas(const font_atlas& font)
 {
     if (impl_ == nullptr || font.pixels().empty()) {
@@ -744,7 +821,7 @@ texture_id d3d12_renderer::create_texture(const texture_desc& desc, std::span<co
     }
     impl& s = *impl_;
     u32 slot = 0;
-    while (slot < max_textures && s.textures[slot] != nullptr) { ++slot; }
+    while (slot < max_textures && (s.textures[slot] != nullptr || s.texture_meta_[slot].cooldown > 0)) { ++slot; }
     if (slot == max_textures) {
         return 0;
     }
@@ -773,7 +850,7 @@ texture_id d3d12_renderer::create_texture(const texture_desc& desc, std::span<co
     }
     std::vector<texture_image::region> all;
     for (u32 k = 0; k < levels; ++k) { all.push_back({k, 0, 0, image.width(k), image.height(k)}); }
-    if (!s.copy_image_regions(tex.Get(), image, all, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)) {
+    if (!s.copy_image_regions(tex, image, all, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)) {
         image.wipe();
         return 0;
     }
@@ -807,16 +884,19 @@ bool d3d12_renderer::update_texture(texture_id id, u32 x, u32 y, u32 width, u32 
     if (!meta.image.update(x, y, width, height, pixels, dirty)) {
         return false;
     }
-    return impl_->copy_image_regions(impl_->textures[id - 1].Get(), meta.image, dirty, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+    return impl_->copy_image_regions(impl_->textures[id - 1], meta.image, dirty, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
 void d3d12_renderer::destroy_texture(texture_id id) noexcept
 {
-    if (impl_ != nullptr && id != 0 && id <= max_textures) {
-        impl_->textures[id - 1].Reset();
-        impl_->texture_meta_[id - 1].image.wipe();
-        impl_->texture_meta_[id - 1].updatable = false;
+    if (impl_ != nullptr && id != 0 && id <= max_textures && impl_->textures[id - 1] != nullptr) {
+        impl& s = *impl_;
+        s.drop_pending(s.textures[id - 1].Get());
+        s.retire(s.textures[id - 1]); // frames in flight may still draw it: released once they are done
+        s.texture_meta_[id - 1].image.wipe();
+        s.texture_meta_[id - 1].updatable = false;
+        s.texture_meta_[id - 1].cooldown  = s.frames_in_flight + 1; // ... and its descriptor is not rewritten before then
     }
 }
 
@@ -838,6 +918,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     if (frame_index >= s.frames.size()) {
         return;
     }
+    s.record_pending(list); // textures created / updated since the last frame, ahead of the draws that read them
     frame_buffers& fb = s.frames[frame_index];
 
     const auto vcount = static_cast<UINT>(data.vertices.size());
@@ -879,8 +960,8 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         list->RSSetViewports(1, &vp);
         list->SetGraphicsRootSignature(s.root.Get());
         list->SetPipelineState(s.pso.Get());
-        const float constants[4] = {2.0f / data.display_size.x, -2.0f / data.display_size.y, -1.0f, 1.0f};
-        list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
+        const internal::ui_constants constants = internal::make_ui_constants(data, s.output);
+        list->SetGraphicsRoot32BitConstants(0, sizeof(constants) / 4, &constants, 0);
         list->SetGraphicsRootDescriptorTable(1, heap_start);
         list->SetGraphicsRootDescriptorTable(3, heap_start); // t2 / t3 are only read by ps_image / ps_backdrop;
         list->SetGraphicsRootDescriptorTable(4, heap_start); // keep them valid regardless
@@ -904,6 +985,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     bool  blur_dirty  = true; // something was drawn since the blur was made
     bool  blur_ready  = false;
     float blur_radius = -1.0f;
+    rect  blur_exact{};           // where the blur that was made is exact: a panel inside it can use it again
     UINT  blur_vw = 0, blur_vh = 0;
 
     for (const draw_cmd& cmd : data.commands) {
@@ -913,8 +995,10 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
 
         ps_mode want = cmd.texture != 0 ? ps_mode::image : ps_mode::main;
         if (cmd.blur > 0.0f && can_blur) {
-            if (blur_dirty || cmd.blur != blur_radius) {
-                blur_ready = s.run_blur(list, *target, cmd.blur, blur_vw, blur_vh);
+            const rect panel = internal::backdrop_bounds(data, cmd);
+            if (blur_dirty || cmd.blur != blur_radius || !internal::rect_inside(panel, blur_exact)) {
+                blur_dirty = true;
+                blur_ready = !panel.empty() && s.run_blur(list, *target, cmd.blur, panel, blur_vw, blur_vh, blur_exact);
                 if (blur_ready) {
                     blur_dirty  = false;
                     blur_radius = cmd.blur;
@@ -942,7 +1026,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
                 c.bp0[0] = data.display_size.x; c.bp0[1] = data.display_size.y;
                 c.bp0[2] = static_cast<float>(blur_vw) / static_cast<float>(s.blur_w);
                 c.bp0[3] = static_cast<float>(blur_vh) / static_cast<float>(s.blur_h);
-                list->SetGraphicsRoot32BitConstants(5, 12, &c, 0);
+                list->SetGraphicsRoot32BitConstants(5, blur_constant_count, &c, 0);
                 list->SetGraphicsRootDescriptorTable(4, s.gpu_slot(impl::snap_slot + 1)); // blur_tex[0]
             }
             bound = 0;

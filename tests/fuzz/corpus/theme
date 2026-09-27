@@ -1,0 +1,6 @@
+base = nord
+rounding = 10
+accent = #ff8800
+series_2 = #112233
+success = #00ff00
+text_contrast = 0.5

@@ -13,7 +13,9 @@ add_library(strata_overlay_demo SHARED demo/demo_dll.cpp)
 target_link_libraries(strata_overlay_demo PRIVATE strata_overlay $<BUILD_INTERFACE:strata_options> user32.lib)
 
 add_executable(strata_overlay_host WIN32 tools/test_host.cpp)
-target_link_libraries(strata_overlay_host PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib d3d12.lib dxgi.lib user32.lib shell32.lib)
+target_link_libraries(strata_overlay_host PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib d3d12.lib dxgi.lib user32.lib shell32.lib delayimp.lib)
+# like a real game, a run only loads the api it uses; the host checks that the overlay does not bring in the other one
+target_link_options(strata_overlay_host PRIVATE /DELAYLOAD:d3d11.dll /DELAYLOAD:d3d12.dll)
 
 add_executable(strata_overlay_inject tools/injector.cpp)
 target_link_libraries(strata_overlay_inject PRIVATE $<BUILD_INTERFACE:strata_options> user32.lib)
@@ -26,6 +28,12 @@ if(STRATA_BUILD_TESTS)
              COMMAND strata_overlay_host --dll $<TARGET_FILE:strata_overlay_demo>)
     add_test(NAME strata_overlay_smoke_dx12
              COMMAND strata_overlay_host --d3d12 --dll $<TARGET_FILE:strata_overlay_demo>)
+    # an FP16 (scRGB) swap chain: the overlay has to notice and encode the ui for it
+    add_test(NAME strata_overlay_smoke_fp16
+             COMMAND strata_overlay_host --fp16 --dll $<TARGET_FILE:strata_overlay_demo>)
+    add_test(NAME strata_overlay_smoke_dx12_fp16
+             COMMAND strata_overlay_host --d3d12 --fp16 --dll $<TARGET_FILE:strata_overlay_demo>)
+    set_tests_properties(strata_overlay_smoke_fp16 strata_overlay_smoke_dx12_fp16 PROPERTIES TIMEOUT 60 LABELS gpu)
     set_tests_properties(strata_overlay_smoke PROPERTIES
         TIMEOUT 60
         LABELS gpu

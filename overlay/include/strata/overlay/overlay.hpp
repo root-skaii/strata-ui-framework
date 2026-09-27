@@ -9,11 +9,12 @@
 //   strata::overlay::install(opt);        // from a thread of your own, NOT from DllMain (it loads dxgi / d3d11 and waits)
 //
 // how it works: a dummy swap chain yields IDXGISwapChain's vtable (shared by every swap chain of that implementation);
-// Present, Present1 and ResizeBuffers are replaced in it, no code is patched. the first swap chain that presents with a
-// real window becomes the game's: the ui is drawn into its back buffer just before Present, and the window is subclassed
-// to read input. nothing is drawn while the overlay is hidden.
-// direct3d 12: the same trick on ID3D12CommandQueue's ExecuteCommandLists; the direct queue seen executing command lists
-// is taken as the game's. the overlay records its own command list per frame and submits it on that queue right before
+// Present, Present1 and ResizeBuffers are replaced in it, no code is patched. the dummy is made with the api the game has
+// already loaded (d3d11, or d3d12 when only that one is), so the overlay does not load the other api into the game. the
+// first swap chain that presents with a real window becomes the game's: the ui is drawn into its back buffer just before
+// Present, and the window is subclassed to read input. nothing is drawn while the overlay is hidden.
+// direct3d 12: when the game's swap chain first presents, ID3D12CommandQueue's ExecuteCommandLists is hooked the same way
+// (from a queue made on the game's own device); the direct queue seen executing command lists is taken as the game's. the overlay records its own command list per frame and submits it on that queue right before
 // Present, with a fence so the frame's allocator and upload buffers are reused only once the gpu is done with them.
 //
 // limits: only direct3d 11 / 12. a d3d12 game with several direct queues is served by the one that ran last before
@@ -25,6 +26,7 @@
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace strata::overlay {
@@ -48,6 +50,13 @@ struct options {
     // Ctrl + Plus / Ctrl + Minus step the ui scale by 10 %, Ctrl + 0 puts it back to `ui_scale`, while the overlay
     // has the keyboard. Off by default so it cannot collide with the host's own shortcuts.
     bool     scale_hotkeys = false;
+    // how the ui's colours are written into the game's frame. empty = worked out from the swap chain: an FP16 one is scRGB,
+    // a 10-bit one HDR10 when the game declared that colour space (or, declared before the overlay was loaded, when the
+    // monitor is in hdr mode), anything else srgb. set it when a game's hdr is detected wrongly
+    std::optional<output_space> output;
+    // in hdr: how bright the ui's white is (nits). only used while the monitor is in hdr mode: an scRGB swap chain on an
+    // sdr monitor gets the display's own white
+    float    hdr_paper_white_nits = 200.0f;
     // debug: write the back buffer (with the ui drawn) to this png after `capture_frame` visible frames, once
     std::string capture_path;
     unsigned    capture_frame = 30;
@@ -64,6 +73,8 @@ void show(bool visible);
 // frames the overlay has drawn (0 while hidden / not attached yet): handy to check that it works
 [[nodiscard]] unsigned long long frames() noexcept;
 [[nodiscard]] const char* last_error() noexcept;
+// how the ui is encoded into the game's frame right now (see options::output)
+[[nodiscard]] output_space output_space_in_use() noexcept;
 // true once the hook has met the game's swap chain and built the ui on it (the first Present after install())
 [[nodiscard]] bool attached() noexcept;
 // the swap chain's window, once attached (HWND), nullptr before

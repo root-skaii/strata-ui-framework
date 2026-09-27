@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include <cstdint>
+#include <utility>
 
 namespace strata {
 
@@ -36,12 +37,26 @@ public:
     void set_cursor(cursor_kind k) noexcept { cursor_ = k; }
     [[nodiscard]] bool apply_cursor() noexcept;
 
+    // the user's appearance settings: apps in dark or light mode, high contrast, the accent colour (alpha 0 when there is
+    // none). ui.theme() = themes::for_appearance(a.dark, a.high_contrast, a.accent) follows them
+    struct appearance_settings {
+        bool  dark{true};
+        bool  high_contrast{};
+        color accent{0, 0, 0, 0};
+    };
+    [[nodiscard]] static appearance_settings appearance() noexcept;
+    // true once after the user changed one of them (handle_message saw WM_SETTINGCHANGE / WM_SYSCOLORCHANGE): read
+    // appearance() again and re-apply the theme, between frames
+    [[nodiscard]] bool appearance_changed() noexcept { return std::exchange(appearance_changed_, false); }
+
     // clipboard access for text fields: ui.set_clipboard(platform.clipboard()).
     // this object must stay at a fixed address while the hooks are in use.
     [[nodiscard]] clipboard_hooks clipboard() noexcept;
 
 private:
-    void push_key(key k, bool ctrl, bool shift) noexcept;
+    void push_key(key k, bool ctrl, bool shift, bool alt) noexcept;
+    // a key or extra mouse button went down: queued with the modifiers held right now
+    void push_press(u32 key) noexcept;
     void push_text(char32_t cp) noexcept;
 
     void*               hwnd_{};
@@ -62,11 +77,14 @@ private:
     char16_t                              high_surrogate_{};
     cursor_kind                           cursor_{};
     u32                                   pressed_key_{};
+    std::array<key_press, max_key_presses> presses_{};
+    u32                                   press_count_{};
     std::array<char, 256>                 ime_{};      // the composition in progress (utf-8) ...
     u32                                   ime_len_{};
     u32                                   ime_cursor_{}; // ... and the caret inside it
     bool                                  ime_enabled_{true};
     vec2                                  ime_pos_{-1.0f, -1.0f};
+    bool                                  appearance_changed_{};
 };
 
 } // namespace strata

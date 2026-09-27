@@ -2,28 +2,19 @@
 
 #include <windows.h>
 
-#include <array>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
 namespace strata::internal {
 
-void limit_reached(const char* what, unsigned capacity) noexcept
+void print_diagnostic(std::string_view line) noexcept
 {
-    static std::array<const char*, 32> seen{}; // (the ui runs on one thread; `what` is always a literal)
-    for (const char*& s : seen) {
-        if (s == nullptr) {
-            s = what;
-            break;
-        }
-        if (std::strcmp(s, what) == 0) {
-            return;
-        }
-    }
-    char line[192];
-    std::snprintf(line, sizeof line, "[strata] limit reached: %s (capacity %u) - what does not fit is dropped\n", what, capacity);
-    std::fputs(line, stderr);
-    OutputDebugStringA(line);
+    char buf[320];
+    const int n = std::snprintf(buf, sizeof buf, "[strata] %.*s\n", static_cast<int>(std::min<std::size_t>(line.size(), 300)), line.data());
+    if (n <= 0) { return; }
+    std::fputs(buf, stderr);
+    OutputDebugStringA(buf);
 }
 
 } // namespace strata::internal

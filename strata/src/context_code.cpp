@@ -2,6 +2,8 @@
 
 #include "strata/context.hpp"
 
+#include "context_impl.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <format>
@@ -138,20 +140,20 @@ void find_all(std::string_view text, std::string_view needle, bool match_case, s
 
 void context::apply_input_mask()
 {
-    const std::vector<mask_slot> slots = parse_mask(edit_mask_);
+    const std::vector<mask_slot> slots = parse_mask(m_->edit_mask_);
     std::size_t before = 0;
-    const std::string raw = mask_extract(slots, edit_buf_, edit_cursor_, before);
+    const std::string raw = mask_extract(slots, m_->edit_buf_, m_->edit_cursor_, before);
     std::size_t caret = 0;
     const std::string out = mask_format(slots, raw, before, caret);
-    edit_buf_.assign(out.data(), out.size());
-    edit_cursor_ = edit_anchor_ = caret;
-    ++edit_version_;
+    m_->edit_buf_.assign(out.data(), out.size());
+    m_->edit_cursor_ = m_->edit_anchor_ = caret;
+    ++m_->edit_version_;
 }
 
 bool context::input_masked(std::string_view label, std::string& value, std::string_view mask, std::string_view hint,
                            input_flags flags)
 {
-    if (cur_ == nullptr) {
+    if (m_->cur_ == nullptr) {
         return false;
     }
     {   // the stored text is kept in the shape of the mask
@@ -160,12 +162,12 @@ bool context::input_masked(std::string_view label, std::string& value, std::stri
         const std::string shaped = mask_format(slots, mask_extract(slots, value, value.size(), before), before, caret);
         if (shaped != value) { value = shaped; }
     }
-    edit_mask_ = mask;
+    m_->edit_mask_ = mask;
     bool changed = input_core(label, value, hint, flags, mask.size() + 8);
-    edit_mask_ = {};
+    m_->edit_mask_ = {};
     if (changed) { // characters the mask refuses are dropped again, which can leave the text as it was
-        changed = std::string_view{edit_buf_} != std::string_view{value};
-        if (changed) { value.assign(edit_buf_.data(), edit_buf_.size()); }
+        changed = std::string_view{m_->edit_buf_} != std::string_view{value};
+        if (changed) { value.assign(m_->edit_buf_.data(), m_->edit_buf_.size()); }
     }
     return changed;
 }
@@ -174,19 +176,19 @@ bool context::input_masked(std::string_view label, std::string& value, std::stri
 
 context::code_state& context::code_state_for(id key)
 {
-    for (code_state& s : code_states_) {
+    for (code_state& s : m_->code_states_) {
         if (s.key == key) {
-            s.last_frame = frame_;
+            s.last_frame = m_->frame_;
             return s;
         }
     }
-    if (code_states_.size() >= 16) { // forget fields that are gone
-        std::erase_if(code_states_, [&](const code_state& s) { return s.last_frame + 600 < frame_; });
+    if (m_->code_states_.size() >= 16) { // forget fields that are gone
+        std::erase_if(m_->code_states_, [&](const code_state& s) { return s.last_frame + 600 < m_->frame_; });
     }
-    code_states_.emplace_back();
-    code_states_.back().key        = key;
-    code_states_.back().last_frame = frame_;
-    return code_states_.back();
+    m_->code_states_.emplace_back();
+    m_->code_states_.back().key        = key;
+    m_->code_states_.back().last_frame = m_->frame_;
+    return m_->code_states_.back();
 }
 
 void context::code_goto_line(std::string_view label, int line)
@@ -206,10 +208,10 @@ void context::code_find(std::string_view label, std::string_view text, bool with
 // Tab / Shift+Tab over the lines a selection touches (or the caret's line)
 bool context::edit_indent_lines(bool unindent, int tab_size)
 {
-    const std::string_view t = edit_buf_;
+    const std::string_view t = m_->edit_buf_;
     const std::size_t tab = static_cast<std::size_t>(std::max(tab_size, 1));
-    const std::size_t lo  = std::min(edit_cursor_, edit_anchor_);
-    const std::size_t hi  = std::max(edit_cursor_, edit_anchor_);
+    const std::size_t lo  = std::min(m_->edit_cursor_, m_->edit_anchor_);
+    const std::size_t hi  = std::max(m_->edit_cursor_, m_->edit_anchor_);
     const std::size_t nl  = lo == 0 ? npos : t.rfind('\n', lo - 1);
     const std::size_t s   = nl == npos ? 0 : nl + 1;
     std::size_t e = hi;
@@ -252,10 +254,10 @@ bool context::edit_indent_lines(bool unindent, int tab_size)
     const bool changed = edit_replace(s, e - s, out, edit_kind::other);
     if (lo == hi) {
         const std::ptrdiff_t at = static_cast<std::ptrdiff_t>(lo) + first_delta;
-        edit_cursor_ = edit_anchor_ = std::clamp<std::size_t>(static_cast<std::size_t>(std::max<std::ptrdiff_t>(at, 0)), s, s + out.size());
+        m_->edit_cursor_ = m_->edit_anchor_ = std::clamp<std::size_t>(static_cast<std::size_t>(std::max<std::ptrdiff_t>(at, 0)), s, s + out.size());
     } else {
-        edit_anchor_ = s;
-        edit_cursor_ = s + out.size();
+        m_->edit_anchor_ = s;
+        m_->edit_cursor_ = s + out.size();
     }
     return changed;
 }
@@ -263,22 +265,22 @@ bool context::edit_indent_lines(bool unindent, int tab_size)
 bool context::input_code(std::string_view label, std::string& value, vec2 size, code_flags flags, std::string_view hint,
                          std::size_t max_bytes, int tab_size)
 {
-    if (cur_ == nullptr) {
+    if (m_->cur_ == nullptr) {
         return false;
     }
     const auto has = [&](code_flags f) { return (static_cast<u8>(flags) & static_cast<u8>(f)) != 0; };
     const id   key           = widget_id(label);
-    const bool focused_here  = focus_id_ == key;
+    const bool focused_here  = m_->focus_id_ == key;
     const bool find_shortcut = has(code_flags::find_replace) && focused_here;
-    const std::size_t caret  = focused_here ? std::min(edit_cursor_, edit_anchor_) : 0;
+    const std::size_t caret  = focused_here ? std::min(m_->edit_cursor_, m_->edit_anchor_) : 0;
     code_state& cs = code_state_for(key);
 
     bool changed = false;
     std::size_t goto_offset = npos;
 
     // input_spans() is for the code field: the find bar's own text fields must not use it up
-    std::vector<text_span> spans = std::move(edit_spans_pending_);
-    edit_spans_pending_.clear();
+    std::vector<text_span> spans = std::move(m_->edit_spans_pending_);
+    m_->edit_spans_pending_.clear();
 
     if (has(code_flags::find_replace)) {
         push_id(label);
@@ -286,42 +288,42 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
         bool fresh_search = false; // code_find(): start at the first match after the caret
         if (cs.open_request) {
             cs.open_request = false;
-            focus_request_  = find_key;
+            m_->focus_request_  = find_key;
             fresh_search    = true;
             cs.active       = -1;
         }
         if (find_shortcut && chord_pressed({'F', true, false, false})) {
             cs.find_open    = true;
             cs.replace_open = false;
-            focus_request_  = find_key;
+            m_->focus_request_  = find_key;
         }
         if (find_shortcut && chord_pressed({'H', true, false, false})) {
             cs.find_open    = true;
             cs.replace_open = true;
-            focus_request_  = find_key;
+            m_->focus_request_  = find_key;
         }
 
         if (cs.find_open) {
-            const f32 w = layout_.width;
+            const f32 w = m_->layout_.width;
             const auto go = [&](int index) {
-                const int n = static_cast<int>(code_marks_.size());
+                const int n = static_cast<int>(m_->code_marks_.size());
                 if (n == 0) { cs.active = -1; return; }
                 cs.active   = (index % n + n) % n;
-                goto_offset = code_marks_[static_cast<std::size_t>(cs.active)].first;
+                goto_offset = m_->code_marks_[static_cast<std::size_t>(cs.active)].first;
             };
 
             set_next_item_width(std::max(w - 130.0f, 80.0f));
             const bool find_changed = input_text("##find", cs.find, "Find", input_flags::none, 256);
-            find_all(value, cs.find, cs.match_case, code_marks_);
+            find_all(value, cs.find, cs.match_case, m_->code_marks_);
             if (find_changed || (fresh_search && !cs.find.empty())) { // the first match at or after the caret
                 cs.active = -1;
                 int first = 0;
-                for (std::size_t i = 0; i < code_marks_.size(); ++i) {
-                    if (code_marks_[i].first >= caret) { first = static_cast<int>(i); break; }
+                for (std::size_t i = 0; i < m_->code_marks_.size(); ++i) {
+                    if (m_->code_marks_[i].first >= caret) { first = static_cast<int>(i); break; }
                 }
                 go(first);
             }
-            const bool enter_in_find = input_submitted() && focus_id_ == find_key;
+            const bool enter_in_find = input_submitted() && m_->focus_id_ == find_key;
             same_line();
             if (button("<")) { go(cs.active - 1); }
             same_line();
@@ -330,13 +332,13 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
             same_line();
             if (button("x")) { cs.find_open = cs.replace_open = false; }
 
-            const int n = static_cast<int>(code_marks_.size());
+            const int n = static_cast<int>(m_->code_marks_.size());
             if (cs.active >= n) { cs.active = n - 1; }
             if (cs.find.empty())    { text_dim("type to search"); }
             else if (n == 0)        { text_dim("no matches"); }
             else                    { text_dim(std::format("{} of {}", cs.active + 1, n)); }
             same_line();
-            if (checkbox("match case", cs.match_case)) { find_all(value, cs.find, cs.match_case, code_marks_); cs.active = -1; }
+            if (checkbox("match case", cs.match_case)) { find_all(value, cs.find, cs.match_case, m_->code_marks_); cs.active = -1; }
             same_line();
             (void)checkbox("replace", cs.replace_open);
 
@@ -344,23 +346,23 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
                 set_next_item_width(std::max(w - 150.0f, 80.0f));
                 (void)input_text("##replace", cs.replace, "Replace with", input_flags::none, 1024);
                 same_line();
-                if (button("Replace") && !code_marks_.empty()) {
-                    const auto m = code_marks_[static_cast<std::size_t>(std::max(cs.active, 0))];
+                if (button("Replace") && !m_->code_marks_.empty()) {
+                    const auto m = m_->code_marks_[static_cast<std::size_t>(std::max(cs.active, 0))];
                     value.replace(m.first, m.second, cs.replace);
                     changed = true;
-                    find_all(value, cs.find, cs.match_case, code_marks_);
-                    if (!code_marks_.empty()) { go(std::min<int>(std::max(cs.active, 0), static_cast<int>(code_marks_.size()) - 1)); }
+                    find_all(value, cs.find, cs.match_case, m_->code_marks_);
+                    if (!m_->code_marks_.empty()) { go(std::min<int>(std::max(cs.active, 0), static_cast<int>(m_->code_marks_.size()) - 1)); }
                 }
                 same_line();
-                if (button("All") && !code_marks_.empty()) {
-                    for (std::size_t i = code_marks_.size(); i-- > 0;) { value.replace(code_marks_[i].first, code_marks_[i].second, cs.replace); }
+                if (button("All") && !m_->code_marks_.empty()) {
+                    for (std::size_t i = m_->code_marks_.size(); i-- > 0;) { value.replace(m_->code_marks_[i].first, m_->code_marks_[i].second, cs.replace); }
                     changed = true;
-                    find_all(value, cs.find, cs.match_case, code_marks_);
+                    find_all(value, cs.find, cs.match_case, m_->code_marks_);
                     cs.active = -1;
                 }
             }
         } else {
-            code_marks_.clear();
+            m_->code_marks_.clear();
         }
         pop_id();
     }
@@ -372,25 +374,25 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
             if (off != npos) { ++off; }
         }
         goto_offset = off == npos ? value.size() : off;
-        if (focused_here) { edit_cursor_ = edit_anchor_ = std::min(goto_offset, edit_buf_.size()); }
+        if (focused_here) { m_->edit_cursor_ = m_->edit_anchor_ = std::min(goto_offset, m_->edit_buf_.size()); }
         cs.want_line = 0;
     }
 
-    edit_spans_pending_ = std::move(spans);
+    m_->edit_spans_pending_ = std::move(spans);
 
-    code_ = {};
-    code_.on          = true;
-    code_.flags       = flags;
-    code_.tab_size    = std::max(tab_size, 1);
-    code_.goto_offset = goto_offset;
+    m_->code_ = {};
+    m_->code_.on          = true;
+    m_->code_.flags       = flags;
+    m_->code_.tab_size    = std::max(tab_size, 1);
+    m_->code_.goto_offset = goto_offset;
     if (cs.find_open && has(code_flags::find_replace)) {
-        code_.marks       = code_marks_;
-        code_.mark_active = cs.active;
+        m_->code_.marks       = m_->code_marks_;
+        m_->code_.mark_active = cs.active;
     }
     vec2 field = size;
-    if (field.y <= 0.0f) { field.y = font_.line_height(current_font()) * 12.0f + style_.frame_padding.y * 2.0f; }
+    if (field.y <= 0.0f) { field.y = m_->font_.line_height(current_font()) * 12.0f + m_->style_.frame_padding.y * 2.0f; }
     if (input_multiline_core(label, value, field, input_flags::no_wrap, hint, max_bytes)) {
-        value.assign(edit_buf_.data(), edit_buf_.size());
+        value.assign(m_->edit_buf_.data(), m_->edit_buf_.size());
         changed = true;
     }
     return changed;

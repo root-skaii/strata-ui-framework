@@ -1,5 +1,5 @@
 // shared by the d3d11 and d3d12 backends (shader model 5.0 / dxbc).
-//   b0  four floats: scale.xy, translate.xy   (d3d12: root constants)
+//   b0  scale.xy, translate.xy, then the output: encoding, white level, text contrast   (d3d12: root constants)
 //   t0  font atlas, r8 coverage
 //   t1  per-frame table of rounded-rect shapes (d3d12: root srv)
 //   t2  user texture of the draw command, rgba8 straight alpha (only read by ps_image)
@@ -13,6 +13,10 @@ cbuffer transform : register(b0)
 {
     float2 scale;
     float2 translate;
+    // x: how colours are written (output_space): 0 as they are (an srgb target), 1 linear (an *_SRGB view encodes them),
+    //    2 scRGB (linear, 1.0 = 80 nits), 3 HDR10 (BT.2020, PQ). y: the white level (2: nits / 80, 3: nits / 10000).
+    // z: text contrast, how much glyph coverage is thickened for light text (0 = none)
+    float4 output;
 };
 
 struct shape
@@ -42,7 +46,9 @@ cbuffer blur_params : register(b1)
 {
     float4 bp0; // xy: destination viewport size in pixels (backdrop: the whole display), zw: uv scale of the source region
     float4 bp1; // xy: step between taps in source uv, zw: largest valid source uv
-    float4 bp2; // x: tap offset of the downsample pass (source pixels), y: gaussian sigma (source texels)
+    float4 bp2; // x: tap offset of the downsample pass (source pixels), z: gaussian weight of the centre texel
+    float4 bp3; // gaussian: weight, offset of the first two filtered taps (each reads a pair of texels)
+    float4 bp4; // xy: ... and of the third
 };
 
 static const uint no_shape = 0xffffffffu;
@@ -83,6 +89,39 @@ ps_input vs_main(vs_input i)
 float4 unpack_color(uint c)
 {
     return float4(c & 255u, (c >> 8) & 255u, (c >> 16) & 255u, c >> 24) * (1.0f / 255.0f);
+}
+
+// ---- output encoding: the ui's colours are srgb; an srgb view, an scRGB or an HDR10 target wants them otherwise ----
+
+float3 srgb_to_linear(float3 c)
+{
+    return c <= 0.04045f ? c / 12.92f : pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+float3 pq_encode(float3 l) // l: linear light, 1 = 10000 nits
+{
+    const float m1 = 0.1593017578125f, m2 = 78.84375f, c1 = 0.8359375f, c2 = 18.8515625f, c3 = 18.6875f;
+    float3 p = pow(saturate(l), m1);
+    return pow((c1 + c2 * p) / (1.0f + c3 * p), m2);
+}
+
+float3 encode_rgb(float3 c)
+{
+    if (output.x < 0.5f) { return c; }
+    float3 l = srgb_to_linear(saturate(c));
+    if (output.x < 1.5f) { return l; }
+    if (output.x < 2.5f) { return l * output.y; }
+    const float3x3 bt709_to_bt2020 = float3x3(0.6274040f, 0.3292820f, 0.0433136f,
+                                              0.0690970f, 0.9195400f, 0.0113612f,
+                                              0.0163916f, 0.0880132f, 0.8955950f);
+    return pq_encode(mul(bt709_to_bt2020, l) * output.y);
+}
+
+// the last step of every ui pixel shader: premultiplied srgb in, premultiplied target encoding out
+float4 encode_output(float4 premul)
+{
+    if (output.x < 0.5f || premul.a <= 0.0f) { return premul; }
+    return float4(encode_rgb(premul.rgb / premul.a) * premul.a, premul.a);
 }
 
 // signed distance (pixels) to a box with individual corner radii; y grows downwards
@@ -126,10 +165,18 @@ float4 ps_main(ps_input i) : SV_Target
 {
     if (i.shape_index != no_shape)
     {
-        return shade_shape(shapes[i.shape_index], i.pos.xy);
+        return encode_output(shade_shape(shapes[i.shape_index], i.pos.xy));
     }
-    float a = i.col.a * atlas.SampleLevel(sampler0, i.uv, 0.0f).r;
-    return float4(i.col.rgb * a, a);
+    float coverage = atlas.SampleLevel(sampler0, i.uv, 0.0f).r;
+    if (output.z > 0.0f)
+    {
+        // light text on a dark background reads thinner than the same coverage dark on light: thicken the edges in
+        // proportion to how light the text is (the curve keeps 0 and 1 where they are)
+        float k  = output.z * dot(i.col.rgb, float3(0.2126f, 0.7152f, 0.0722f));
+        coverage = coverage * (1.0f + k) / (1.0f + k * coverage);
+    }
+    float a = i.col.a * coverage;
+    return encode_output(float4(i.col.rgb * a, a));
 }
 
 // an image is a shape record whose fields are reused: shadow_offset = uv of the top-left corner,
@@ -153,7 +200,7 @@ float4 ps_image(ps_input i) : SV_Target
     float4 c   = image_tex.SampleLevel(sampler0, uv, lod) * i.col;
 
     float a = c.a * cov;
-    return float4(c.rgb * a, a);
+    return encode_output(float4(c.rgb * a, a));
 }
 
 // frosted glass: the blurred frame inside a rounded box, mixed with the tint (fill_top) and a fine grain. the result
@@ -167,12 +214,13 @@ float4 ps_backdrop(ps_input i) : SV_Target
     float2 uv   = i.pos.xy / bp0.xy * bp0.zw;
     float3 bg   = blur_src.SampleLevel(sampler0, uv, 0.0f).rgb;
     float  lum  = dot(bg, float3(0.2126f, 0.7152f, 0.0722f));
-    bg = saturate(lerp(float3(lum, lum, lum), bg, s.shadow_offset.x) * s.shadow_offset.y); // saturation, brightness
+    bg = lerp(float3(lum, lum, lum), bg, s.shadow_offset.x) * s.shadow_offset.y; // saturation, brightness
+    bg = output.x < 1.5f ? saturate(bg) : max(bg, 0.0f);                       // (scRGB goes past 1)
     float4 tint = unpack_color(s.fill_top);
-    float3 rgb  = lerp(bg, tint.rgb, tint.a);
+    float3 rgb  = lerp(bg, encode_rgb(tint.rgb), tint.a); // (bg is the target's own pixels: already encoded)
 
     float grain = frac(sin(dot(i.pos.xy, float2(12.9898f, 78.233f))) * 43758.5453f) - 0.5f;
-    rgb = saturate(rgb + grain * s.extra * 0.5f);
+    rgb = max(rgb + grain * s.extra * 0.5f, 0.0f); // (not saturated: scRGB goes past 1)
     return float4(rgb * cov, cov);
 }
 
@@ -201,19 +249,19 @@ float4 ps_blur_down(fs_in i) : SV_Target
     return c * 0.25f;
 }
 
-// one direction of a gaussian: 13 taps, weights from sigma
+// one direction of a gaussian over 13 texels, read as 7 filtered taps: the centre, then on each side three taps that each
+// land between two texels at the point where the filter weighs them as the gaussian does. weights come from the cpu
 float4 ps_blur_gauss(fs_in i) : SV_Target
 {
-    float2 uv    = i.pos.xy / bp0.xy * bp0.zw;
-    float  inv2s = -0.5f / max(bp2.y * bp2.y, 1.0e-4f);
-    float4 sum   = 0.0f;
-    float  wsum  = 0.0f;
-    [unroll]
-    for (int k = -6; k <= 6; ++k)
-    {
-        float w = exp(inv2s * float(k * k));
-        sum  += blur_src.SampleLevel(sampler0, clamp(uv + bp1.xy * float(k), 0.0f, bp1.zw), 0.0f) * w;
-        wsum += w;
-    }
-    return sum / wsum;
+    float2 uv  = i.pos.xy / bp0.xy * bp0.zw;
+    float4 sum = blur_src.SampleLevel(sampler0, uv, 0.0f) * bp2.z;
+    float2 w   = bp3.xz;
+    float2 o   = bp3.yw;
+    sum += (blur_src.SampleLevel(sampler0, clamp(uv + bp1.xy * o.x, 0.0f, bp1.zw), 0.0f) +
+            blur_src.SampleLevel(sampler0, clamp(uv - bp1.xy * o.x, 0.0f, bp1.zw), 0.0f)) * w.x;
+    sum += (blur_src.SampleLevel(sampler0, clamp(uv + bp1.xy * o.y, 0.0f, bp1.zw), 0.0f) +
+            blur_src.SampleLevel(sampler0, clamp(uv - bp1.xy * o.y, 0.0f, bp1.zw), 0.0f)) * w.y;
+    sum += (blur_src.SampleLevel(sampler0, clamp(uv + bp1.xy * bp4.y, 0.0f, bp1.zw), 0.0f) +
+            blur_src.SampleLevel(sampler0, clamp(uv - bp1.xy * bp4.y, 0.0f, bp1.zw), 0.0f)) * bp4.x;
+    return sum;
 }

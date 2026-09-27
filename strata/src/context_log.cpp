@@ -2,6 +2,8 @@
 
 #include "strata/context.hpp"
 
+#include "context_impl.hpp"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -44,8 +46,8 @@ namespace {
     case log_level::trace: return st.text_dim.scaled_alpha(0.65f);
     case log_level::debug: return st.text_dim;
     case log_level::info:  return st.text;
-    case log_level::warn:  return color::from_hex(0xffb454ffu);
-    default:               return color::from_hex(0xff6b7bffu);
+    case log_level::warn:  return st.warning;
+    default:               return st.error;
     }
 }
 
@@ -53,19 +55,19 @@ namespace {
 
 void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, log_view_flags flags)
 {
-    if (cur_ == nullptr) {
+    if (m_->cur_ == nullptr) {
         return;
     }
     push_id(id_label);
     log_buffer::view_state& v = log.view;
     const font_id f = current_font();
     for (std::size_t i = log.lines_.size(); i-- > 0 && log.lines_[i].time < 0.0;) { // lines added since the last look
-        log.lines_[i].time = time_;
+        log.lines_[i].time = m_->time_;
     }
 
     // toolbar -------------------------------------------------------------------------------------------
     if (!has_flag(flags, log_view_flags::no_toolbar)) {
-        set_next_item_width(std::max(layout_.width * 0.22f, 90.0f));
+        set_next_item_width(std::max(m_->layout_.width * 0.22f, 90.0f));
         (void)input_text("##filter", v.filter, "filter...");
         same_line();
         static constexpr std::array<std::string_view, 5> level_names = {"trace", "debug", "info", "warn", "error"};
@@ -94,7 +96,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             log.clear();
             v.follow = true;
         }
-        if (copy_clicked && clipboard_.set != nullptr) {
+        if (copy_clicked && m_->clipboard_.set != nullptr) {
             std::string all;
             const bool any_selected = v.sel_anchor != 0;
             const u64 lo = std::min(v.sel_anchor, v.sel_cursor);
@@ -106,7 +108,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
                 all += l.text();
                 all += '\n';
             }
-            clipboard_.set(clipboard_.user, all);
+            m_->clipboard_.set(m_->clipboard_.user, all);
         }
     }
 
@@ -130,14 +132,14 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
     // the body: a scrolling child; only the visible rows are drawn ---------------------------------------------------------
     f32 body_h = size.y;
     if (body_h <= 0.0f) {
-        body_h = layout_.bound_bottom > 0.0f ? std::max(layout_.bound_bottom - layout_next_y(), 60.0f) : 220.0f;
+        body_h = m_->layout_.bound_bottom > 0.0f ? std::max(m_->layout_.bound_bottom - layout_next_y(), 60.0f) : 220.0f;
     }
     if (begin_child("##body", {size.x, body_h}, child_flags::frame)) {
-        child_frame& cf = child_stack_[child_depth_ - 1];
+        child_frame& cf = m_->child_stack_[m_->child_depth_ - 1];
         child_state& st = *cf.state;
-        const f32 row_h  = font_.line_height(f) + 3.0f;
-        const f32 time_w = v.show_time ? font_.measure(f, v.clock ? "00:00:00.000 " : "000.0 ").x + 4.0f : 0.0f;
-        const f32 tag_w  = font_.measure(f, "WRN ").x + 6.0f;
+        const f32 row_h  = m_->font_.line_height(f) + 3.0f;
+        const f32 time_w = v.show_time ? m_->font_.measure(f, v.clock ? "00:00:00.000 " : "000.0 ").x + 4.0f : 0.0f;
+        const f32 tag_w  = m_->font_.measure(f, "WRN ").x + 6.0f;
 
         // wrapping: every row is as high as its text (measured once per line and width), so the rows are laid out by a table
         const f32 wrap_w = std::max(cf.inner.width() - time_w - tag_w - 14.0f, 40.0f);
@@ -148,11 +150,11 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             for (std::size_t i = 0; i < count; ++i) {
                 log_buffer::line& l = log.lines_[log.visible_[i]];
                 if (l.wrap_w != wrap_w) {
-                    l.wrap_h = l.text().empty() ? font_.line_height(f) : rich_layout(l.text(), f, style_.text, wrap_w, false).y;
+                    l.wrap_h = l.text().empty() ? m_->font_.line_height(f) : rich_layout(l.text(), f, m_->style_.text, wrap_w, false).y;
                     l.wrap_w = wrap_w;
                 }
                 log.row_top_[i] = y;
-                y += std::max(l.wrap_h, font_.line_height(f)) + 3.0f;
+                y += std::max(l.wrap_h, m_->font_.line_height(f)) + 3.0f;
             }
             log.row_top_[count] = y;
         }
@@ -176,7 +178,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             st.scroll = max_scroll;
         }
         log.last_scroll_ = v.follow ? st.scroll : -1.0f;
-        layout_.origin.y = cf.inner.min.y - st.scroll;
+        m_->layout_.origin.y = cf.inner.min.y - st.scroll;
 
         (void)layout_place({1.0f, std::max(total, 1.0f)}); // the scrollable height
 
@@ -184,24 +186,24 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
         const rect hit = {cf.bounds.min, {cf.bounds.max.x - (overflowing ? 12.0f : 0.0f), cf.bounds.max.y}};
         const interaction in = interact(widget_id("##rows"), hit);
         if (in.held && count > 0) {
-            const std::size_t idx = row_at(mouse_.y - layout_.origin.y);
+            const std::size_t idx = row_at(m_->mouse_.y - m_->layout_.origin.y);
             const u64 seq = log.lines_[log.visible_[idx]].seq;
-            if (mouse_pressed_) {
+            if (m_->mouse_pressed_) {
                 v.sel_cursor = seq;
-                if (!(mod_shift_ && v.sel_anchor != 0)) { v.sel_anchor = seq; }
+                if (!(m_->mod_shift_ && v.sel_anchor != 0)) { v.sel_anchor = seq; }
                 log.focused_ = true;
             } else {
                 v.sel_cursor = seq; // dragging extends
             }
-        } else if (mouse_pressed_ && !cf.bounds.contains(mouse_)) {
+        } else if (m_->mouse_pressed_ && !cf.bounds.contains(m_->mouse_)) {
             log.focused_ = false;
         }
         if (log.focused_) { // Ctrl+A / Ctrl+C on the selected rows
-            for (u32 i = 0; i < key_count_; ++i) {
-                if (keys_[i].k == key::a && count > 0) {
+            for (u32 i = 0; i < m_->key_count_; ++i) {
+                if (m_->keys_[i].k == key::a && count > 0) {
                     v.sel_anchor = log.lines_[log.visible_.front()].seq;
                     v.sel_cursor = log.lines_[log.visible_.back()].seq;
-                } else if (keys_[i].k == key::c && v.sel_anchor != 0 && clipboard_.set != nullptr) {
+                } else if (m_->keys_[i].k == key::c && v.sel_anchor != 0 && m_->clipboard_.set != nullptr) {
                     const u64 lo = std::min(v.sel_anchor, v.sel_cursor);
                     const u64 hi = std::max(v.sel_anchor, v.sel_cursor);
                     std::string text;
@@ -209,7 +211,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
                         const log_buffer::line& l = log.lines_[vi];
                         if (l.seq >= lo && l.seq <= hi) { text += l.text(); text += '\n'; }
                     }
-                    clipboard_.set(clipboard_.user, text);
+                    m_->clipboard_.set(m_->clipboard_.user, text);
                 }
             }
         }
@@ -228,31 +230,31 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             const log_buffer::line& l = log.lines_[log.visible_[i]];
             const f32 top = wrap ? log.row_top_[i] : static_cast<f32>(i) * row_h;
             const f32 h   = wrap ? log.row_top_[i + 1] - top : row_h;
-            const f32 y = layout_.origin.y + top;
+            const f32 y = m_->layout_.origin.y + top;
             const f32 x = cf.inner.min.x;
             if (v.sel_anchor != 0 && l.seq >= sel_lo && l.seq <= sel_hi) {
-                dl_.rect_filled({{cf.inner.min.x - 2.0f, y}, {cf.inner.max.x, y + h}}, style_.accent.scaled_alpha(0.28f));
+                m_->dl_.rect_filled({{cf.inner.min.x - 2.0f, y}, {cf.inner.max.x, y + h}}, m_->style_.accent.scaled_alpha(0.28f));
             } else if ((i & 1) != 0) {
-                dl_.rect_filled({{cf.inner.min.x - 2.0f, y}, {cf.inner.max.x, y + h}}, color{255, 255, 255, 6});
+                m_->dl_.rect_filled({{cf.inner.min.x - 2.0f, y}, {cf.inner.max.x, y + h}}, color{255, 255, 255, 6});
             }
             f32 tx = x;
             if (v.show_time) {
                 if (v.clock) {
-                    dl_.text({tx, y + 1.5f}, style_.text_dim.scaled_alpha(0.8f), log_buffer::clock_text(l.wall_ms), f);
+                    m_->dl_.text({tx, y + 1.5f}, m_->style_.text_dim.scaled_alpha(0.8f), log_buffer::clock_text(l.wall_ms), f);
                 } else {
                     std::array<char, 16> buf;
                     const auto r = std::to_chars(buf.data(), buf.data() + buf.size(), l.time, std::chars_format::fixed, 1);
-                    dl_.text({tx, y + 1.5f}, style_.text_dim.scaled_alpha(0.8f), {buf.data(), r.ptr}, f);
+                    m_->dl_.text({tx, y + 1.5f}, m_->style_.text_dim.scaled_alpha(0.8f), {buf.data(), r.ptr}, f);
                 }
                 tx += time_w;
             }
-            const color c = level_color(l.level, style_);
-            dl_.text({tx, y + 1.5f}, c, level_tag(l.level), f);
+            const color c = level_color(l.level, m_->style_);
+            m_->dl_.text({tx, y + 1.5f}, c, level_tag(l.level), f);
             if (wrap) {
                 rich_layout(l.text(), f, c, wrap_w, false);
                 rich_draw({tx + tag_w, y + 1.5f});
             } else {
-                dl_.text({tx + tag_w, y + 1.5f}, c, l.text(), f);
+                m_->dl_.text({tx + tag_w, y + 1.5f}, c, l.text(), f);
             }
         }
         end_child();

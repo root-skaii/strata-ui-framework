@@ -7,7 +7,8 @@
 
 #include "strata/context.hpp"
 
-#include "limits.hpp"
+#include "context_impl.hpp"
+
 
 #include <algorithm>
 
@@ -15,10 +16,10 @@ namespace strata {
 
 void context::push_id_value(id key) noexcept
 {
-    if (id_depth_ < max_id_depth) {
-        id_stack_[++id_depth_] = key;
+    if (m_->id_depth_ < max_id_depth) {
+        m_->id_stack_[++m_->id_depth_] = key;
     } else {
-        internal::limit_reached("push_id nesting (max_id_depth): ids will collide", max_id_depth);
+        report_limit("push_id nesting (max_id_depth): ids will collide", max_id_depth);
     }
 }
 
@@ -27,58 +28,58 @@ void context::push_id_value(id key) noexcept
 void context::nav_begin(std::string_view id_label)
 {
     const id key = widget_id(id_label);
-    if (nav_.scope != 0) {
-        internal::limit_reached("nav_begin inside another nav scope (only one at a time)", 1);
+    if (m_->nav_.scope != 0) {
+        report_limit("nav_begin inside another nav scope (only one at a time)", 1);
         return;
     }
-    if (nav_.scope_key != key) { // another list: start its cursor over
-        nav_.scope_key = key;
-        nav_.cursor    = 0;
+    if (m_->nav_.scope_key != key) { // another list: start its cursor over
+        m_->nav_.scope_key = key;
+        m_->nav_.cursor    = 0;
     }
-    nav_.scope = key;
-    nav_.items.clear();
+    m_->nav_.scope = key;
+    m_->nav_.items.clear();
     // a text field with the keyboard uses the arrow keys itself
-    nav_.active = focus_id_ == 0 && hotkey_capture_ == 0;
+    m_->nav_.active = m_->focus_id_ == 0 && m_->hotkey_capture_ == 0;
 }
 
 void context::nav_record(id key, const rect& r, u32 depth, bool node, bool open) noexcept
 {
-    if (nav_.scope == 0 || key == 0) {
+    if (m_->nav_.scope == 0 || key == 0) {
         return;
     }
-    nav_.items.push_back({key, r, depth, node, open});
+    m_->nav_.items.push_back({key, r, depth, node, open});
 }
 
 bool context::nav_is_cursor(id key) const noexcept
 {
-    return nav_.scope != 0 && key != 0 && nav_.cursor == key;
+    return m_->nav_.scope != 0 && key != 0 && m_->nav_.cursor == key;
 }
 
 // the row the cursor was on when Enter was pressed last frame reports it as a press, once
 bool context::nav_take(id key) noexcept
 {
-    if (nav_.scope == 0 || key == 0 || nav_.activate_pending != key) {
+    if (m_->nav_.scope == 0 || key == 0 || m_->nav_.activate_pending != key) {
         return false;
     }
-    nav_.activate_pending = 0;
+    m_->nav_.activate_pending = 0;
     return true;
 }
 
 void context::nav_click(id key) noexcept
 {
-    if (nav_.scope != 0) {
-        nav_.cursor = key;
+    if (m_->nav_.scope != 0) {
+        m_->nav_.cursor = key;
     }
 }
 
 void context::nav_end()
 {
-    if (nav_.scope == 0) {
+    if (m_->nav_.scope == 0) {
         return;
     }
-    const auto& items = nav_.items;
+    const auto& items = m_->nav_.items;
     if (items.empty()) {
-        nav_.scope = 0;
+        m_->nav_.scope = 0;
         return;
     }
 
@@ -86,7 +87,7 @@ void context::nav_end()
     std::size_t at    = 0;
     bool        found = false;
     for (std::size_t i = 0; i < items.size(); ++i) {
-        if (items[i].key == nav_.cursor) {
+        if (items[i].key == m_->nav_.cursor) {
             at    = i;
             found = true;
             break;
@@ -95,14 +96,14 @@ void context::nav_end()
 
     bool moved    = false;
     bool activate = false;
-    if (nav_.active) {
+    if (m_->nav_.active) {
         const auto step = [&](std::ptrdiff_t d) {
             const std::ptrdiff_t n = static_cast<std::ptrdiff_t>(items.size());
             at    = static_cast<std::size_t>(std::clamp(static_cast<std::ptrdiff_t>(at) + d, std::ptrdiff_t{0}, n - 1));
             moved = true;
         };
-        for (u32 k = 0; k < key_count_; ++k) {
-            const key_event& ev = keys_[k];
+        for (u32 k = 0; k < m_->key_count_; ++k) {
+            const key_event& ev = m_->keys_[k];
             if (ev.ctrl) { continue; }
             switch (ev.k) {
             case key::down:
@@ -140,15 +141,15 @@ void context::nav_end()
     }
 
     if (moved || (activate && found)) {
-        nav_.cursor = items[at].key;
+        m_->nav_.cursor = items[at].key;
     }
     if (activate) {
-        nav_.activate_pending = nav_.cursor;
+        m_->nav_.activate_pending = m_->nav_.cursor;
     }
     if (moved) { // keep the row the cursor moved to in view
         scroll_reveal_rect(items[at].bounds, false);
     }
-    nav_.scope = 0;
+    m_->nav_.scope = 0;
 }
 
 // scrolling -----------------------------------------------------------------------------------
@@ -157,22 +158,22 @@ void context::nav_end()
 // otherwise the window. nullptr when neither scrolls.
 f32* context::scroll_slot(rect& view) noexcept
 {
-    if (child_depth_ > 0) {
-        child_frame& cf = child_stack_[child_depth_ - 1];
+    if (m_->child_depth_ > 0) {
+        child_frame& cf = m_->child_stack_[m_->child_depth_ - 1];
         if (cf.state == nullptr) { return nullptr; }
         view = cf.inner;
         return &cf.state->scroll;
     }
-    if (cur_ == nullptr) {
+    if (m_->cur_ == nullptr) {
         return nullptr;
     }
-    const f32 shown_h = cur_->height > 0.0f ? cur_->height : cur_->capped_h;
+    const f32 shown_h = m_->cur_->height > 0.0f ? m_->cur_->height : m_->cur_->capped_h;
     if (shown_h <= 0.0f) {
         return nullptr;
     }
-    const f32 pad = cur_->menubar ? 0.0f : style_.padding;
-    view = {{cur_->pos.x, cur_->pos.y + cur_->title_h + pad}, {cur_->pos.x + cur_->width, cur_->pos.y + shown_h - pad}};
-    return &cur_->scroll;
+    const f32 pad = m_->cur_->menubar ? 0.0f : m_->style_.padding;
+    view = {{m_->cur_->pos.x, m_->cur_->pos.y + m_->cur_->title_h + pad}, {m_->cur_->pos.x + m_->cur_->width, m_->cur_->pos.y + shown_h - pad}};
+    return &m_->cur_->scroll;
 }
 
 f32 context::scroll_y() const noexcept
@@ -191,8 +192,8 @@ f32 context::scroll_max_y() const noexcept
         return 0.0f;
     }
     // what the region reported at the end of the last frame: this frame's content is not finished yet
-    const f32 content = child_depth_ > 0 ? child_stack_[child_depth_ - 1].state->content_h
-                                         : cur_->content_h + 2.0f * (cur_->menubar ? 0.0f : style_.padding);
+    const f32 content = m_->child_depth_ > 0 ? m_->child_stack_[m_->child_depth_ - 1].state->content_h
+                                         : m_->cur_->content_h + 2.0f * (m_->cur_->menubar ? 0.0f : m_->style_.padding);
     return std::max(0.0f, content - view.height());
 }
 
@@ -208,9 +209,9 @@ void context::set_scroll_y(f32 y) noexcept
 // innermost such child is the one that owns an x offset
 context::child_state* context::horizontal_child() const noexcept
 {
-    for (u32 d = child_depth_; d-- > 0;) {
-        if (has_flag(child_stack_[d].flags, child_flags::horizontal)) {
-            return child_stack_[d].state;
+    for (u32 d = m_->child_depth_; d-- > 0;) {
+        if (has_flag(m_->child_stack_[d].flags, child_flags::horizontal)) {
+            return m_->child_stack_[d].state;
         }
     }
     return nullptr;
@@ -229,9 +230,9 @@ f32 context::scroll_max_x() const noexcept
         return 0.0f;
     }
     // what the region reported last frame, like scroll_max_y: this frame's content is not laid out yet
-    for (u32 d = child_depth_; d-- > 0;) {
-        if (child_stack_[d].state == st) {
-            return std::max(0.0f, st->content_w - child_stack_[d].inner.width());
+    for (u32 d = m_->child_depth_; d-- > 0;) {
+        if (m_->child_stack_[d].state == st) {
+            return std::max(0.0f, st->content_w - m_->child_stack_[d].inner.width());
         }
     }
     return 0.0f;
@@ -268,12 +269,12 @@ void context::scroll_reveal_rect(const rect& item, bool center) noexcept
 
 void context::ensure_item_visible() noexcept
 {
-    scroll_reveal_rect(last_item_rect_, false);
+    scroll_reveal_rect(m_->last_item_rect_, false);
 }
 
 void context::scroll_to_item() noexcept
 {
-    scroll_reveal_rect(last_item_rect_, true);
+    scroll_reveal_rect(m_->last_item_rect_, true);
 }
 
 } // namespace strata

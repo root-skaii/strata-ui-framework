@@ -12,9 +12,16 @@ option(STRATA_INSTALL       "generate install / package rules"     ${PROJECT_IS_
 option(STRATA_STATIC_CRT    "link the static msvc runtime (/MT)"   ON)
 option(STRATA_FAST_MATH     "compile with /fp:fast"                ON)
 # /arch:AVX2 makes the binaries fault with an illegal instruction on cpus
-# without AVX2 (pre-2013 intel / pre-2015 amd). see README "requirements".
-option(STRATA_AVX2          "compile with /arch:AVX2"              ON)
+# without AVX2 (pre-2013 intel / pre-2015 amd). off by default: a library, and
+# above all an overlay dll loaded into someone else's program, cannot choose the
+# cpu it runs on -- and the ui gains little from it. see README "requirements".
+option(STRATA_AVX2          "compile with /arch:AVX2"              OFF)
 option(STRATA_WERROR        "treat warnings as errors"             OFF)
+# AddressSanitizer on everything built here (library, sandbox, tests): out-of-bounds reads / writes, use after free.
+# the x64-asan preset turns it on together with the fuzzer
+option(STRATA_ASAN          "build with AddressSanitizer (/fsanitize=address)" OFF)
+# strata_fuzz: libFuzzer over the parsers (config, theme, dock layout, saved state, rich text, key chords) and text editing
+option(STRATA_BUILD_FUZZERS "build the libFuzzer target strata_fuzz (use with STRATA_ASAN)" OFF)
 # ctest: the headless self-test, and screenshot comparisons of the sandbox scenes against sandbox/golden/*.png
 option(STRATA_BUILD_TESTS   "register the sandbox tests with ctest"  ${PROJECT_IS_TOP_LEVEL})
 
@@ -87,4 +94,15 @@ if(MSVC)
     if(STRATA_WERROR)
         target_compile_options(strata_options INTERFACE /WX)
     endif()
+    if(STRATA_ASAN)
+        # (debug information for readable reports; asan does not work with incremental linking)
+        target_compile_options(strata_options INTERFACE /fsanitize=address /Zi)
+        target_link_options(strata_options INTERFACE /DEBUG /INCREMENTAL:NO)
+    endif()
+endif()
+
+if(STRATA_ASAN AND PROJECT_IS_TOP_LEVEL)
+    # whole-program optimisation would inline across the instrumented code for no gain in a checking build
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE        OFF)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF)
 endif()

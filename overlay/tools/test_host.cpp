@@ -1,8 +1,10 @@
 // a stand-in for a game: a window, a flip-model direct3d 11 (or, with --d3d12, direct3d 12) swap chain, a clear color that
 // changes and Present.
-//   strata_overlay_host.exe [--d3d12] --dll <overlay dll>
+//   strata_overlay_host.exe [--d3d12] [--fp16] --dll <overlay dll>
 // it runs a few frames, loads the dll the way an injector would, waits for the hook to attach, checks that nothing is drawn while
-// the overlay is hidden, sends F1 to the window, checks that frames get drawn, sends F1 again and checks that they stop.
+// the overlay is hidden, sends F1 to the window, checks that frames get drawn, sends F1 again and checks that they stop. then it
+// replaces its swap chain the way a game changing resolution does, and checks that the overlay follows to the new one.
+// --fp16 makes the swap chain FP16 (scRGB), which the overlay has to notice and encode the ui for.
 // exit code 0 = it all worked.
 
 #include <windows.h>
@@ -34,6 +36,7 @@ LRESULT CALLBACK host_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 using frames_fn   = unsigned long long (*)();
 using attached_fn = int (*)();
 using error_fn    = const char* (*)();
+using output_fn   = int (*)();
 
 } // namespace
 
@@ -41,11 +44,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 {
     std::wstring dll;
     bool use12 = false;
+    bool fp16  = false;
     int argc = 0;
     LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
     for (int i = 1; i < argc; ++i) {
         if (std::wstring{argv[i]} == L"--dll" && i + 1 < argc) { dll = argv[++i]; }
         else if (std::wstring{argv[i]} == L"--d3d12") { use12 = true; }
+        else if (std::wstring{argv[i]} == L"--fp16") { fp16 = true; }
     }
 
     WNDCLASSEXW wc{};
@@ -67,6 +72,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGISwapChain1> chain;
+    ComPtr<IDXGIFactory2> factory;
     ComPtr<ID3D12Device> device12;
     ComPtr<ID3D12CommandQueue> queue12;
     ComPtr<ID3D12DescriptorHeap> rtv_heap;
@@ -78,7 +84,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     DXGI_SWAP_CHAIN_DESC1 sd{};
     sd.Width = 960; sd.Height = 540;
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.Format = fp16 ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
     sd.SampleDesc.Count = 1;
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.BufferCount = 2;
@@ -88,11 +94,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         if (FAILED(::D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 1, D3D11_SDK_VERSION, &device, nullptr, &context))) { return 11; }
         ComPtr<IDXGIDevice> dxgi_device;
         ComPtr<IDXGIAdapter> adapter;
-        ComPtr<IDXGIFactory2> factory;
         if (FAILED(device.As(&dxgi_device)) || FAILED(dxgi_device->GetAdapter(&adapter)) || FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) { return 12; }
         if (FAILED(factory->CreateSwapChainForHwnd(device.Get(), hwnd, &sd, nullptr, nullptr, &chain))) { return 13; }
     } else {
-        ComPtr<IDXGIFactory4> factory;
         if (FAILED(::CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) { return 12; }
         if (FAILED(::D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device12)))) { return 11; }
         D3D12_COMMAND_QUEUE_DESC qd{};
@@ -110,6 +114,24 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         list12->Close();
     }
 
+    // what a game does when it changes resolution or display mode: let go of the swap chain and make a new one on the same
+    // window. that only works once the old one is really gone, so it also checks that the overlay holds nothing of it
+    const auto recreate_chain = [&]() -> bool {
+        if (use12) {
+            queue12->Signal(fence12.Get(), ++fence_value);
+            HANDLE e = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            fence12->SetEventOnCompletion(fence_value, e);
+            ::WaitForSingleObject(e, 2000);
+            ::CloseHandle(e);
+        } else {
+            context->ClearState();
+            context->Flush();
+        }
+        chain.Reset();
+        IUnknown* owner = use12 ? static_cast<IUnknown*>(queue12.Get()) : static_cast<IUnknown*>(device.Get());
+        return SUCCEEDED(factory->CreateSwapChainForHwnd(owner, hwnd, &sd, nullptr, nullptr, &chain));
+    };
+
     HMODULE module = nullptr;
     frames_fn frames = nullptr;
     attached_fn attached = nullptr;
@@ -126,7 +148,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             ::DispatchMessageW(&msg);
         }
         const float t = static_cast<float>(frame_number++) * 0.02f;
-        const float color[4] = {0.10f + 0.05f * std::sin(t), 0.16f, 0.24f + 0.05f * std::cos(t), 1.0f};
+        float color[4] = {0.10f + 0.05f * std::sin(t), 0.16f, 0.24f + 0.05f * std::cos(t), 1.0f};
+        if (fp16) { // an FP16 swap chain is linear light: the same dark blue has to be written linear, or it shows up bright
+            for (int k = 0; k < 3; ++k) { color[k] = std::pow(color[k], 2.2f); }
+        }
         if (!use12) {
             ComPtr<ID3D11Texture2D> back;
             ComPtr<ID3D11RenderTargetView> rtv;
@@ -189,6 +214,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     };
 
     run_frames(20);
+    // the api this "game" does not use: the overlay must not load it into the process
+    const wchar_t* other_api = use12 ? L"d3d11.dll" : L"d3d12.dll";
+    const bool other_loaded_before = ::GetModuleHandleW(other_api) != nullptr;
     if (!dll.empty()) {
         module = ::LoadLibraryW(dll.c_str());
         if (module == nullptr) { std::fprintf(stderr, "cannot load the dll (%lu)\n", ::GetLastError()); return 20; }
@@ -203,6 +231,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             std::fprintf(stderr, "FAIL: the overlay never attached (%s)\n", err != nullptr ? err() : "?");
             ++failures;
         } else {
+            if (!other_loaded_before && ::GetModuleHandleW(other_api) != nullptr) {
+                std::fprintf(stderr, "FAIL: the overlay loaded %ls into a game that does not use it\n", other_api);
+                ++failures;
+            }
             run_frames(30);
             if (frames() != 0) { std::fprintf(stderr, "FAIL: the overlay drew while hidden (%llu frames)\n", frames()); ++failures; }
 
@@ -226,6 +258,32 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             run_frames(40);
             if (frames() > hidden_at + 1) { std::fprintf(stderr, "FAIL: the overlay kept drawing after F1 (%llu -> %llu)\n", hidden_at, frames()); ++failures; }
             std::printf("overlay drew %llu frames while it was open\n", shown);
+
+            // the encoding the overlay picked for this swap chain
+            const auto output_space = reinterpret_cast<output_fn>(::GetProcAddress(module, "strata_overlay_output_space"));
+            const int want_space = fp16 ? 2 : 0; // scRGB / srgb
+            if (output_space == nullptr || output_space() != want_space) {
+                std::fprintf(stderr, "FAIL: the overlay encodes for output space %d, expected %d\n", output_space != nullptr ? output_space() : -1, want_space);
+                ++failures;
+            }
+
+            // the swap chain is replaced while the overlay is open: it has to let go of the old one (or the new one cannot
+            // be made) and draw on the new one
+            ::SendMessageW(hwnd, WM_KEYDOWN, VK_F1, 0); // show
+            run_frames(20);
+            if (!recreate_chain()) {
+                std::fprintf(stderr, "FAIL: a new swap chain could not be made on the window (the overlay still holds the old one)\n");
+                ++failures;
+            } else {
+                const unsigned long long before = frames();
+                run_frames(60);
+                if (frames() < before + 30) {
+                    std::fprintf(stderr, "FAIL: the overlay did not follow to the new swap chain (%llu -> %llu)\n", before, frames());
+                    ++failures;
+                }
+            }
+            ::SendMessageW(hwnd, WM_KEYDOWN, VK_F1, 0); // hide again
+            run_frames(5);
 
             // "unload overlay": the dll takes its hooks out and unloads itself; the game carries on
             ::SendMessageW(hwnd, WM_KEYDOWN, VK_F1, 0); // show

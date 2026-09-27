@@ -9,7 +9,7 @@
 
 #include <d3d11.h>
 #include <d3d12.h>
-#include <dxgi1_4.h>
+#include <dxgi1_6.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -32,6 +32,8 @@ constexpr UINT wm_show_changed = WM_APP + 0x5710; // to the game's window: the c
 using present_fn  = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
 using present1_fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 using resize_fn   = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+using resize1_fn  = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*, UINT, UINT, UINT, DXGI_FORMAT, UINT, const UINT*, IUnknown* const*);
+using colorspace_fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*, DXGI_COLOR_SPACE_TYPE);
 
 using execute_fn  = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 
@@ -39,6 +41,8 @@ constexpr int vt_queue_execute  = 10; // ID3D12CommandQueue::ExecuteCommandLists
 constexpr int vt_present        = 8;
 constexpr int vt_resize_buffers = 13;
 constexpr int vt_present1       = 22;
+constexpr int vt_set_colorspace1 = 38; // IDXGISwapChain3::SetColorSpace1
+constexpr int vt_resize_buffers1 = 39; // IDXGISwapChain3::ResizeBuffers1
 
 struct state {
     options              opt;
@@ -55,12 +59,26 @@ struct state {
     float                base_scale{1.0f}; // what Ctrl+0 goes back to
     char                 error[256]{};
 
-    void**       vtable{};
-    bool         has_sc1{};
-    present_fn   orig_present{};
-    present1_fn  orig_present1{};
-    resize_fn    orig_resize{};
-    bool         patched_present{}, patched_present1{}, patched_resize{};
+    void**        vtable{};
+    bool          has_sc1{};
+    bool          has_sc3{};
+    present_fn    orig_present{};
+    present1_fn   orig_present1{};
+    resize_fn     orig_resize{};
+    resize1_fn    orig_resize1{};
+    colorspace_fn orig_colorspace{};
+    bool          patched_present{}, patched_present1{}, patched_resize{}, patched_resize1{}, patched_colorspace{};
+
+    // the colour space a game declared for a swap chain (SetColorSpace1), and whether the output encoding has to be
+    // worked out again (a resize can change the format, a game can switch hdr on and off)
+    std::atomic<IDXGISwapChain*>     colorspace_chain{nullptr};
+    std::atomic<int>                 colorspace{-1};
+    std::atomic<bool>                output_dirty{true};
+    std::atomic<int>                 output_now{0}; // the output_space in use (for output_space_in_use)
+    // presents by a swap chain other than the attached one, since the attached one last presented: the game has
+    // replaced its swap chain (or its window) when this keeps growing
+    unsigned                         foreign_presents{};
+    DXGI_FORMAT                      renderer_format12{};
 
     // direct3d 12: the game's direct queue is found by watching ExecuteCommandLists
     void**                           queue_vtable{};
@@ -98,8 +116,6 @@ struct state {
     bool                             subclassed{};
     ComPtr<ID3D11Device>             device;
     ComPtr<ID3D11DeviceContext>      ctx;
-    ComPtr<ID3D11RenderTargetView>   rtv;
-    UINT                             rtv_w{}, rtv_h{};
     d3d11_renderer                   renderer;
     std::unique_ptr<context>         ui;
     win32_platform                   platform;
@@ -460,94 +476,229 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 // ---- attaching to the game's swap chain and drawing ---------------------------------------------------------------
 
-// false: not yet (try the next Present); `fatal`: never (this is not a direct3d 11 game / the ui cannot be built)
+[[nodiscard]] ComPtr<ID3D12CommandQueue> game_queue12(ID3D12Device* device);
+
+// everything made on the game's device: gone when the game replaces its device (or the overlay is uninstalled). the ui
+// context stays -- its windows, their places and what the user typed survive a new device
+void release_device_objects()
+{
+    wait_idle12();
+    g.renderer.destroy();
+    g.renderer12.destroy();
+    g.list12.Reset();
+    g.frames12.clear();
+    g.rtv_heap12.Reset();
+    g.fence12.Reset();
+    if (g.fence_event12 != nullptr) { ::CloseHandle(g.fence_event12); g.fence_event12 = nullptr; }
+    g.fence_next12    = 0;
+    g.queue12.Reset();
+    g.dev12.Reset();
+    g.targets12_valid = false;
+    g.renderer_format12 = DXGI_FORMAT_UNKNOWN;
+    g.ctx.Reset();
+    g.device.Reset();
+    g.backend = state::api::none;
+}
+
+// the d3d12 renderer is built for one back buffer format (its pipelines have it baked in); made again when the format changes
+bool create_renderer12(DXGI_FORMAT format, UINT buffers)
+{
+    wait_idle12();
+    g.renderer12.destroy();
+    g.renderer_frames12 = std::max<UINT>(buffers, 2);
+    d3d12_init_info info;
+    info.device           = g.dev12.Get();
+    info.queue            = g.queue12.Get();
+    info.frames_in_flight = g.renderer_frames12;
+    info.rtv_format       = static_cast<u32>(format);
+    if (!g.renderer12.create(info, g.ui->font())) { return false; }
+    g.renderer_format12 = format;
+    g.output_dirty.store(true);
+    if (g.fence12 == nullptr) {
+        g.fence_event12 = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        ComPtr<ID3D12CommandAllocator> first;
+        if (g.fence_event12 == nullptr || FAILED(g.dev12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence12))) ||
+            FAILED(g.dev12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&first))) ||
+            FAILED(g.dev12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, first.Get(), nullptr, IID_PPV_ARGS(&g.list12)))) {
+            return false;
+        }
+        g.list12->Close();
+    }
+    return true;
+}
+
+// the atlas pixels were released after the first renderer took them: a renderer made later needs them built again
+bool ensure_font_pixels()
+{
+    if (!g.ui->font().pixels().empty()) { return true; }
+    if (!g.ui->rebuild_font_atlas()) { set_error("could not rebuild the font atlas"); return false; }
+    return true;
+}
+
+void subclass_window(HWND hwnd)
+{
+    if (g.hwnd == hwnd && g.subclassed) { return; }
+    // a window of the game's that is going away (or has): give it its procedure back if it still has ours
+    if (g.subclassed && g.hwnd != nullptr && ::IsWindow(g.hwnd) &&
+        reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(g.hwnd, GWLP_WNDPROC)) == &wnd_proc) {
+        ::SetWindowLongPtrW(g.hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g.orig_proc));
+    }
+    g.hwnd = hwnd;
+    {
+        const std::lock_guard lock{g.platform_mutex};
+        g.platform.attach(g.hwnd);
+    }
+    if (g.ui != nullptr) { g.ui->set_clipboard(g.platform.clipboard()); }
+    g.orig_proc  = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(g.hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&wnd_proc)));
+    g.subclassed = g.orig_proc != nullptr;
+    if (!g.subclassed) { set_error("could not subclass the game's window"); }
+}
+
+// false: not yet (try the next Present); `fatal`: never (this is not a direct3d 11 / 12 game, or the ui cannot be built).
+// runs again when the game replaces its swap chain: what still fits (the ui, the device's objects) is kept
 bool attach(IDXGISwapChain* sc, bool& fatal)
 {
     DXGI_SWAP_CHAIN_DESC d{};
     if (FAILED(sc->GetDesc(&d)) || d.OutputWindow == nullptr || !::IsWindow(d.OutputWindow)) { return false; }
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D12Device> device12;
+    ComPtr<ID3D11Device>       device;
+    ComPtr<ID3D12Device>       device12;
+    ComPtr<ID3D12CommandQueue> queue;
+    state::api api = state::api::none;
     if (SUCCEEDED(sc->GetDevice(IID_PPV_ARGS(&device)))) {
-        g.backend = state::api::d3d11;
-        g.device = device;
-        g.device->GetImmediateContext(&g.ctx);
+        api = state::api::d3d11;
     } else if (SUCCEEDED(sc->GetDevice(IID_PPV_ARGS(&device12)))) {
-        // direct3d 12: the game's direct queue is the one seen executing command lists; until it has been seen, wait
-        ID3D12CommandQueue* seen = g.last_queue.load();
-        if (seen == nullptr) { return false; }
+        // direct3d 12: the ui is submitted on the game's direct queue (not known yet with the fallback: try the next Present)
+        queue = game_queue12(device12.Get());
+        if (queue == nullptr) { return false; }
         ComPtr<ID3D12Device> queue_device;
-        if (FAILED(seen->GetDevice(IID_PPV_ARGS(&queue_device))) || queue_device.Get() != device12.Get()) { return false; }
-        g.backend = state::api::d3d12;
-        g.dev12   = device12;
-        g.queue12 = seen;
+        if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queue_device))) || queue_device.Get() != device12.Get()) { return false; }
+        api = state::api::d3d12;
     } else {
         set_error("the game's swap chain is neither direct3d 11 nor direct3d 12");
         fatal = true;
         return false;
     }
-    g.hwnd = d.OutputWindow;
 
-    context_config cfg;
-    if (g.opt.configure_context) { g.opt.configure_context(cfg); }
-    auto created = context::create(cfg);
-    if (!created) {
-        set_error("could not build the font atlas");
-        fatal = true;
-        return false;
-    }
-    g.ui = std::make_unique<context>(std::move(*created));
-    g.platform.attach(g.hwnd);
-    g.ui->set_clipboard(g.platform.clipboard());
-    g.base_scale = g.opt.ui_scale > 0.0f ? g.opt.ui_scale : g.platform.dpi_scale();
-    (void)g.ui->set_scale(g.base_scale);
-    g.want_scale.store(0.0f);
-    bool renderer_ok = false;
-    if (g.backend == state::api::d3d11) {
-        renderer_ok = g.renderer.create(g.device.Get(), g.ctx.Get(), g.ui->font());
-    } else {
-        DXGI_SWAP_CHAIN_DESC scd{};
-        sc->GetDesc(&scd);
-        g.renderer_frames12 = std::max<UINT>(scd.BufferCount, 2);
-        d3d12_init_info info;
-        info.device           = g.dev12.Get();
-        info.queue            = g.queue12.Get();
-        info.frames_in_flight = g.renderer_frames12;
-        info.rtv_format       = static_cast<u32>(scd.BufferDesc.Format);
-        renderer_ok = g.renderer12.create(info, g.ui->font());
-        if (renderer_ok) {
-            g.fence_event12 = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            ComPtr<ID3D12CommandAllocator> first;
-            renderer_ok = g.fence_event12 != nullptr && SUCCEEDED(g.dev12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence12))) &&
-                          SUCCEEDED(g.dev12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&first))) &&
-                          SUCCEEDED(g.dev12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, first.Get(), nullptr, IID_PPV_ARGS(&g.list12)));
-            if (renderer_ok) { g.list12->Close(); }
+    const bool first_time = g.ui == nullptr;
+    if (first_time) {
+        context_config cfg;
+        if (g.opt.configure_context) { g.opt.configure_context(cfg); }
+        auto created = context::create(cfg);
+        if (!created) {
+            set_error("could not build the font atlas");
+            fatal = true;
+            return false;
         }
+        g.ui = std::make_unique<context>(std::move(*created));
+        g.platform.attach(d.OutputWindow);
+        g.base_scale = g.opt.ui_scale > 0.0f ? g.opt.ui_scale : g.platform.dpi_scale();
+        (void)g.ui->set_scale(g.base_scale);
+        g.want_scale.store(0.0f);
     }
-    if (!renderer_ok) {
-        set_error("could not create the ui renderer");
-        g.ui.reset();
-        fatal = true;
-        return false;
-    }
-    g.ui->release_font_pixels();
-    if (g.opt.on_ready) { g.opt.on_ready(*g.ui); }
 
-    g.orig_proc  = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(g.hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&wnd_proc)));
-    g.subclassed = g.orig_proc != nullptr;
-    if (!g.subclassed) { set_error("could not subclass the game's window"); }
-    g.chain = sc;
-    log_line("attached: window %p, subclassed %d", static_cast<void*>(g.hwnd), g.subclassed ? 1 : 0);
+    // a new device (the game made one, or switched api): nothing made on the old one can be used
+    const bool same_device = api == g.backend && (api == state::api::d3d11 ? device.Get() == g.device.Get()
+                                                                           : device12.Get() == g.dev12.Get() && queue.Get() == g.queue12.Get());
+    if (!same_device) {
+        if (!first_time) { log_line("attach: the game has a new device"); }
+        release_device_objects();
+        if (!ensure_font_pixels()) { fatal = true; return false; }
+        g.backend = api;
+        bool renderer_ok = false;
+        if (api == state::api::d3d11) {
+            g.device = device;
+            g.device->GetImmediateContext(&g.ctx);
+            renderer_ok = g.renderer.create(g.device.Get(), g.ctx.Get(), g.ui->font());
+        } else {
+            g.dev12   = device12;
+            g.queue12 = queue;
+            renderer_ok = create_renderer12(d.BufferDesc.Format, d.BufferCount);
+        }
+        if (!renderer_ok) {
+            set_error("could not create the ui renderer");
+            release_device_objects();
+            fatal = true;
+            return false;
+        }
+        g.ui->release_font_pixels();
+    }
+
+    subclass_window(d.OutputWindow);
+    g.chain            = sc;
+    g.foreign_presents = 0;
+    g.output_dirty.store(true);
+    if (first_time && g.opt.on_ready) { g.opt.on_ready(*g.ui); }
+    log_line("attached: window %p, subclassed %d, %s", static_cast<void*>(g.hwnd), g.subclassed ? 1 : 0,
+             first_time ? "first time" : same_device ? "new swap chain" : "new device");
     return g.subclassed;
 }
 
-bool ensure_target(IDXGISwapChain* sc)
+// the game let go of the swap chain the ui was drawn on: what was made for its buffers goes, the rest stays for the next one
+void detach_chain()
+{
+    wait_idle12();
+    g.targets12_valid = false;
+    g.chain            = nullptr;
+    g.foreign_presents = 0;
+}
+
+// ---- output encoding ------------------------------------------------------------------------------------------------
+
+// is the monitor the swap chain is on in hdr mode (Windows "Use HDR")
+[[nodiscard]] bool output_is_hdr(IDXGISwapChain* sc)
+{
+    ComPtr<IDXGIOutput> out;
+    ComPtr<IDXGIOutput6> out6;
+    DXGI_OUTPUT_DESC1 od{};
+    return SUCCEEDED(sc->GetContainingOutput(&out)) && SUCCEEDED(out.As(&out6)) && SUCCEEDED(out6->GetDesc1(&od)) &&
+           od.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+}
+
+// how the ui's colours go into the game's frame: forced by the options, or read off the swap chain -- an FP16 one is scRGB,
+// a 10-bit one is HDR10 when the game declared it (SetColorSpace1) or, when that happened before the overlay was there, when
+// the monitor is in hdr mode; everything else is srgb
+[[nodiscard]] output_desc detect_output(IDXGISwapChain* sc)
+{
+    output_desc out;
+    out.paper_white_nits = g.opt.hdr_paper_white_nits;
+    if (g.opt.output.has_value()) {
+        out.space = *g.opt.output;
+        return out;
+    }
+    DXGI_SWAP_CHAIN_DESC d{};
+    if (FAILED(sc->GetDesc(&d))) { return out; }
+    const int declared = g.colorspace_chain.load() == sc ? g.colorspace.load() : -1;
+    if (declared == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)        { out.space = output_space::scrgb; }
+    else if (declared == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) { out.space = output_space::hdr10; }
+    else if (declared >= 0)                                          { out.space = output_space::srgb; }
+    else if (d.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)  { out.space = output_space::scrgb; }
+    else if (d.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM && output_is_hdr(sc)) { out.space = output_space::hdr10; }
+    // an scRGB swap chain on a monitor that is not in hdr mode: 1.0 is already the display's white, and a paper white
+    // above 80 nits would push the whole ui past it -- blown out to glaring white
+    if (out.space == output_space::scrgb && !output_is_hdr(sc)) { out.paper_white_nits = 80.0f; }
+    return out;
+}
+
+void apply_output(IDXGISwapChain* sc)
+{
+    if (!g.output_dirty.exchange(false)) { return; }
+    const output_desc out = detect_output(sc);
+    g.renderer.set_output(out);
+    g.renderer12.set_output(out);
+    g.output_now.store(static_cast<int>(out.space));
+    log_line("output: %s", out.space == output_space::scrgb ? "scRGB" : out.space == output_space::hdr10 ? "HDR10" : "srgb");
+}
+
+// a view of the back buffer for this frame only. it is not kept between frames on purpose: a view holds the buffer, and a
+// held buffer keeps the game's swap chain alive after the game released it -- so the game's next CreateSwapChain on the same
+// window would fail (a window has one flip-model swap chain at a time), which is how an overlay breaks a resolution change
+[[nodiscard]] ComPtr<ID3D11RenderTargetView> frame_target(IDXGISwapChain* sc)
 {
     ComPtr<ID3D11Texture2D> back;
-    if (FAILED(sc->GetBuffer(0, IID_PPV_ARGS(&back)))) { return false; }
+    ComPtr<ID3D11RenderTargetView> rtv;
+    if (FAILED(sc->GetBuffer(0, IID_PPV_ARGS(&back)))) { return rtv; }
     D3D11_TEXTURE2D_DESC td{};
     back->GetDesc(&td);
-    if (g.rtv != nullptr && td.Width == g.rtv_w && td.Height == g.rtv_h) { return true; }
-    g.rtv.Reset();
     D3D11_RENDER_TARGET_VIEW_DESC rd{};
     rd.ViewDimension = td.SampleDesc.Count > 1 ? D3D11_RTV_DIMENSION_TEXTURE2DMS : D3D11_RTV_DIMENSION_TEXTURE2D;
     switch (td.Format) { // the ui is drawn in the display's own encoding: no srgb view
@@ -557,12 +708,10 @@ bool ensure_target(IDXGISwapChain* sc)
     case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: rd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; break;
     default:                              rd.Format = td.Format; break;
     }
-    if (FAILED(g.device->CreateRenderTargetView(back.Get(), &rd, &g.rtv))) {
-        if (FAILED(g.device->CreateRenderTargetView(back.Get(), nullptr, &g.rtv))) { return false; }
+    if (FAILED(g.device->CreateRenderTargetView(back.Get(), &rd, &rtv))) {
+        (void)g.device->CreateRenderTargetView(back.Get(), nullptr, &rtv);
     }
-    g.rtv_w = td.Width;
-    g.rtv_h = td.Height;
-    return true;
+    return rtv;
 }
 
 // a scale change asked for from anywhere is applied here, on the render thread: the atlas is rebuilt and handed to
@@ -589,7 +738,20 @@ void apply_pending_scale()
 void draw_frame(IDXGISwapChain* sc)
 {
     static bool first = true;
-    if (g.backend == state::api::d3d11 && !ensure_target(sc)) { log_line("draw_frame: no render target"); return; }
+    ComPtr<ID3D11RenderTargetView> rtv; // (released at the end of the frame: see frame_target)
+    if (g.backend == state::api::d3d11) {
+        rtv = frame_target(sc);
+        if (rtv == nullptr) { log_line("draw_frame: no render target"); return; }
+    }
+    if (g.backend == state::api::d3d12) { // (a resize can change the format: hdr switched on or off in the game)
+        DXGI_SWAP_CHAIN_DESC d{};
+        if (SUCCEEDED(sc->GetDesc(&d)) && d.BufferDesc.Format != g.renderer_format12) {
+            if (!ensure_font_pixels() || !create_renderer12(d.BufferDesc.Format, d.BufferCount)) { log_line("draw_frame: no d3d12 renderer"); return; }
+            g.ui->release_font_pixels();
+            g.targets12_valid = false;
+        }
+    }
+    apply_output(sc);
 
     apply_pending_scale();
 
@@ -628,7 +790,7 @@ void draw_frame(IDXGISwapChain* sc)
         std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> old_rtv{};
         ID3D11DepthStencilView* old_dsv = nullptr;
         g.ctx->OMGetRenderTargets(static_cast<UINT>(old_rtv.size()), old_rtv.data(), &old_dsv);
-        ID3D11RenderTargetView* target = g.rtv.Get();
+        ID3D11RenderTargetView* target = rtv.Get();
         g.ctx->OMSetRenderTargets(1, &target, nullptr);
         g.renderer.render(g.ui->render_data());
         g.ctx->OMSetRenderTargets(static_cast<UINT>(old_rtv.size()), old_rtv.data(), old_dsv);
@@ -648,6 +810,22 @@ void on_present(IDXGISwapChain* sc)
 {
     static int calls = 0;
     if (calls++ < 3) { log_line("present %d on %p (attached chain %p)", calls, static_cast<void*>(sc), static_cast<void*>(g.chain)); }
+    if (g.chain != nullptr && sc != g.chain) {
+        // another swap chain presents. on the same window it can only be the attached one's replacement (a window has one
+        // flip-model swap chain at a time): switch now. on another window it may be a second view of the game's, so only
+        // once the attached one has stopped presenting for a good while (the game made a new window as well)
+        DXGI_SWAP_CHAIN_DESC d{};
+        const bool described = SUCCEEDED(sc->GetDesc(&d)) && d.OutputWindow != nullptr && ::IsWindow(d.OutputWindow);
+        if (described && d.OutputWindow == g.hwnd) {
+            log_line("the game replaced its swap chain");
+            detach_chain();
+        } else if (described && ++g.foreign_presents > 180) {
+            log_line("the game presents to another window now");
+            detach_chain();
+        }
+    } else if (sc == g.chain) {
+        g.foreign_presents = 0;
+    }
     if (g.chain == nullptr) {
         if (g.attach_failed) { return; }
         bool fatal = false;
@@ -683,15 +861,41 @@ HRESULT STDMETHODCALLTYPE hook_resize(IDXGISwapChain* sc, UINT buffers, UINT w, 
 {
     const hook_scope scope;
     if (sc == g.chain) {
-        if (g.backend == state::api::d3d12) {
+        if (g.backend == state::api::d3d12) { // (d3d11: the overlay holds no view of the buffers between frames)
             wait_idle12(); // our command lists may still use the old buffers
             g.targets12_valid = false;
-        } else {
-            g.rtv.Reset(); // the buffers are about to go away: nothing of ours may hold them
-            g.rtv_w = g.rtv_h = 0;
         }
     }
+    g.output_dirty.store(true);
     return g.orig_resize(sc, buffers, w, h, format, flags);
+}
+
+// d3d12 games often resize through this one (it takes a queue per buffer); the overlay's targets go the same way
+HRESULT STDMETHODCALLTYPE hook_resize1(IDXGISwapChain3* sc, UINT buffers, UINT w, UINT h, DXGI_FORMAT format, UINT flags,
+                                       const UINT* node_masks, IUnknown* const* queues)
+{
+    const hook_scope scope;
+    if (sc == g.chain) {
+        if (g.backend == state::api::d3d12) {
+            wait_idle12();
+            g.targets12_valid = false;
+        }
+    }
+    g.output_dirty.store(true);
+    return g.orig_resize1(sc, buffers, w, h, format, flags, node_masks, queues);
+}
+
+// the game declares its hdr (or not): remembered, so the ui is encoded to match
+HRESULT STDMETHODCALLTYPE hook_colorspace(IDXGISwapChain3* sc, DXGI_COLOR_SPACE_TYPE space)
+{
+    const hook_scope scope;
+    const HRESULT hr = g.orig_colorspace(sc, space);
+    if (SUCCEEDED(hr)) {
+        g.colorspace_chain.store(sc);
+        g.colorspace.store(static_cast<int>(space));
+        g.output_dirty.store(true);
+    }
+    return hr;
 }
 
 // the game's direct queue: whichever direct queue executes command lists (a compute / copy queue does not count)
@@ -728,20 +932,16 @@ void unpatch_slot(void** vt, int index, void* hook, void* original)
     }
 }
 
-// a swap chain of our own, only to read the address of the vtable
-void** find_swap_chain_vtable()
+// the swap chain vtable belongs to dxgi and is the same whichever api made the swap chain, so one probe of either api finds
+// it. the probe uses the api the game has already loaded: a d3d11 game never gets d3d12 (and its driver) loaded into it by
+// the overlay, nor a d3d12 game d3d11. both or neither loaded (injected before the game made its device): d3d11
+[[nodiscard]] bool probe_with_d3d12() noexcept
 {
-    WNDCLASSEXW wc{};
-    wc.cbSize        = sizeof(wc);
-    wc.lpfnWndProc   = ::DefWindowProcW;
-    wc.hInstance     = ::GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"strata_overlay_probe";
-    ::RegisterClassExW(&wc);
-    HWND probe = ::CreateWindowExW(0, wc.lpszClassName, L"", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, wc.hInstance, nullptr);
-    if (probe == nullptr) {
-        set_error("could not create the probe window");
-        return nullptr;
-    }
+    return ::GetModuleHandleW(L"d3d12.dll") != nullptr && ::GetModuleHandleW(L"d3d11.dll") == nullptr;
+}
+
+[[nodiscard]] void** probe_d3d11(HWND probe)
+{
     DXGI_SWAP_CHAIN_DESC sd{};
     sd.BufferCount       = 1;
     sd.BufferDesc.Width  = 64;
@@ -757,37 +957,92 @@ void** find_swap_chain_vtable()
     ComPtr<ID3D11DeviceContext> context;
     constexpr D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
     D3D_FEATURE_LEVEL got{};
-    void** vt = nullptr;
-    if (SUCCEEDED(::D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &sd, &chain, &device, &got, &context))) {
-        vt = *reinterpret_cast<void***>(chain.Get());
-        ComPtr<IDXGISwapChain1> sc1;
-        g.has_sc1 = SUCCEEDED(chain.As(&sc1)); // (only then is Present1 in the table)
-    } else {
-        set_error("could not create the probe swap chain");
+    if (FAILED(::D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &sd, &chain, &device, &got, &context))) {
+        return nullptr;
     }
-    chain.Reset();
-    context.Reset();
-    device.Reset();
+    ComPtr<IDXGISwapChain1> sc1;
+    ComPtr<IDXGISwapChain3> sc3;
+    g.has_sc1 = SUCCEEDED(chain.As(&sc1)); // (only then is Present1 in the table)
+    g.has_sc3 = SUCCEEDED(chain.As(&sc3)); // (... and SetColorSpace1 / ResizeBuffers1)
+    return *reinterpret_cast<void***>(chain.Get());
+}
+
+[[nodiscard]] void** probe_d3d12(HWND probe)
+{
+    // d3d12.dll is already in the process (that is why it was picked): no LoadLibrary, nothing to free
+    using create_fn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+    const auto create = reinterpret_cast<create_fn>(::GetProcAddress(::GetModuleHandleW(L"d3d12.dll"), "D3D12CreateDevice"));
+    ComPtr<ID3D12Device>       device;
+    ComPtr<ID3D12CommandQueue> queue;
+    ComPtr<IDXGIFactory2>      factory;
+    D3D12_COMMAND_QUEUE_DESC   qd{};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (create == nullptr || FAILED(create(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))) ||
+        FAILED(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))) || FAILED(::CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+        return nullptr;
+    }
+    DXGI_SWAP_CHAIN_DESC1 sd{};
+    sd.Width            = 64;
+    sd.Height           = 64;
+    sd.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.SampleDesc.Count = 1;
+    sd.BufferUsage      = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.BufferCount      = 2;
+    sd.SwapEffect       = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    ComPtr<IDXGISwapChain1> sc1;
+    ComPtr<IDXGISwapChain>  chain;
+    if (FAILED(factory->CreateSwapChainForHwnd(queue.Get(), probe, &sd, nullptr, nullptr, &sc1)) || FAILED(sc1.As(&chain))) {
+        return nullptr;
+    }
+    ComPtr<IDXGISwapChain3> sc3;
+    g.has_sc1 = true;
+    g.has_sc3 = SUCCEEDED(chain.As(&sc3));
+    return *reinterpret_cast<void***>(chain.Get());
+}
+
+// a swap chain of our own, only to read the address of the vtable
+void** find_swap_chain_vtable()
+{
+    WNDCLASSEXW wc{};
+    wc.cbSize        = sizeof(wc);
+    wc.lpfnWndProc   = ::DefWindowProcW;
+    wc.hInstance     = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"strata_overlay_probe";
+    ::RegisterClassExW(&wc);
+    HWND probe = ::CreateWindowExW(0, wc.lpszClassName, L"", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, wc.hInstance, nullptr);
+    if (probe == nullptr) {
+        set_error("could not create the probe window");
+        return nullptr;
+    }
+    const bool use12 = probe_with_d3d12();
+    void** vt = use12 ? probe_d3d12(probe) : probe_d3d11(probe); // (the probe's objects are gone again when it returns)
+    log_line("probe: %s", use12 ? "direct3d 12" : "direct3d 11");
+    if (vt == nullptr) { set_error("could not create the probe swap chain"); }
     ::DestroyWindow(probe);
     ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
     return vt;
 }
 
-// a direct3d 12 device and queue of our own, only to read the address of the queue's vtable
-void** find_queue_vtable()
+// the game's direct queue is found by hooking ExecuteCommandLists. the vtable comes from a queue made on the game's own device
+// when a d3d12 swap chain first presents: no device of the overlay's, and nothing at all for a game that is not direct3d 12
+void hook_queue_vtable(ID3D12Device* device)
 {
-    HMODULE d3d12 = ::LoadLibraryW(L"d3d12.dll");
-    if (d3d12 == nullptr) { return nullptr; }
-    using create_fn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
-    const auto create = reinterpret_cast<create_fn>(::GetProcAddress(d3d12, "D3D12CreateDevice"));
-    if (create == nullptr) { return nullptr; }
-    ComPtr<ID3D12Device> device;
-    if (FAILED(create(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) { return nullptr; }
+    if (g.patched_execute) { return; }
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ComPtr<ID3D12CommandQueue> queue;
-    if (FAILED(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)))) { return nullptr; }
-    return *reinterpret_cast<void***>(queue.Get());
+    if (FAILED(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)))) { return; }
+    g.queue_vtable    = *reinterpret_cast<void***>(queue.Get());
+    g.patched_execute = patch_slot(g.queue_vtable, vt_queue_execute, reinterpret_cast<void*>(&hook_execute), reinterpret_cast<void**>(&g.orig_execute));
+    log_line("queue vtable %p, patched %d", static_cast<void*>(g.queue_vtable), g.patched_execute ? 1 : 0);
+}
+
+// the game's direct queue: the one seen executing command lists (IDXGISwapChain::GetDevice does not hand it out). null until
+// one has been seen, which takes a frame after the hook goes in
+[[nodiscard]] ComPtr<ID3D12CommandQueue> game_queue12(ID3D12Device* device)
+{
+    hook_queue_vtable(device);
+    return g.last_queue.load();
 }
 
 } // namespace
@@ -810,17 +1065,16 @@ bool install(const options& opt)
     g.patched_present1 = g.has_sc1 && patch_slot(g.vtable, vt_present1, reinterpret_cast<void*>(&hook_present1), reinterpret_cast<void**>(&g.orig_present1));
     log_line("vtable %p, present1 %d", static_cast<void*>(g.vtable), g.has_sc1 ? 1 : 0);
     g.patched_resize   = patch_slot(g.vtable, vt_resize_buffers, reinterpret_cast<void*>(&hook_resize), reinterpret_cast<void**>(&g.orig_resize));
+    if (g.has_sc3) {
+        g.patched_resize1    = patch_slot(g.vtable, vt_resize_buffers1, reinterpret_cast<void*>(&hook_resize1), reinterpret_cast<void**>(&g.orig_resize1));
+        g.patched_colorspace = patch_slot(g.vtable, vt_set_colorspace1, reinterpret_cast<void*>(&hook_colorspace), reinterpret_cast<void**>(&g.orig_colorspace));
+    }
     if (!g.patched_present || !g.patched_resize) {
         set_error("could not patch the swap chain's vtable");
         uninstall();
         return false;
     }
-    // direct3d 12 games present through the same swap chain class; what is needed on top is their queue
-    g.queue_vtable = find_queue_vtable();
-    if (g.queue_vtable != nullptr) {
-        g.patched_execute = patch_slot(g.queue_vtable, vt_queue_execute, reinterpret_cast<void*>(&hook_execute), reinterpret_cast<void**>(&g.orig_execute));
-    }
-    log_line("queue vtable %p, patched %d", static_cast<void*>(g.queue_vtable), g.patched_execute ? 1 : 0);
+    // direct3d 12 games present through the same swap chain class; their queue is found when they first present (game_queue12)
     return true;
 }
 
@@ -839,6 +1093,8 @@ void uninstall()
         if (g.patched_present)  { unpatch_slot(g.vtable, vt_present, reinterpret_cast<void*>(&hook_present), reinterpret_cast<void*>(g.orig_present)); }
         if (g.patched_present1) { unpatch_slot(g.vtable, vt_present1, reinterpret_cast<void*>(&hook_present1), reinterpret_cast<void*>(g.orig_present1)); }
         if (g.patched_resize)   { unpatch_slot(g.vtable, vt_resize_buffers, reinterpret_cast<void*>(&hook_resize), reinterpret_cast<void*>(g.orig_resize)); }
+        if (g.patched_resize1)  { unpatch_slot(g.vtable, vt_resize_buffers1, reinterpret_cast<void*>(&hook_resize1), reinterpret_cast<void*>(g.orig_resize1)); }
+        if (g.patched_colorspace) { unpatch_slot(g.vtable, vt_set_colorspace1, reinterpret_cast<void*>(&hook_colorspace), reinterpret_cast<void*>(g.orig_colorspace)); }
     }
     if (g.queue_vtable != nullptr && g.patched_execute) {
         unpatch_slot(g.queue_vtable, vt_queue_execute, reinterpret_cast<void*>(&hook_execute), reinterpret_cast<void*>(g.orig_execute));
@@ -854,23 +1110,9 @@ void uninstall()
     log_line("uninstall: hooks and window procedure restored");
     for (int i = 0; i < 100 && g.in_hook.load() > 0; ++i) { ::Sleep(20); } // (a Present on another thread may still be inside a hook)
     ::Sleep(50);
-    g.rtv.Reset();
-    wait_idle12();
-    g.renderer.destroy();
-    g.renderer12.destroy();
-    g.list12.Reset();
-    g.frames12.clear();
-    g.rtv_heap12.Reset();
-    g.fence12.Reset();
-    if (g.fence_event12 != nullptr) { ::CloseHandle(g.fence_event12); g.fence_event12 = nullptr; }
-    g.queue12.Reset();
-    g.dev12.Reset();
-    g.targets12_valid = false;
-    g.backend = state::api::none;
+    release_device_objects();
     g.last_queue.store(nullptr);
     g.ui.reset();
-    g.ctx.Reset();
-    g.device.Reset();
     g.chain      = nullptr;
     g.hwnd       = nullptr;
     g.subclassed = false;
@@ -899,6 +1141,7 @@ float ui_scale() noexcept
 }
 unsigned long long frames() noexcept { return g.frame_count.load(); }
 const char* last_error() noexcept { return g.error; }
+output_space output_space_in_use() noexcept { return static_cast<output_space>(g.output_now.load()); }
 bool attached() noexcept { return g.chain != nullptr && g.subclassed; }
 void* window() noexcept { return g.hwnd; }
 

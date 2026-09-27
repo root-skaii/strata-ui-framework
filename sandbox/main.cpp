@@ -94,8 +94,8 @@ constexpr const wchar_t* usage_text =
     L"  --features               start with the docked feature windows only (multi-line input, rich text, images, tables)\n"
     L"  --log FILE               write stderr (debug layer, frame report) to FILE\n"
     L"  --metrics                show strata's own metrics and draw-list inspector windows\n"
-    L"  --idle                   skip rendering and presenting while the ui reports nothing changed\n"
-    L"                           (the frame report then says how many frames were skipped)\n\n"
+    L"  --idle                   skip rendering and presenting while the ui reports nothing changed, and sleep until\n"
+    L"                           input or the ui's next deadline (the frame report says how many frames were skipped)\n\n"
     L"fonts\n"
     L"  --font FILE              primary font from a .ttf/.otf/.ttc\n"
     L"  --face NAME              primary font, installed family (default Segoe UI)\n"
@@ -1558,7 +1558,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             input.mouse_down = {sim.down[0], sim.down[1], sim.down[2]};
             input.key_count  = 0;
             input.typed_len  = 0;
+            input.press_count = 0;
+            input.pressed_key = 0;
             input.wheel      = 0.0f;
+            input.caret_blink_time  = strata::input_state{}.caret_blink_time; // (not the user's system settings)
+            input.double_click_time = strata::input_state{}.double_click_time;
         }
         ui.begin_frame(std::move(input));
         build_ui(ui, state, *host, last_data);
@@ -1583,9 +1587,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         const bool shot_frame = shot_mode && ++shot_counter >= opt.shot_frames;
         if (shot_frame) { host->request_capture(); }
         // --idle: an untouched ui produces the same geometry frame after frame, and this window belongs to us -- what
-        // is on the screen is already right, so there is nothing to draw and nothing to present. never while a
-        // screenshot is being taken, which needs the frame rendered.
-        const bool skip = opt.idle && !shot_mode && !shot_frame && ui.can_idle();
+        // is on the screen is already right, so there is nothing to draw and nothing to present (and below, the loop
+        // sleeps until there is input or ui.next_wake_seconds() comes). never while a screenshot is being taken, which
+        // needs the frame rendered.
+        const bool skip = opt.idle && !shot_mode && !shot_frame && ui.frame_unchanged();
         if (skip) {
             ++frames_idled;
         } else {
@@ -1612,6 +1617,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             ::DestroyWindow(hwnd);
         }
 
+        if (opt.idle && !shot_mode) {
+            // sleep until a message arrives or the ui's next deadline (a caret blink, a tooltip, a toast). with --frames
+            // the wait is at most a frame, so the run still ends after that many frames
+            double wait = ui.next_wake_seconds();
+            if (opt.max_frames > 0) { wait = std::min(wait, 1.0 / refresh); }
+            if (wait > 0.0) {
+                const DWORD ms = wait >= 3600.0 ? INFINITE : static_cast<DWORD>(std::ceil(wait * 1000.0));
+                ::MsgWaitForMultipleObjectsEx(0, nullptr, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                next_frame = seconds_now();
+                continue;
+            }
+        }
         if (cap > 0.0) {
             const double period = 1.0 / cap;
             next_frame += period;

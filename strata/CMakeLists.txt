@@ -22,7 +22,9 @@ add_library(strata STATIC
     src/context_number.cpp
     src/context_popup.cpp
     src/context_plot.cpp
+    src/context_access.cpp
     src/context_rich.cpp
+    src/context_state.cpp
     src/context_tabs.cpp
     src/context_text.cpp
     src/context_toast.cpp
@@ -53,13 +55,15 @@ target_sources(strata PUBLIC
         include/strata/font.hpp
         include/strata/icons.hpp
         include/strata/keybinds.hpp
+        include/strata/log.hpp
+        include/strata/log_queue.hpp
         include/strata/strata.hpp
         include/strata/texture.hpp
         include/strata/themes.hpp
         include/strata/types.hpp
         include/strata/vmem.hpp
 )
-target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/dock_state.hpp)
+target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/dock_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
 target_compile_features(strata PUBLIC cxx_std_23)
@@ -101,13 +105,26 @@ if(STRATA_BUILD_DX11 OR STRATA_BUILD_DX12)
     target_link_libraries(strata INTERFACE delayimp.lib)
 endif()
 
-target_link_libraries(strata PRIVATE gdi32.lib user32.lib)
+target_link_libraries(strata PRIVATE gdi32.lib user32.lib advapi32.lib)
+
+# strata::app: a ready-made window + direct3d 11 host around the library (strata itself never creates either)
+if(STRATA_BUILD_DX11)
+    add_library(strata_app STATIC src/app_win32.cpp)
+    add_library(strata::app ALIAS strata_app)
+    target_sources(strata_app PUBLIC FILE_SET HEADERS BASE_DIRS include FILES include/strata/app.hpp)
+    target_link_libraries(strata_app PUBLIC strata::strata PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib dxgi.lib user32.lib)
+endif()
 
 if(STRATA_INSTALL)
     include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
 
-    install(TARGETS strata
+    set(strata_install_targets strata)
+    if(TARGET strata_app)
+        set_target_properties(strata_app PROPERTIES EXPORT_NAME app) # (strata::app for consumers of the package)
+        list(APPEND strata_install_targets strata_app)
+    endif()
+    install(TARGETS ${strata_install_targets}
         EXPORT strata_targets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         FILE_SET HEADERS DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

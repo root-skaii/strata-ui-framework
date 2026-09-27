@@ -2,6 +2,8 @@
 
 #include "strata/context.hpp"
 
+#include "context_impl.hpp"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -11,13 +13,12 @@ namespace strata {
 
 namespace {
 
-constexpr std::array<u32, 6> series_palette = {0x5b8dffffu, 0x19c2b4ffu, 0xffb454ffu, 0xf0568fffu, 0xa78bfaffu, 0x7bc74dffu};
 
 [[nodiscard]] color series_color(std::size_t i, color given, const style& st) noexcept
 {
     if (given.a != 0) { return given; }
-    if (i == 0) { return st.accent; }
-    return color::from_hex(series_palette[i % series_palette.size()]);
+    const color c = st.series[i % st.series.size()];
+    return c.a == 0 ? st.accent : c;
 }
 
 [[nodiscard]] std::string number_text(f32 v, f32 span)
@@ -56,7 +57,7 @@ constexpr std::array<u32, 6> series_palette = {0x5b8dffffu, 0x19c2b4ffu, 0xffb45
 
 void context::draw_tooltip_at(vec2 anchor, std::string_view text)
 {
-    if (in_overlay_ || text.empty()) {
+    if (m_->in_overlay_ || text.empty()) {
         return;
     }
     const font_id f = current_font();
@@ -66,37 +67,37 @@ void context::draw_tooltip_at(vec2 anchor, std::string_view text)
     const vec2 size{ts.x + 2.0f * padx, ts.y + 2.0f * pady};
 
     vec2 pos = anchor;
-    if (pos.x + size.x > display_.x - 4.0f) { pos.x = display_.x - 4.0f - size.x; }
-    if (pos.y + size.y > display_.y - 4.0f) { pos.y = anchor.y - size.y - 30.0f; }
+    if (pos.x + size.x > m_->display_.x - 4.0f) { pos.x = m_->display_.x - 4.0f - size.x; }
+    if (pos.y + size.y > m_->display_.y - 4.0f) { pos.y = anchor.y - size.y - 30.0f; }
     pos.x = std::max(pos.x, 4.0f);
     pos.y = std::max(pos.y, 4.0f);
 
-    const u32 previous_owner = run_owner_;
+    const u32 previous_owner = m_->run_owner_;
     switch_run(run_overlay);
-    dl_.push_clip_absolute({{0.0f, 0.0f}, display_});
+    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
     shape_style body;
-    body.radius        = radii(style_.rounding * 0.6f);
-    body.fill_top      = color{style_.window_bg.r, style_.window_bg.g, style_.window_bg.b, 255};
+    body.radius        = radii(m_->style_.rounding * 0.6f);
+    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
     body.fill_bottom   = body.fill_top;
-    body.border        = style_.border;
-    body.border_width  = style_.border_width;
-    body.shadow        = style_.shadow;
-    body.shadow_blur   = style_.shadow_blur * 0.5f;
+    body.border        = m_->style_.border;
+    body.border_width  = m_->style_.border_width;
+    body.shadow        = m_->style_.shadow;
+    body.shadow_blur   = m_->style_.shadow_blur * 0.5f;
     body.shadow_offset = {0.0f, 3.0f};
     popup_panel(rect::from_size(pos, size), body);
-    label_draw({pos.x + padx, pos.y + pady}, style_.text, text, f);
-    dl_.pop_clip();
+    label_draw({pos.x + padx, pos.y + pady}, m_->style_.text, text, f);
+    m_->dl_.pop_clip();
     switch_run(previous_owner);
 }
 
 void context::plot_impl(std::string_view label, std::span<const plot_series> series, vec2 size, plot_kind kind, f32 lo, f32 hi,
                         u32 offset, std::string_view overlay, bool compact)
 {
-    if (cur_ == nullptr || series.empty()) {
+    if (m_->cur_ == nullptr || series.empty()) {
         return;
     }
     const font_id f  = current_font();
-    const f32     lh = font_.line_height(f);
+    const f32     lh = m_->font_.line_height(f);
 
     std::size_t n = series[0].values.size();
     for (const plot_series& s : series) { n = std::min(n, s.values.size()); }
@@ -123,7 +124,7 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
     if (hi - lo < 1.0e-6f) { hi = lo + 1.0f; }
 
     const f32 h = size.y > 0.0f ? size.y : (compact ? 20.0f : 80.0f);
-    if (size.x > 0.0f) { layout_.next_width = size.x; }
+    if (size.x > 0.0f) { m_->layout_.next_width = size.x; }
     const field_layout fl = layout_field(compact ? std::string_view{} : visible_label(label), h);
     const rect box = fl.control;
 
@@ -133,39 +134,39 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
     rect inner = box;
     if (!compact) {
         shape_style bg;
-        bg.radius       = radii(style_.rounding * 0.8f);
+        bg.radius       = radii(m_->style_.rounding * 0.8f);
         bg.fill_top     = color{0, 0, 0, 60};
         bg.fill_bottom  = color{0, 0, 0, 60};
-        bg.border       = style_.widget_border;
-        bg.border_width = style_.border_width;
-        dl_.shape(box, bg);
+        bg.border       = m_->style_.widget_border;
+        bg.border_width = m_->style_.border_width;
+        m_->dl_.shape(box, bg);
 
         const std::string hi_text = number_text(hi, hi - lo);
         const std::string lo_text = number_text(lo, hi - lo);
         const bool axis = h >= lh * 3.0f;
         f32 label_w = 0.0f;
         if (axis) {
-            label_w = std::max(font_.measure(f, hi_text).x, font_.measure(f, lo_text).x) + 8.0f;
-            dl_.text({box.min.x + 6.0f, box.min.y + 3.0f}, style_.text_dim, hi_text, f);
-            dl_.text({box.min.x + 6.0f, box.max.y - 3.0f - lh}, style_.text_dim, lo_text, f);
+            label_w = std::max(m_->font_.measure(f, hi_text).x, m_->font_.measure(f, lo_text).x) + 8.0f;
+            m_->dl_.text({box.min.x + 6.0f, box.min.y + 3.0f}, m_->style_.text_dim, hi_text, f);
+            m_->dl_.text({box.min.x + 6.0f, box.max.y - 3.0f - lh}, m_->style_.text_dim, lo_text, f);
         }
         inner = {{box.min.x + 6.0f + label_w, box.min.y + 6.0f}, {box.max.x - 6.0f, box.max.y - 6.0f}};
         for (int g = 0; g < 3; ++g) { // grid: bottom, middle, top
             const f32 y = std::round(inner.max.y - inner.height() * static_cast<f32>(g) * 0.5f);
-            dl_.rect_filled({{inner.min.x, y}, {inner.max.x, y + 1.0f}}, color{255, 255, 255, 16});
+            m_->dl_.rect_filled({{inner.min.x, y}, {inner.max.x, y + 1.0f}}, color{255, 255, 255, 16});
         }
     }
     const f32 span = std::max(inner.height(), 1.0f);
     const auto y_of = [&](f32 v) { return inner.max.y - std::clamp((v - lo) / (hi - lo), 0.0f, 1.0f) * span; };
 
-    const f32 width_px = std::max(inner.width() * scale_, 1.0f);
+    const f32 width_px = std::max(inner.width() * m_->scale_, 1.0f);
     if (n > 0) {
         const f32 dx = n > 1 ? inner.width() / static_cast<f32>(n - 1) : 0.0f;
-        dl_.push_clip(inner.expanded(3.0f));
+        m_->dl_.push_clip(inner.expanded(3.0f));
         for (std::size_t si = 0; si < series.size(); ++si) {
-            const color c = series_color(si, series[si].col, style_);
+            const color c = series_color(si, series[si].col, m_->style_);
             if (kind == plot_kind::lines) {
-                plot_scratch_.clear();
+                m_->plot_scratch_.clear();
                 if (static_cast<f32>(n) > width_px * 2.0f) { // more samples than pixels: keep each bucket's extremes
                     const std::size_t buckets = static_cast<std::size_t>(width_px);
                     for (std::size_t b = 0; b < buckets; ++b) {
@@ -179,18 +180,18 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
                         const std::size_t first = std::min(imin, imax);
                         const std::size_t second = std::max(imin, imax);
                         const f32 x = inner.min.x + inner.width() * static_cast<f32>(b) / static_cast<f32>(std::max<std::size_t>(buckets - 1, 1));
-                        plot_scratch_.push_back({x, y_of(sample(series[si], first))});
-                        if (second != first) { plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
+                        m_->plot_scratch_.push_back({x, y_of(sample(series[si], first))});
+                        if (second != first) { m_->plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
                     }
                 } else {
                     for (std::size_t i = 0; i < n; ++i) {
-                        plot_scratch_.push_back({n > 1 ? inner.min.x + dx * static_cast<f32>(i) : inner.center().x, y_of(sample(series[si], i))});
+                        m_->plot_scratch_.push_back({n > 1 ? inner.min.x + dx * static_cast<f32>(i) : inner.center().x, y_of(sample(series[si], i))});
                     }
                 }
-                if (plot_scratch_.size() >= 2) {
-                    dl_.polyline(plot_scratch_, c, compact ? 1.25f : 1.6f, false);
-                } else if (plot_scratch_.size() == 1) {
-                    dl_.circle_filled(plot_scratch_[0], 2.5f, c);
+                if (m_->plot_scratch_.size() >= 2) {
+                    m_->dl_.polyline(m_->plot_scratch_, c, compact ? 1.25f : 1.6f, false);
+                } else if (m_->plot_scratch_.size() == 1) {
+                    m_->dl_.circle_filled(m_->plot_scratch_[0], 2.5f, c);
                 }
             } else {
                 const f32 base = y_of(std::clamp(0.0f, lo, hi));
@@ -205,11 +206,11 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
                     const f32 x0 = inner.min.x + bw * static_cast<f32>(b) + sub * static_cast<f32>(si);
                     const f32 gap = sub > 3.0f ? 1.0f : 0.0f;
                     const f32 y = y_of(v);
-                    dl_.rect_filled({{x0, std::min(y, base)}, {x0 + sub - gap, std::max(std::max(y, base), std::min(y, base) + 1.0f)}}, c, 1.0f);
+                    m_->dl_.rect_filled({{x0, std::min(y, base)}, {x0 + sub - gap, std::max(std::max(y, base), std::min(y, base) + 1.0f)}}, c, 1.0f);
                 }
             }
         }
-        dl_.pop_clip();
+        m_->dl_.pop_clip();
     }
 
     if (compact) {
@@ -221,55 +222,55 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
         f32 x = box.max.x - 8.0f;
         for (std::size_t si = series.size(); si-- > 0;) {
             const std::string_view name = series[si].name.empty() ? std::string_view{"series"} : series[si].name;
-            const f32 tw = font_.measure(f, name).x;
+            const f32 tw = m_->font_.measure(f, name).x;
             x -= tw;
-            dl_.text({x, box.min.y + 3.0f}, style_.text_dim, name, f);
+            m_->dl_.text({x, box.min.y + 3.0f}, m_->style_.text_dim, name, f);
             x -= 12.0f;
-            dl_.circle_filled({x + 4.0f, box.min.y + 3.0f + lh * 0.5f}, 3.5f, series_color(si, series[si].col, style_));
+            m_->dl_.circle_filled({x + 4.0f, box.min.y + 3.0f + lh * 0.5f}, 3.5f, series_color(si, series[si].col, m_->style_));
             x -= 10.0f;
         }
     }
     if (!overlay.empty()) {
-        const vec2 ts = font_.measure(f, overlay);
-        dl_.text({inner.min.x + (inner.width() - ts.x) * 0.5f, box.min.y + 3.0f}, style_.text_dim, overlay, f);
+        const vec2 ts = m_->font_.measure(f, overlay);
+        m_->dl_.text({inner.min.x + (inner.width() - ts.x) * 0.5f, box.min.y + 3.0f}, m_->style_.text_dim, overlay, f);
     }
 
     if (in.hovered && n > 0 && inner.width() > 1.0f) {
-        const f32 t = std::clamp((mouse_.x - inner.min.x) / inner.width(), 0.0f, 1.0f);
+        const f32 t = std::clamp((m_->mouse_.x - inner.min.x) / inner.width(), 0.0f, 1.0f);
         const std::size_t idx = kind == plot_kind::lines ? static_cast<std::size_t>(std::lround(t * static_cast<f32>(n - 1)))
                                                           : std::min(n - 1, static_cast<std::size_t>(t * static_cast<f32>(n)));
         const f32 x = kind == plot_kind::lines && n > 1 ? inner.min.x + inner.width() * static_cast<f32>(idx) / static_cast<f32>(n - 1)
                                                         : inner.min.x + inner.width() * (static_cast<f32>(idx) + 0.5f) / static_cast<f32>(n);
-        dl_.rect_filled({{std::round(x), inner.min.y}, {std::round(x) + 1.0f, inner.max.y}}, color{255, 255, 255, 90});
+        m_->dl_.rect_filled({{std::round(x), inner.min.y}, {std::round(x) + 1.0f, inner.max.y}}, color{255, 255, 255, 90});
         std::string tip = "#" + std::to_string(idx);
         for (std::size_t si = 0; si < series.size(); ++si) {
             const f32 v = sample(series[si], idx);
-            if (kind == plot_kind::lines) { dl_.circle_filled({x, y_of(v)}, 3.5f, series_color(si, series[si].col, style_)); }
+            if (kind == plot_kind::lines) { m_->dl_.circle_filled({x, y_of(v)}, 3.5f, series_color(si, series[si].col, m_->style_)); }
             tip += '\n';
             if (!series[si].name.empty()) { tip.append(series[si].name); tip += ": "; }
             tip += number_text(v, hi - lo);
         }
-        draw_tooltip_at(mouse_ + vec2{14.0f, 20.0f}, tip);
+        draw_tooltip_at(m_->mouse_ + vec2{14.0f, 20.0f}, tip);
     }
 }
 
 context::chart_view& context::chart_view_for(id key) noexcept
 {
-    chart_view* oldest = &chart_views_[0];
-    for (chart_view& v : chart_views_) {
-        if (v.key == key) { v.last_frame = frame_; return v; }
+    chart_view* oldest = &m_->chart_views_[0];
+    for (chart_view& v : m_->chart_views_) {
+        if (v.key == key) { v.last_frame = m_->frame_; return v; }
         if (v.last_frame < oldest->last_frame) { oldest = &v; }
     }
     *oldest = {};
     oldest->key        = key;
-    oldest->last_frame = frame_;
+    oldest->last_frame = m_->frame_;
     return *oldest;
 }
 
 bool context::plot_zoomed(std::string_view label) const
 {
     const id key = hash_id(label, current_seed());
-    for (const chart_view& v : chart_views_) {
+    for (const chart_view& v : m_->chart_views_) {
         if (v.key == key) { return v.x_set || v.y_set; }
     }
     return false;
@@ -278,7 +279,7 @@ bool context::plot_zoomed(std::string_view label) const
 vec2 context::plot_x_range(std::string_view label) const
 {
     const id key = hash_id(label, current_seed());
-    for (const chart_view& v : chart_views_) {
+    for (const chart_view& v : m_->chart_views_) {
         if (v.key == key) { return {v.sx_lo, v.sx_hi}; }
     }
     return {};
@@ -287,7 +288,7 @@ vec2 context::plot_x_range(std::string_view label) const
 void context::plot_reset_view(std::string_view label)
 {
     const id key = widget_id(label);
-    for (chart_view& v : chart_views_) {
+    for (chart_view& v : m_->chart_views_) {
         if (v.key == key) { v.x_set = v.y_set = false; }
     }
 }
@@ -295,11 +296,11 @@ void context::plot_reset_view(std::string_view label)
 // a chart with axes: tick marks and labels with units, grid, area fills, wheel zoom and drag pan
 void context::chart_impl(std::string_view label, std::span<const plot_series> series, const plot_options& o)
 {
-    if (cur_ == nullptr || series.empty()) {
+    if (m_->cur_ == nullptr || series.empty()) {
         return;
     }
     const font_id f  = current_font();
-    const f32     lh = font_.line_height(f);
+    const f32     lh = m_->font_.line_height(f);
     const bool    hist = o.kind == plot_kind::histogram;
 
     std::size_t n = series[0].values.size();
@@ -311,7 +312,7 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
 
     // layout: the control, and inside it the bands for the axes
     const f32 h = o.size.y > 0.0f ? o.size.y : 160.0f;
-    if (o.size.x > 0.0f) { layout_.next_width = o.size.x; }
+    if (o.size.x > 0.0f) { m_->layout_.next_width = o.size.x; }
     const field_layout fl = layout_field(visible_label(label), h);
     const rect box = fl.control;
     const id   key = widget_id(label);
@@ -329,36 +330,36 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
     if (o.zoom_pan && view.inner.width() > 1.0f && view.sx_hi > view.sx_lo) {
         const rect ir = view.inner;
         const f32 sx0 = view.sx_lo, sx1 = view.sx_hi, sy0 = view.sy_lo, sy1 = view.sy_hi;
-        const bool over = in.hovered && ir.contains(mouse_);
-        if (over && wheel_ != 0.0f && !wheel_consumed_) {
-            wheel_consumed_ = true;
-            const f32 k = std::pow(0.85f, wheel_);
-            if (mod_ctrl_) {
-                const f32 m = sy1 - (mouse_.y - ir.min.y) / std::max(ir.height(), 1.0f) * (sy1 - sy0);
+        const bool over = in.hovered && ir.contains(m_->mouse_);
+        if (over && m_->wheel_ != 0.0f && !m_->wheel_consumed_) {
+            m_->wheel_consumed_ = true;
+            const f32 k = std::pow(0.85f, m_->wheel_);
+            if (m_->mod_ctrl_) {
+                const f32 m = sy1 - (m_->mouse_.y - ir.min.y) / std::max(ir.height(), 1.0f) * (sy1 - sy0);
                 view.y_lo = m - (m - sy0) * k;
                 view.y_hi = m + (sy1 - m) * k;
                 view.y_set = true;
             } else {
-                const f32 m = sx0 + (mouse_.x - ir.min.x) / std::max(ir.width(), 1.0f) * (sx1 - sx0);
+                const f32 m = sx0 + (m_->mouse_.x - ir.min.x) / std::max(ir.width(), 1.0f) * (sx1 - sx0);
                 view.x_lo = m - (m - sx0) * k;
                 view.x_hi = m + (sx1 - m) * k;
                 view.x_set = true;
             }
         }
-        if (in.held && (mouse_delta_.x != 0.0f || mouse_delta_.y != 0.0f)) {
-            const f32 dx = -mouse_delta_.x / ir.width() * (sx1 - sx0);
+        if (in.held && (m_->mouse_delta_.x != 0.0f || m_->mouse_delta_.y != 0.0f)) {
+            const f32 dx = -m_->mouse_delta_.x / ir.width() * (sx1 - sx0);
             view.x_lo = sx0 + dx;
             view.x_hi = sx1 + dx;
             view.x_set = true;
             if (view.y_set) {
-                const f32 dy = mouse_delta_.y / std::max(ir.height(), 1.0f) * (sy1 - sy0);
+                const f32 dy = m_->mouse_delta_.y / std::max(ir.height(), 1.0f) * (sy1 - sy0);
                 view.y_lo = sy0 + dy;
                 view.y_hi = sy1 + dy;
             }
         }
-        if (over && mouse_pressed_) { // double-click: back to the whole data
-            if (time_ - view.last_click < 0.35) { view.x_set = view.y_set = false; }
-            view.last_click = time_;
+        if (over && m_->mouse_pressed_) { // double-click: back to the whole data
+            if (m_->time_ - view.last_click < 0.35) { view.x_set = view.y_set = false; }
+            view.last_click = m_->time_;
         }
     }
     f32 xv0 = xd0, xv1 = xd1;
@@ -411,19 +412,19 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
     f32 left   = 6.0f;
     if (o.ticks) {
         const f32 guess = (yv1 - yv0) / 5.0f;
-        left   = 12.0f + std::max(font_.measure(f, tick_text(yv0, guess, o.y.unit)).x, font_.measure(f, tick_text(yv1, guess, o.y.unit)).x);
+        left   = 12.0f + std::max(m_->font_.measure(f, tick_text(yv0, guess, o.y.unit)).x, m_->font_.measure(f, tick_text(yv1, guess, o.y.unit)).x);
         bottom = 6.0f + lh + 4.0f;
     }
     if (!o.x.title.empty()) { bottom += lh + 2.0f; }
     const rect inner = {{box.min.x + left, box.min.y + top}, {box.max.x - 10.0f, box.max.y - bottom}};
 
     shape_style bg;
-    bg.radius       = radii(style_.rounding * 0.8f);
+    bg.radius       = radii(m_->style_.rounding * 0.8f);
     bg.fill_top     = color{0, 0, 0, 60};
     bg.fill_bottom  = color{0, 0, 0, 60};
-    bg.border       = style_.widget_border;
-    bg.border_width = style_.border_width;
-    dl_.shape(box, bg);
+    bg.border       = m_->style_.widget_border;
+    bg.border_width = m_->style_.border_width;
+    m_->dl_.shape(box, bg);
     if (inner.width() < 8.0f || inner.height() < 8.0f) {
         return;
     }
@@ -440,63 +441,63 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
         for (long long k = static_cast<long long>(std::ceil(yv0 / ystep)); static_cast<f32>(k) * ystep <= yv1 + ystep * 1.0e-3f && k < 200000; ++k) {
             const f32 v = static_cast<f32>(k) * ystep;
             const f32 y = std::round(y_of(v));
-            dl_.rect_filled({{inner.min.x, y}, {inner.max.x, y + 1.0f}}, grid);
-            dl_.rect_filled({{inner.min.x - 3.0f, y}, {inner.min.x, y + 1.0f}}, axis);
+            m_->dl_.rect_filled({{inner.min.x, y}, {inner.max.x, y + 1.0f}}, grid);
+            m_->dl_.rect_filled({{inner.min.x - 3.0f, y}, {inner.min.x, y + 1.0f}}, axis);
             const std::string t = tick_text(v, ystep, o.y.unit);
-            dl_.text({inner.min.x - 6.0f - font_.measure(f, t).x, y - lh * 0.5f}, style_.text_dim, t, f);
+            m_->dl_.text({inner.min.x - 6.0f - m_->font_.measure(f, t).x, y - lh * 0.5f}, m_->style_.text_dim, t, f);
         }
         f32 widest = 0.0f;
-        for (const f32 v : {xv0, xv1}) { widest = std::max(widest, font_.measure(f, tick_text(v, (xv1 - xv0) / 5.0f, o.x.unit)).x); }
+        for (const f32 v : {xv0, xv1}) { widest = std::max(widest, m_->font_.measure(f, tick_text(v, (xv1 - xv0) / 5.0f, o.x.unit)).x); }
         const f32 xstep = nice_step(xv1 - xv0, std::max(inner.width() / (widest + 28.0f), 1.0f));
         f32 last_right = -1.0e9f;
         for (long long k = static_cast<long long>(std::ceil(xv0 / xstep)); static_cast<f32>(k) * xstep <= xv1 + xstep * 1.0e-3f && k < 200000; ++k) {
             const f32 v = static_cast<f32>(k) * xstep;
             const f32 x = std::round(x_of(v));
-            dl_.rect_filled({{x, inner.min.y}, {x + 1.0f, inner.max.y}}, color{255, 255, 255, 12});
-            dl_.rect_filled({{x, inner.max.y}, {x + 1.0f, inner.max.y + 3.0f}}, axis);
+            m_->dl_.rect_filled({{x, inner.min.y}, {x + 1.0f, inner.max.y}}, color{255, 255, 255, 12});
+            m_->dl_.rect_filled({{x, inner.max.y}, {x + 1.0f, inner.max.y + 3.0f}}, axis);
             const std::string t = tick_text(v, xstep, o.x.unit);
-            const f32 tw = font_.measure(f, t).x;
+            const f32 tw = m_->font_.measure(f, t).x;
             const f32 tx = x - tw * 0.5f;
             if (tx > last_right + 6.0f && tx >= box.min.x + 2.0f && tx + tw <= box.max.x - 2.0f) {
-                dl_.text({tx, inner.max.y + 5.0f}, style_.text_dim, t, f);
+                m_->dl_.text({tx, inner.max.y + 5.0f}, m_->style_.text_dim, t, f);
                 last_right = tx + tw;
             }
         }
-        dl_.rect_filled({{inner.min.x, inner.min.y}, {inner.min.x + 1.0f, inner.max.y}}, axis);
-        dl_.rect_filled({{inner.min.x, inner.max.y}, {inner.max.x, inner.max.y + 1.0f}}, axis);
+        m_->dl_.rect_filled({{inner.min.x, inner.min.y}, {inner.min.x + 1.0f, inner.max.y}}, axis);
+        m_->dl_.rect_filled({{inner.min.x, inner.max.y}, {inner.max.x, inner.max.y + 1.0f}}, axis);
     }
 
     if (header) {
         std::string title{o.y.title};
         if (!o.y.unit.empty()) { title += title.empty() ? std::string{o.y.unit} : " (" + std::string{o.y.unit} + ")"; }
-        dl_.text({box.min.x + 8.0f, box.min.y + 4.0f}, style_.text_dim, title, f);
+        m_->dl_.text({box.min.x + 8.0f, box.min.y + 4.0f}, m_->style_.text_dim, title, f);
         if (legend) {
             f32 x = box.max.x - 8.0f;
             for (std::size_t si = series.size(); si-- > 0;) {
                 const std::string_view name = series[si].name.empty() ? std::string_view{"series"} : series[si].name;
-                x -= font_.measure(f, name).x;
-                dl_.text({x, box.min.y + 4.0f}, style_.text_dim, name, f);
+                x -= m_->font_.measure(f, name).x;
+                m_->dl_.text({x, box.min.y + 4.0f}, m_->style_.text_dim, name, f);
                 x -= 12.0f;
-                dl_.circle_filled({x + 4.0f, box.min.y + 4.0f + lh * 0.5f}, 3.5f, series_color(si, series[si].col, style_));
+                m_->dl_.circle_filled({x + 4.0f, box.min.y + 4.0f + lh * 0.5f}, 3.5f, series_color(si, series[si].col, m_->style_));
                 x -= 10.0f;
             }
         }
     }
     if (!o.x.title.empty()) {
-        const f32 tw = font_.measure(f, o.x.title).x;
-        dl_.text({inner.min.x + (inner.width() - tw) * 0.5f, box.max.y - 4.0f - lh}, style_.text_dim, o.x.title, f);
+        const f32 tw = m_->font_.measure(f, o.x.title).x;
+        m_->dl_.text({inner.min.x + (inner.width() - tw) * 0.5f, box.max.y - 4.0f - lh}, m_->style_.text_dim, o.x.title, f);
     }
 
-    const f32 width_px = std::max(inner.width() * scale_, 1.0f);
+    const f32 width_px = std::max(inner.width() * m_->scale_, 1.0f);
     const f32 base_y   = y_of(std::clamp(0.0f, yv0, yv1));
     const std::size_t count = n > 0 ? i1 - i0 + 1 : 0;
-    dl_.push_clip(inner.expanded(2.0f));
+    m_->dl_.push_clip(inner.expanded(2.0f));
     for (int pass = 0; pass < 2 && count > 0; ++pass) { // pass 0: fills, pass 1: lines / bars
         for (std::size_t si = 0; si < series.size(); ++si) {
-            const color c = series_color(si, series[si].col, style_);
+            const color c = series_color(si, series[si].col, m_->style_);
             if (!hist) {
                 if (pass == 0 && !o.fill) { continue; }
-                plot_scratch_.clear();
+                m_->plot_scratch_.clear();
                 if (static_cast<f32>(count) > width_px * 2.0f) { // more samples than pixels: keep each bucket's extremes
                     const std::size_t buckets = static_cast<std::size_t>(width_px);
                     for (std::size_t b = 0; b < buckets; ++b) {
@@ -510,20 +511,20 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
                         const f32 x = x_of(o.x_start + static_cast<f32>(from) * x_step);
                         const std::size_t first = std::min(imin, imax);
                         const std::size_t second = std::max(imin, imax);
-                        plot_scratch_.push_back({x, y_of(sample(series[si], first))});
-                        if (second != first) { plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
+                        m_->plot_scratch_.push_back({x, y_of(sample(series[si], first))});
+                        if (second != first) { m_->plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
                     }
                 } else {
                     for (std::size_t i = i0; i <= i1; ++i) {
-                        plot_scratch_.push_back({x_of(o.x_start + static_cast<f32>(i) * x_step), y_of(sample(series[si], i))});
+                        m_->plot_scratch_.push_back({x_of(o.x_start + static_cast<f32>(i) * x_step), y_of(sample(series[si], i))});
                     }
                 }
                 if (pass == 0) {
-                    if (plot_scratch_.size() >= 2) { dl_.area_fill(plot_scratch_, base_y, c.scaled_alpha(o.fill_alpha), c.scaled_alpha(0.0f)); }
-                } else if (plot_scratch_.size() >= 2) {
-                    dl_.polyline(plot_scratch_, c, 1.6f, false);
-                } else if (plot_scratch_.size() == 1) {
-                    dl_.circle_filled(plot_scratch_[0], 2.5f, c);
+                    if (m_->plot_scratch_.size() >= 2) { m_->dl_.area_fill(m_->plot_scratch_, base_y, c.scaled_alpha(o.fill_alpha), c.scaled_alpha(0.0f)); }
+                } else if (m_->plot_scratch_.size() >= 2) {
+                    m_->dl_.polyline(m_->plot_scratch_, c, 1.6f, false);
+                } else if (m_->plot_scratch_.size() == 1) {
+                    m_->dl_.circle_filled(m_->plot_scratch_[0], 2.5f, c);
                 }
             } else if (pass == 1) {
                 const f32 bw_full = x_step * kx;
@@ -540,37 +541,37 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
                     const f32 x0 = xs + sub * static_cast<f32>(si);
                     const f32 gap = sub > 3.0f ? 1.0f : 0.0f;
                     const f32 y = y_of(v);
-                    dl_.rect_filled({{x0, std::min(y, base_y)}, {x0 + sub - gap, std::max(std::max(y, base_y), std::min(y, base_y) + 1.0f)}}, c, 1.0f);
+                    m_->dl_.rect_filled({{x0, std::min(y, base_y)}, {x0 + sub - gap, std::max(std::max(y, base_y), std::min(y, base_y) + 1.0f)}}, c, 1.0f);
                 }
             }
         }
     }
-    dl_.pop_clip();
+    m_->dl_.pop_clip();
 
     if (view.x_set || view.y_set) {
         const std::string_view hint = "zoomed - double-click to reset";
-        const f32 tw = font_.measure(f, hint).x;
-        dl_.text({inner.max.x - tw - 6.0f, inner.min.y + 4.0f}, style_.accent.scaled_alpha(0.85f), hint, f);
+        const f32 tw = m_->font_.measure(f, hint).x;
+        m_->dl_.text({inner.max.x - tw - 6.0f, inner.min.y + 4.0f}, m_->style_.accent.scaled_alpha(0.85f), hint, f);
     }
 
-    if (in.hovered && n > 0 && inner.contains(mouse_) && !(in.held && o.zoom_pan)) {
-        const f32 xm = xv0 + (mouse_.x - inner.min.x) / kx;
+    if (in.hovered && n > 0 && inner.contains(m_->mouse_) && !(in.held && o.zoom_pan)) {
+        const f32 xm = xv0 + (m_->mouse_.x - inner.min.x) / kx;
         const std::size_t idx = static_cast<std::size_t>(std::clamp(std::round((xm - o.x_start) / x_step - (hist ? 0.5f : 0.0f)), 0.0f, static_cast<f32>(n - 1)));
         const f32 sx = x_of(o.x_start + static_cast<f32>(idx) * x_step + (hist ? 0.5f * x_step : 0.0f));
         if (sx >= inner.min.x && sx <= inner.max.x) {
-            dl_.rect_filled({{std::round(sx), inner.min.y}, {std::round(sx) + 1.0f, inner.max.y}}, color{255, 255, 255, 90});
+            m_->dl_.rect_filled({{std::round(sx), inner.min.y}, {std::round(sx) + 1.0f, inner.max.y}}, color{255, 255, 255, 90});
             const f32 xval = o.x_start + static_cast<f32>(idx) * x_step;
             const f32 xs_step = std::max((xv1 - xv0) / 50.0f, x_step * 0.01f);
             const f32 ys_step = (yv1 - yv0) / 50.0f;
             std::string tip = (o.x.title.empty() ? std::string{"x"} : std::string{o.x.title}) + " = " + tick_text(xval, std::min(xs_step, x_step), o.x.unit);
             for (std::size_t si = 0; si < series.size(); ++si) {
                 const f32 v = sample(series[si], idx);
-                if (!hist) { dl_.circle_filled({sx, y_of(v)}, 3.5f, series_color(si, series[si].col, style_)); }
+                if (!hist) { m_->dl_.circle_filled({sx, y_of(v)}, 3.5f, series_color(si, series[si].col, m_->style_)); }
                 tip += '\n';
                 if (!series[si].name.empty()) { tip.append(series[si].name); tip += ": "; }
                 tip += tick_text(v, ys_step, o.y.unit);
             }
-            draw_tooltip_at(mouse_ + vec2{14.0f, 20.0f}, tip);
+            draw_tooltip_at(m_->mouse_ + vec2{14.0f, 20.0f}, tip);
         }
     }
 

@@ -524,6 +524,15 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
                         }
                     }
                     std::ranges::sort(fd.kern, {}, &kern_pair::key);
+                    if (!fd.kern.empty()) {
+                        fd.kern_ascii.assign(128 * 128, 0);
+                        for (const kern_pair& k : fd.kern) {
+                            const u32 left = k.key >> 16, right = k.key & 0xffffu;
+                            if (left >= 128 || right >= 128) { continue; }
+                            const bool fits = k.amount == std::round(k.amount) && k.amount > -128.0f && k.amount <= 127.0f;
+                            fd.kern_ascii[left * 128 + right] = fits ? static_cast<std::int8_t>(k.amount) : kern_ask;
+                        }
+                    }
                 }
             }
         }

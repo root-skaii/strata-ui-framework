@@ -55,6 +55,16 @@
             }
         },
         {
+            "name": "x64-asan",
+            "displayName": "x64 AddressSanitizer + fuzzer",
+            "inherits": "ninja-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "STRATA_ASAN": "ON",
+                "STRATA_BUILD_FUZZERS": "ON"
+            }
+        },
+        {
             "name": "vs2022",
             "displayName": "Visual Studio 2022 solution",
             "inherits": "windows-base",
@@ -77,6 +87,10 @@
         {
             "name": "x64-relwithdebinfo",
             "configurePreset": "x64-relwithdebinfo"
+        },
+        {
+            "name": "x64-asan",
+            "configurePreset": "x64-asan"
         },
         {
             "name": "vs2022-debug",

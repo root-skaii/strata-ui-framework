@@ -1,5 +1,7 @@
 #include "strata/backend/d3d11.hpp"
 
+#include "blur_plan.hpp"
+
 #include <windows.h>
 
 #include <d3d11.h>
@@ -39,10 +41,18 @@ public:
         ctx_->OMGetDepthStencilState(&depth_, &stencil_ref_);
         ctx_->VSGetShader(&vs_, nullptr, nullptr);
         ctx_->PSGetShader(&ps_, nullptr, nullptr);
+        ctx_->GSGetShader(&gs_, nullptr, nullptr);
+        ctx_->HSGetShader(&hs_, nullptr, nullptr);
+        ctx_->DSGetShader(&ds_, nullptr, nullptr);
+        ID3D11Buffer* so[D3D11_SO_BUFFER_SLOT_COUNT]{};
+        ctx_->SOGetTargets(D3D11_SO_BUFFER_SLOT_COUNT, so);
+        for (UINT i = 0; i < D3D11_SO_BUFFER_SLOT_COUNT; ++i) { so_[i].Attach(so[i]); }
+        ctx_->GetPredication(&predicate_, &predicate_value_);
         ctx_->VSGetConstantBuffers(0, 1, &vs_cb_);
         ID3D11ShaderResourceView* srv[4]{};
         ctx_->PSGetShaderResources(0, 4, srv);
         for (int i = 0; i < 4; ++i) { ps_srv_[i].Attach(srv[i]); }
+        ctx_->PSGetConstantBuffers(0, 1, &ps_cb0_);
         ctx_->PSGetConstantBuffers(1, 1, &ps_cb_);
         ctx_->PSGetSamplers(0, 1, &ps_sampler_);
         ctx_->IAGetInputLayout(&layout_);
@@ -60,9 +70,18 @@ public:
         ctx_->OMSetDepthStencilState(depth_.Get(), stencil_ref_);
         ctx_->VSSetShader(vs_.Get(), nullptr, 0);
         ctx_->PSSetShader(ps_.Get(), nullptr, 0);
+        ctx_->GSSetShader(gs_.Get(), nullptr, 0);
+        ctx_->HSSetShader(hs_.Get(), nullptr, 0);
+        ctx_->DSSetShader(ds_.Get(), nullptr, 0);
+        ID3D11Buffer* so[D3D11_SO_BUFFER_SLOT_COUNT]{};
+        UINT so_offsets[D3D11_SO_BUFFER_SLOT_COUNT]{};
+        for (UINT i = 0; i < D3D11_SO_BUFFER_SLOT_COUNT; ++i) { so[i] = so_[i].Get(); so_offsets[i] = static_cast<UINT>(-1); } // -1: append
+        ctx_->SOSetTargets(D3D11_SO_BUFFER_SLOT_COUNT, so, so_offsets);
+        ctx_->SetPredication(predicate_.Get(), predicate_value_);
         ctx_->VSSetConstantBuffers(0, 1, vs_cb_.GetAddressOf());
         ID3D11ShaderResourceView* srv[4] = {ps_srv_[0].Get(), ps_srv_[1].Get(), ps_srv_[2].Get(), ps_srv_[3].Get()};
         ctx_->PSSetShaderResources(0, 4, srv);
+        ctx_->PSSetConstantBuffers(0, 1, ps_cb0_.GetAddressOf());
         ctx_->PSSetConstantBuffers(1, 1, ps_cb_.GetAddressOf());
         ctx_->PSSetSamplers(0, 1, ps_sampler_.GetAddressOf());
         ctx_->IASetInputLayout(layout_.Get());
@@ -88,8 +107,15 @@ private:
     UINT                            stencil_ref_{};
     ComPtr<ID3D11VertexShader>      vs_;
     ComPtr<ID3D11PixelShader>       ps_;
+    ComPtr<ID3D11GeometryShader>    gs_;
+    ComPtr<ID3D11HullShader>        hs_;
+    ComPtr<ID3D11DomainShader>      ds_;
+    ComPtr<ID3D11Buffer>            so_[D3D11_SO_BUFFER_SLOT_COUNT];
+    ComPtr<ID3D11Predicate>         predicate_;
+    BOOL                            predicate_value_{};
     ComPtr<ID3D11Buffer>            vs_cb_;
     ComPtr<ID3D11ShaderResourceView> ps_srv_[4];
+    ComPtr<ID3D11Buffer>            ps_cb0_;
     ComPtr<ID3D11Buffer>            ps_cb_;
     ComPtr<ID3D11SamplerState>      ps_sampler_;
     ComPtr<ID3D11InputLayout>       layout_;
@@ -136,7 +162,6 @@ struct d3d11_renderer::impl {
     ComPtr<ID3D11PixelShader>        ps_blur_gauss;
     ComPtr<ID3D11Buffer>             cb_blur;
     ComPtr<ID3D11BlendState>         blend_off;
-    ComPtr<ID3D11RasterizerState>    raster_noscissor;
     ComPtr<ID3D11Texture2D>          snap_tex;
     ComPtr<ID3D11ShaderResourceView> snap_srv;
     UINT                             snap_w{}, snap_h{};
@@ -145,12 +170,18 @@ struct d3d11_renderer::impl {
     ComPtr<ID3D11RenderTargetView>   blur_rtv[2];
     ComPtr<ID3D11ShaderResourceView> blur_srv[2];
     UINT                             blur_w{}, blur_h{};
+    DXGI_FORMAT                      blur_format{};
     bool                             blur_supported{};
+    output_desc                      output{};
+    internal::ui_constants           cb_written{}; // what cb holds, so it is only mapped when something changed
+    bool                             cb_valid{};
 
     struct blur_constants {
         float bp0[4]{};
         float bp1[4]{};
         float bp2[4]{};
+        float bp3[4]{};
+        float bp4[4]{};
     };
 
     void set_blur_constants(const blur_constants& c) noexcept
@@ -192,13 +223,14 @@ struct d3d11_renderer::impl {
         }
         const UINT lw = (rd.Width + 1) / 2;
         const UINT lh = (rd.Height + 1) / 2;
-        if (blur_tex[0] == nullptr || blur_w != lw || blur_h != lh) {
+        const DXGI_FORMAT bf = internal::wide_format(rd.Format) ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (blur_tex[0] == nullptr || blur_w != lw || blur_h != lh || blur_format != bf) {
             D3D11_TEXTURE2D_DESC d{};
             d.Width            = lw;
             d.Height           = lh;
             d.MipLevels        = 1;
             d.ArraySize        = 1;
-            d.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+            d.Format           = bf;
             d.SampleDesc.Count = 1;
             d.Usage            = D3D11_USAGE_DEFAULT;
             d.BindFlags        = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -210,20 +242,24 @@ struct d3d11_renderer::impl {
                     return false;
                 }
             }
-            blur_w = lw;
-            blur_h = lh;
+            blur_w      = lw;
+            blur_h      = lh;
+            blur_format = bf;
         }
         return true;
     }
 
+    // one full-screen triangle into `dst`, written only inside the plan's low-resolution region (the scissor)
     void blur_pass(ID3D11RenderTargetView* dst, UINT vw, UINT vh, ID3D11ShaderResourceView* src, const blur_constants& c,
-                   ID3D11PixelShader* shader) noexcept
+                   ID3D11PixelShader* shader, const internal::blur_plan& plan) noexcept
     {
         ID3D11ShaderResourceView* none = nullptr;
         context->PSSetShaderResources(3, 1, &none); // the source may have been the previous target
         context->OMSetRenderTargets(1, &dst, nullptr);
         const D3D11_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(vw), static_cast<float>(vh), 0.0f, 1.0f};
         context->RSSetViewports(1, &vp);
+        const D3D11_RECT sc{static_cast<LONG>(plan.lx0), static_cast<LONG>(plan.ly0), static_cast<LONG>(plan.lx1), static_cast<LONG>(plan.ly1)};
+        context->RSSetScissorRects(1, &sc);
         set_blur_constants(c);
         context->PSSetConstantBuffers(1, 1, cb_blur.GetAddressOf());
         context->PSSetShader(shader, nullptr, 0);
@@ -231,9 +267,10 @@ struct d3d11_renderer::impl {
         context->Draw(3, 0);
     }
 
-    // blurs what the target holds right now; on success blur_srv[0] has the result (only its top-left (vw, vh) part)
-    [[nodiscard]] bool run_blur(ID3D11RenderTargetView* host_rtv, ID3D11DepthStencilView* host_dsv, float radius_px,
-                                const D3D11_VIEWPORT& main_vp, UINT& out_vw, UINT& out_vh) noexcept
+    // blurs what the target holds right now around `panel` (physical pixels); on success blur_srv[0] has the result in its
+    // top-left (vw, vh) part, exact inside `out_exact`
+    [[nodiscard]] bool run_blur(ID3D11RenderTargetView* host_rtv, ID3D11DepthStencilView* host_dsv, float radius_px, const rect& panel,
+                                const D3D11_VIEWPORT& main_vp, UINT& out_vw, UINT& out_vh, rect& out_exact) noexcept
     {
         ComPtr<ID3D11Resource> res;
         host_rtv->GetResource(&res);
@@ -245,9 +282,14 @@ struct d3d11_renderer::impl {
             return false;
         }
 
-        context->CopyResource(snap_tex.Get(), target.Get());
+        const internal::blur_plan plan = internal::plan_blur(radius_px, panel, snap_w, snap_h);
+        if (plan.x1 <= plan.x0 || plan.y1 <= plan.y0 || plan.lx1 <= plan.lx0 || plan.ly1 <= plan.ly0) {
+            return false;
+        }
+        const D3D11_BOX box{plan.x0, plan.y0, 0, plan.x1, plan.y1, 1};
+        context->CopySubresourceRegion(snap_tex.Get(), 0, plan.x0, plan.y0, 0, target.Get(), 0, &box);
 
-        const UINT ds = radius_px <= 8.0f ? 2u : 4u;
+        const UINT ds = plan.ds;
         const UINT vw = std::max(1u, (snap_w + ds - 1) / ds);
         const UINT vh = std::max(1u, (snap_h + ds - 1) / ds);
         const float tw = static_cast<float>(blur_w);
@@ -256,7 +298,7 @@ struct d3d11_renderer::impl {
         context->IASetInputLayout(nullptr);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vs_fullscreen.Get(), nullptr, 0);
-        context->RSSetState(raster_noscissor.Get());
+        context->RSSetState(raster.Get()); // (scissored: the passes only write the plan's region)
         const float blend_factor[4] = {0, 0, 0, 0};
         context->OMSetBlendState(blend_off.Get(), blend_factor, 0xffffffffu);
 
@@ -266,21 +308,20 @@ struct d3d11_renderer::impl {
         c.bp1[0] = 1.0f / static_cast<float>(snap_w); c.bp1[1] = 1.0f / static_cast<float>(snap_h);
         c.bp1[2] = 1.0f - 0.5f * c.bp1[0]; c.bp1[3] = 1.0f - 0.5f * c.bp1[1];
         c.bp2[0] = static_cast<float>(ds) * 0.25f;
-        blur_pass(blur_rtv[0].Get(), vw, vh, snap_srv.Get(), c, ps_blur_down.Get());
+        blur_pass(blur_rtv[0].Get(), vw, vh, snap_srv.Get(), c, ps_blur_down.Get(), plan);
 
-        // 2. gaussian, horizontal then vertical, once or twice for the big radii
-        const float sigma_total = std::max(0.6f, radius_px / (2.0f * static_cast<float>(ds)));
-        const int   iterations  = sigma_total > 3.5f ? (sigma_total > 8.0f ? 3 : 2) : 1;
-        const float sigma       = sigma_total / std::sqrt(static_cast<float>(iterations));
+        // 2. gaussian, horizontal then vertical, once or several times for the big radii
         c.bp0[0] = static_cast<float>(vw); c.bp0[1] = static_cast<float>(vh);
         c.bp0[2] = static_cast<float>(vw) / tw; c.bp0[3] = static_cast<float>(vh) / th;
         c.bp1[2] = (static_cast<float>(vw) - 0.5f) / tw; c.bp1[3] = (static_cast<float>(vh) - 0.5f) / th;
-        c.bp2[1] = sigma;
-        for (int it = 0; it < iterations; ++it) {
+        c.bp2[2] = plan.w0;
+        c.bp3[0] = plan.w[0]; c.bp3[1] = plan.o[0]; c.bp3[2] = plan.w[1]; c.bp3[3] = plan.o[1];
+        c.bp4[0] = plan.w[2]; c.bp4[1] = plan.o[2];
+        for (int it = 0; it < plan.iterations; ++it) {
             c.bp1[0] = 1.0f / tw; c.bp1[1] = 0.0f;
-            blur_pass(blur_rtv[1].Get(), vw, vh, blur_srv[0].Get(), c, ps_blur_gauss.Get());
+            blur_pass(blur_rtv[1].Get(), vw, vh, blur_srv[0].Get(), c, ps_blur_gauss.Get(), plan);
             c.bp1[0] = 0.0f; c.bp1[1] = 1.0f / th;
-            blur_pass(blur_rtv[0].Get(), vw, vh, blur_srv[1].Get(), c, ps_blur_gauss.Get());
+            blur_pass(blur_rtv[0].Get(), vw, vh, blur_srv[1].Get(), c, ps_blur_gauss.Get(), plan);
         }
 
         // back to the host's target and the ui's own pipeline state
@@ -293,8 +334,9 @@ struct d3d11_renderer::impl {
         context->OMSetBlendState(blend.Get(), blend_factor, 0xffffffffu);
         context->IASetInputLayout(layout.Get());
         context->VSSetShader(vs.Get(), nullptr, 0);
-        out_vw = vw;
-        out_vh = vh;
+        out_vw    = vw;
+        out_vh    = vh;
+        out_exact = plan.exact;
         return true;
     }
     UINT                             vb_capacity{};
@@ -409,19 +451,14 @@ bool d3d11_renderer::create(ID3D11Device* device, ID3D11DeviceContext* context, 
         SUCCEEDED(device->CreatePixelShader(g_strata_ui_ps_blur_gauss, sizeof(g_strata_ui_ps_blur_gauss), nullptr, &p->ps_blur_gauss));
     if (p->blur_supported) {
         D3D11_BUFFER_DESC bd{};
-        bd.ByteWidth      = 48;
+        bd.ByteWidth      = sizeof(impl::blur_constants);
         bd.Usage          = D3D11_USAGE_DYNAMIC;
         bd.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         D3D11_BLEND_DESC off{};
         off.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-        D3D11_RASTERIZER_DESC rs{};
-        rs.FillMode        = D3D11_FILL_SOLID;
-        rs.CullMode        = D3D11_CULL_NONE;
-        rs.DepthClipEnable = TRUE;
         p->blur_supported = SUCCEEDED(device->CreateBuffer(&bd, nullptr, &p->cb_blur)) &&
-                            SUCCEEDED(device->CreateBlendState(&off, &p->blend_off)) &&
-                            SUCCEEDED(device->CreateRasterizerState(&rs, &p->raster_noscissor));
+                            SUCCEEDED(device->CreateBlendState(&off, &p->blend_off));
     }
 
     static constexpr D3D11_INPUT_ELEMENT_DESC layout[] = {
@@ -434,7 +471,7 @@ bool d3d11_renderer::create(ID3D11Device* device, ID3D11DeviceContext* context, 
     }
 
     D3D11_BUFFER_DESC cb_desc{};
-    cb_desc.ByteWidth      = 16;
+    cb_desc.ByteWidth      = sizeof(internal::ui_constants);
     cb_desc.Usage          = D3D11_USAGE_DYNAMIC;
     cb_desc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
     cb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -655,6 +692,21 @@ bool d3d11_renderer::state_restore() const noexcept
     return impl_ != nullptr && impl_->restore_state;
 }
 
+void d3d11_renderer::set_output(const output_desc& output) noexcept
+{
+    if (impl_ != nullptr) { impl_->output = output; }
+}
+
+output_desc d3d11_renderer::output() const noexcept
+{
+    return impl_ != nullptr ? impl_->output : output_desc{};
+}
+
+bool d3d11_renderer::device_lost() const noexcept
+{
+    return impl_ != nullptr && FAILED(impl_->device->GetDeviceRemovedReason());
+}
+
 void d3d11_renderer::render(const draw_data& data)
 {
     if (impl_ == nullptr || data.commands.empty() || data.display_size.x <= 0 || data.display_size.y <= 0) {
@@ -693,13 +745,16 @@ void d3d11_renderer::render(const draw_data& data)
             ctx->Unmap(s.shape_buf.Get(), 0);
         }
 
-        if (FAILED(ctx->Map(s.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
-        const float transform[4] = {2.0f / data.display_size.x, -2.0f / data.display_size.y, -1.0f, 1.0f};
-        // shader layout: scale.xy, translate.xy
-        std::memcpy(map.pData, transform, sizeof(transform));
-        ctx->Unmap(s.cb.Get(), 0);
-
         s.uploaded_hash = data.content_hash;
+    }
+    // the transform and the output encoding: apart from the geometry, since either can change while it does not
+    const internal::ui_constants constants = internal::make_ui_constants(data, s.output);
+    if (!s.cb_valid || std::memcmp(&constants, &s.cb_written, sizeof constants) != 0) {
+        if (FAILED(ctx->Map(s.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
+        std::memcpy(map.pData, &constants, sizeof constants);
+        ctx->Unmap(s.cb.Get(), 0);
+        s.cb_written = constants;
+        s.cb_valid   = true;
     }
 
     // the state guard is what an overlay needs and an owner of the device does not; see set_state_restore
@@ -725,7 +780,15 @@ void d3d11_renderer::render(const draw_data& data)
 
     ctx->VSSetShader(s.vs.Get(), nullptr, 0);
     ctx->VSSetConstantBuffers(0, 1, s.cb.GetAddressOf());
+    // stages the ui does not use but a game may have left bound (tessellation, a geometry shader, stream output, a
+    // predicate): any of them would bend, drop or divert the ui's triangles
+    ctx->GSSetShader(nullptr, nullptr, 0);
+    ctx->HSSetShader(nullptr, nullptr, 0);
+    ctx->DSSetShader(nullptr, nullptr, 0);
+    ctx->SOSetTargets(0, nullptr, nullptr);
+    ctx->SetPredication(nullptr, FALSE);
     ctx->PSSetShader(s.ps.Get(), nullptr, 0);
+    ctx->PSSetConstantBuffers(0, 1, s.cb.GetAddressOf()); // (the output encoding)
     ctx->PSSetSamplers(0, 1, s.sampler.GetAddressOf());
     ID3D11ShaderResourceView* srvs[2] = {s.atlas_srv.Get(), s.shape_srv.Get()};
     ctx->PSSetShaderResources(0, 2, srvs);
@@ -740,6 +803,7 @@ void d3d11_renderer::render(const draw_data& data)
     bool  host_rt_fetched = false;
     bool  blur_dirty      = true; // something was drawn since the blur was made
     float blur_radius     = -1.0f;
+    rect  blur_exact{};           // where the blur that was made is exact: a panel inside it can use it again
     UINT  blur_vw = 0, blur_vh = 0;
 
     for (const draw_cmd& cmd : data.commands) {
@@ -754,8 +818,10 @@ void d3d11_renderer::render(const draw_data& data)
                 host_rt_fetched = true;
             }
             if (host_rtv != nullptr) {
-                if (blur_dirty || cmd.blur != blur_radius) {
-                    if (s.run_blur(host_rtv.Get(), host_dsv.Get(), cmd.blur, vp, blur_vw, blur_vh)) {
+                const rect panel = internal::backdrop_bounds(data, cmd);
+                if (blur_dirty || cmd.blur != blur_radius || !internal::rect_inside(panel, blur_exact)) {
+                    blur_dirty = true;
+                    if (!panel.empty() && s.run_blur(host_rtv.Get(), host_dsv.Get(), cmd.blur, panel, vp, blur_vw, blur_vh, blur_exact)) {
                         blur_dirty  = false;
                         blur_radius = cmd.blur;
                         mode  = ps_mode::main; // run_blur left the pipeline in the ui's state, but not the shaders / views
