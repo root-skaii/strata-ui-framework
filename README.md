@@ -2,11 +2,24 @@
 
 Immediate-mode UI framework for Direct3D 11 and 12. C++ latest (`/std:c++latest`), CMake 4.3+, Windows x64, MSVC.
 
+![Docked windows with a tree, nested tables, images and rich text](docs/screenshots/features.png)
+
 ```
 strata/    the library  (strata::strata, static)
 sandbox/   test application, same UI on d3d11 or d3d12
 cmake/     options, compile flags, hlsl embedding, package config
 ```
+
+## Screenshots
+
+All rendered by the sandbox (`strata_sandbox --scene NAME --shot FILE`) on Direct3D 11.
+
+| | |
+|---|---|
+| ![Docking](docs/screenshots/docking.png)<br>**Docking** -- a window dragged over a pane shows drop guides | ![Acrylic](docs/screenshots/acrylic.png)<br>**Acrylic** -- gradients, antialiased curves, frosted glass (`glass` theme) |
+| ![Charts](docs/screenshots/charts.png)<br>**Charts** -- ticks, units, area fills, hover readout, zoom / pan | ![Code editor](docs/screenshots/editor.png)<br>**Code editor** -- highlighting, find / replace, passwords, input masks |
+| ![Command palette](docs/screenshots/palette.png)<br>**Command palette** -- rebindable keys, multi-key chords, fuzzy search | ![Pickers](docs/screenshots/pickers.png)<br>**Drag and drop, date picker** |
+| ![Menus](docs/screenshots/menus.png)<br>**Menus** -- mnemonics, accelerators, icons, submenus | ![App scene](docs/screenshots/app.png)<br>**App-shaped UI** -- row accessories, filtered combo, corner brackets |
 
 ## Build
 
