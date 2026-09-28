@@ -66,7 +66,11 @@ target_sources(strata PUBLIC
 target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/dock_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
-target_compile_features(strata PUBLIC cxx_std_23)
+# skipped for clang-cl: see the matching guard + comment in cmake/strata_options.cmake --
+# this would otherwise inject -clang:-std=c++23 ahead of /std:c++latest and win.
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_features(strata PUBLIC cxx_std_23)
+endif()
 set_target_properties(strata PROPERTIES CXX_EXTENSIONS OFF)
 
 # windows.h stays out of the public headers, but consumers still get the

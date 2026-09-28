@@ -22,3 +22,6 @@ CMakeFiles/
 CMakeScripts/
 
 golden/
+
+# fuzzer-generated corpus
+tests/fuzz/corpus/

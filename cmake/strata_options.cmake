@@ -38,10 +38,14 @@ if(PROJECT_IS_TOP_LEVEL)
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-    # /GL + /LTCG for everything that isn't a debug build
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE        ON)
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL     ON)
+    # /GL + /LTCG for everything that isn't a debug build. clang-cl gets explicit
+    # ThinLTO instead (see the Clang branch below) -- CMake's built-in IPO switch
+    # only emits full -flto for Clang, not thin, so it's wired by hand there.
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE        ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL     ON)
+    endif()
 
     # cmake's default /EHsc and /Ob1|/Ob2 would trigger D9025 next to our overrides
     string(REGEX REPLACE "/EH[a-z-]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
@@ -58,8 +62,13 @@ add_library(strata_options INTERFACE)
 
 # cmake 4.3 has no cxx_std_26 mapping for msvc yet: cxx_std_23 selects
 # /std:c++latest, which is also passed explicitly below so we always track the
-# newest standard the installed compiler offers.
-target_compile_features(strata_options INTERFACE cxx_std_23)
+# newest standard the installed compiler offers. Skipped for clang-cl: CMake's
+# feature-detection injects -clang:-std=c++23 ahead of our own /std:c++latest,
+# and that one silently wins at the cc1 level -- pinning the build to c++23
+# instead of tracking latest. /std:c++latest below is sufficient on its own.
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_features(strata_options INTERFACE cxx_std_23)
+endif()
 set_target_properties(strata_options PROPERTIES CXX_EXTENSIONS OFF)
 
 target_compile_definitions(strata_options INTERFACE
@@ -74,16 +83,27 @@ target_compile_definitions(strata_options INTERFACE
 
 if(MSVC)
     target_compile_options(strata_options INTERFACE
-        /std:c++latest /W4 /MP /permissive- /utf-8
-        /Zc:__cplusplus /Zc:inline /Zc:preprocessor /Zc:throwingNew
+        /std:c++latest /W4 /permissive- /utf-8
+        /Zc:__cplusplus /Zc:inline
         /GR- /EHs-c-
         # release: intrinsics, function-level + global-data comdats for /OPT:REF|ICF
         # (/O2 and /Ob3 come from CMAKE_CXX_FLAGS_RELEASE, see above)
         $<$<NOT:$<CONFIG:Debug>>:/Oi /Gy /Gw>
     )
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        # clang-cl doesn't implement these switches -- it's already conforming
+        # by default and warns them as unused; real cl.exe still needs them.
+        target_compile_options(strata_options INTERFACE /Zc:preprocessor /Zc:throwingNew)
+    endif()
     target_link_options(strata_options INTERFACE
         $<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
     )
+
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT STRATA_ASAN)
+        # ThinLTO: faster to build and to link than MSVC's /GL+LTCG.
+        target_compile_options(strata_options INTERFACE $<$<NOT:$<CONFIG:Debug>>:-flto=thin>)
+        target_link_options(strata_options INTERFACE $<$<NOT:$<CONFIG:Debug>>:-flto=thin>)
+    endif()
 
     if(STRATA_FAST_MATH)
         target_compile_options(strata_options INTERFACE /fp:fast)
