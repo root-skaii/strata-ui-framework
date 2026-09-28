@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
+#include <new>
 #include <string>
 
 namespace strata {
@@ -40,18 +42,31 @@ struct clipboard_scope {
     }
 };
 
-void clipboard_set(void* user, std::string_view text) noexcept
-{
-    const clipboard_scope clip{static_cast<HWND>(user)};
-    if (!clip.open) { return; }
+// owns the text and the target window for a set that runs on clipboard_set_thread
+struct clipboard_set_job {
+    HWND        hwnd;
+    std::string text;
+};
 
+// CloseClipboard() notifies any legacy clipboard-viewer chain (WM_DRAWCLIPBOARD) via a synchronous
+// SendMessage; a slow or hung listener elsewhere on the system stalls that call for seconds. The caller
+// is usually a UI thread that must keep pumping (here, the game's own main thread), so the whole
+// open/write/close sequence runs on a throwaway thread instead of blocking whoever asked to copy.
+DWORD WINAPI clipboard_set_thread(LPVOID param) noexcept
+{
+    std::unique_ptr<clipboard_set_job> job{static_cast<clipboard_set_job*>(param)};
+
+    const clipboard_scope clip{job->hwnd};
+    if (!clip.open) { return 0; }
+
+    const std::string_view text = job->text;
     const int wide_len = ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
     HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, (static_cast<SIZE_T>(wide_len) + 1) * sizeof(wchar_t));
-    if (mem == nullptr) { return; }
+    if (mem == nullptr) { return 0; }
     auto* dst = static_cast<wchar_t*>(::GlobalLock(mem));
     if (dst == nullptr) {
         ::GlobalFree(mem);
-        return;
+        return 0;
     }
     ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), dst, wide_len);
     dst[wide_len] = L'\0';
@@ -61,6 +76,20 @@ void clipboard_set(void* user, std::string_view text) noexcept
     if (::SetClipboardData(CF_UNICODETEXT, mem) == nullptr) {
         ::GlobalFree(mem); // ownership only transfers on success
     }
+    return 0;
+}
+
+void clipboard_set(void* user, std::string_view text) noexcept
+{
+    auto* job = new (std::nothrow) clipboard_set_job{static_cast<HWND>(user), std::string(text)};
+    if (job == nullptr) { return; }
+
+    HANDLE thread = ::CreateThread(nullptr, 0, &clipboard_set_thread, job, 0, nullptr);
+    if (thread == nullptr) {
+        delete job;
+        return;
+    }
+    ::CloseHandle(thread); // fire-and-forget: the thread keeps running detached from this handle
 }
 
 bool clipboard_get(void* user, std::string& out) noexcept

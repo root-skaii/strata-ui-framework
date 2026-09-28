@@ -64,6 +64,8 @@ struct context::layout_state {
     f32  cursor_x{};
     f32  line_top{};
     f32  line_h{};
+    f32  line_h_seed{};  // expected height for the line about to start (e.g. a table row's known height),
+                          // so its first item centers against siblings that haven't been placed yet this frame
     f32  bottom{};
     f32  next_width{};
     f32  bound_bottom{}; // bottom limit for fill-height children / strips (0 = none)
@@ -154,6 +156,8 @@ struct context::table_frame { // the table being built this frame
     f32                                       pad_x{}, pad_y{}, min_row_h{};
     f32                                       row_y{};
     f32                                       row_top{}, row_bottom{};
+    f32                                       row_hint{}; // this row's expected height (from row_had_content ? the
+                                                          // previous row : last frame's), seeded into each cell
     u32                                       row_index{};
     int                                       col{-1};
     bool                                      columns_ready{};

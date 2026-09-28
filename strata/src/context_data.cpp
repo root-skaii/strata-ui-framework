@@ -1257,8 +1257,10 @@ bool context::table_next_row()
     m_->table_.col             = -1;
     ++m_->table_.row_index;
 
-    // background is drawn now using the previous row's height, before the content goes on top
+    // background is drawn now using the previous row's height, before the content goes on top; the same height
+    // is seeded into each cell's layout so this row's content can center against it too (table_next_column)
     const f32  hint = std::max(st.row_hint, m_->table_.min_row_h);
+    m_->table_.row_hint = hint;
     const rect row  = {{m_->table_.origin.x, m_->table_.row_top}, {m_->table_.origin.x + m_->table_.width, m_->table_.row_top + hint}};
     m_->table_.row_visible = m_->dl_.clip().overlaps(row);
     if (m_->table_.row_visible) {
@@ -1294,9 +1296,12 @@ bool context::table_next_column()
 
     ++m_->table_.col;
     const auto c = static_cast<u32>(m_->table_.col);
-    m_->layout_        = {};
-    m_->layout_.origin = {m_->table_.x0[c] + m_->table_.pad_x, m_->table_.row_top + m_->table_.pad_y};
-    m_->layout_.width  = std::max(m_->table_.x1[c] - m_->table_.x0[c] - 2.0f * m_->table_.pad_x, 1.0f);
+    m_->layout_             = {};
+    m_->layout_.origin      = {m_->table_.x0[c] + m_->table_.pad_x, m_->table_.row_top + m_->table_.pad_y};
+    m_->layout_.width       = std::max(m_->table_.x1[c] - m_->table_.x0[c] - 2.0f * m_->table_.pad_x, 1.0f);
+    // a plain-text cell next to a taller one (a framed input, a toggle, ...) centers against the row's known
+    // height instead of sitting flush at its top
+    m_->layout_.line_h_seed = std::max(0.0f, m_->table_.row_hint - 2.0f * m_->table_.pad_y);
 
     // cell content never spills into the next column (hidden columns show nothing)
     const rect outer_clip = m_->dl_.clip();

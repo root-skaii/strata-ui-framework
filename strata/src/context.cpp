@@ -1125,22 +1125,35 @@ rect context::layout_place(vec2 size) noexcept
     layout_state& l = m_->layout_;
     const bool first_item = l.first;
     vec2 pos;
+    f32  target_h; // the height to center this item against: siblings already placed on this line, or (for a
+                    // line's first item) a caller-supplied expectation such as a table row's known height. Purely
+                    // cosmetic: it nudges where the item is *drawn*, never how much room the line is deemed to take.
     if (l.same_line && !l.first) {
         pos      = {l.cursor_x + m_->style_.item_spacing, l.line_top};
+        target_h = l.line_h;
         l.line_h = std::max(l.line_h, size.y);
     } else {
         pos        = {l.origin.x, l.first ? l.origin.y : l.line_top + l.line_h + m_->style_.item_spacing};
         l.line_top = pos.y;
-        l.line_h   = size.y;
+        target_h   = l.line_h_seed;
+        l.line_h   = size.y; // the line's real height starts at this item's own; a seed only ever centers, it
+                              // never inflates this past what the line actually contains
+        // a zero-height item is a structural placeholder (begin_table's start marker, say), not visible content:
+        // it takes no centering itself, and leaves the seed for whatever real content follows it on this line
+        if (size.y > 0.0f) { l.line_h_seed = 0.0f; }
     }
     l.first     = false;
     l.same_line = false;
     l.cursor_x  = pos.x + size.x;
     // the first item starts the extent: a layout scrolled above the screen has only negative positions, and a
-    // `bottom` starting at 0 would inflate the content height
+    // `bottom` starting at 0 would inflate the content height. Uses the un-centered position: a short item next
+    // to a tall one must not be seen as taking more room just because it was drawn lower to center it.
     l.bottom    = first_item ? pos.y + size.y : std::max(l.bottom, pos.y + size.y);
     l.right     = first_item ? pos.x + size.x : std::max(l.right, pos.x + size.x);
-    return rect::from_size(pos, size);
+    // shorter items sharing a line with a taller one are centered on it, not stuck at its top; a zero-height
+    // placeholder has nothing to center and must not be nudged by a seed meant for the content drawn after it
+    const f32 dy = size.y > 0.0f ? std::max(0.0f, (target_h - size.y) * 0.5f) : 0.0f;
+    return rect::from_size({pos.x, pos.y + dy}, size);
 }
 
 // rows are submitted whether visible or not (the caller does not know the view), so culled rows skip all their
@@ -2133,10 +2146,8 @@ void context::text_colored(color c, std::string_view s)
     }
     const font_id f = current_font();
     const vec2 size = label_size(f, s);
-    const rect r    = layout_place(size);
-    // text sharing a line with taller widgets is centered on that line
-    const f32 dy = std::max(0.0f, (m_->layout_.line_h - size.y) * 0.5f);
-    label_draw({r.min.x, r.min.y + dy}, c, s, f);
+    const rect r    = layout_place(size); // centered on the line by layout_place itself
+    label_draw(r.min, c, s, f);
     // plain text is an item too, so item_hovered(), item_rect(), tooltip() and context_menu() work after it. it takes
     // no press.
     note_passive_item(widget_id(s), r);

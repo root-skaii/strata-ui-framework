@@ -305,10 +305,9 @@ void context::rich_text(std::string_view markup)
     if (m_->rich_lines_.empty()) {
         return;
     }
-    const rect r  = layout_place(size);
-    const f32  dy = std::max(0.0f, (m_->layout_.line_h - size.y) * 0.5f); // centered on a line shared with taller widgets
+    const rect r = layout_place(size); // centered on the line by layout_place itself
     m_->rich_links_live_ = true;
-    rich_draw({r.min.x, r.min.y + dy});
+    rich_draw(r.min);
     m_->rich_links_live_ = false;
 }
 
