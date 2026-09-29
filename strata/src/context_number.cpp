@@ -73,7 +73,7 @@ bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f
             (void)input_text(id_label, m_->number_buf_, {}, input_flags::select_all_on_focus);
         }
 
-        const bool enter = m_->submitted_;
+        const bool enter = m_->edit_.submitted_;
         if (enter) { m_->focus_id_ = 0; } // enter ends the entry too (the buffer is wiped at the end of the frame)
         if (m_->focus_id_ != wkey) {       // the entry is over: apply it, unless it was cancelled
             m_->number_edit_ = 0;
@@ -139,11 +139,11 @@ bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f
         m_->number_edit_ = wkey;
         m_->focus_id_    = wkey;
         wipe_edit_buffer();
-        m_->edit_buf_.assign(m_->number_buf_);
-        m_->edit_cursor_ = m_->edit_buf_.size();
-        m_->edit_anchor_ = 0;
-        m_->edit_scroll_ = 0.0f;
-        m_->caret_time_  = m_->time_;
+        m_->edit_.edit_buf_.assign(m_->number_buf_);
+        m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
+        m_->edit_.edit_anchor_ = 0;
+        m_->edit_.edit_scroll_ = 0.0f;
+        m_->edit_.caret_time_  = m_->time_;
         m_->focus_seen_  = true;
         m_->press_claimed_ = true;
     }

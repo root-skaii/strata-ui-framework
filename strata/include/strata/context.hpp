@@ -703,6 +703,12 @@ namespace internal { class popup_stack; } // (src/popup_state.hpp)
 namespace internal { struct toast_entry; } // (src/toast_state.hpp)
 namespace internal { struct menu_level; struct menu_frame; } // (src/menu_state.hpp)
 namespace internal { struct code_mode; struct code_state; } // (src/code_state.hpp)
+namespace internal { enum class edit_kind : u8; struct edit_op; struct edit_history; struct ml_line; } // (src/edit_state.hpp)
+namespace internal { struct child_state; struct child_frame; struct card_state; struct card_frame; } // (src/child_card_state.hpp)
+namespace internal { struct rich_run; struct rich_seg; struct rich_line; } // (src/rich_text_state.hpp)
+namespace internal { struct tree_frame; struct tree_state; struct table_state; struct table_column; struct table_frame; } // (src/table_tree_state.hpp)
+namespace internal { struct chart_view; } // (src/chart_state.hpp)
+namespace internal { struct measure_slot; } // (src/measure_cache_state.hpp)
 
 // false when the window is collapsed; end_window always runs
 class window_scope {
@@ -1823,31 +1829,31 @@ private:
     static constexpr u32 max_tables        = 32;
     static constexpr u32 max_table_depth   = 4;
 
-    struct tree_frame;
-    struct tree_state;
+    using tree_frame = internal::tree_frame; // src/table_tree_state.hpp
+    using tree_state = internal::tree_state; // src/table_tree_state.hpp
 
-    struct table_state;
-    struct table_column;
-    struct table_frame;
+    using table_state  = internal::table_state;  // src/table_tree_state.hpp
+    using table_column = internal::table_column; // src/table_tree_state.hpp
+    using table_frame  = internal::table_frame;  // src/table_tree_state.hpp
 
-    struct child_state;
-    struct child_frame;
-    struct card_state;
-    struct card_frame;
+    using child_state = internal::child_state; // src/child_card_state.hpp
+    using child_frame = internal::child_frame; // src/child_card_state.hpp
+    using card_state  = internal::card_state;  // src/child_card_state.hpp
+    using card_frame  = internal::card_frame;  // src/child_card_state.hpp
 
     // docking state lives in internal::dock_state (src/dock_state.hpp)
     static constexpr u8 no_node = 0xff;
 
     // undo history of the focused field
-    enum class edit_kind : u8;
-    struct edit_op;
-    struct edit_history;
-    struct ml_line;
+    using edit_kind    = internal::edit_kind;    // src/edit_state.hpp
+    using edit_op      = internal::edit_op;      // src/edit_state.hpp
+    using edit_history = internal::edit_history; // src/edit_state.hpp
+    using ml_line      = internal::ml_line;      // src/edit_state.hpp
 
     // rich text layout scratch
-    struct rich_run;
-    struct rich_seg;
-    struct rich_line;
+    using rich_run  = internal::rich_run;  // src/rich_text_state.hpp
+    using rich_seg  = internal::rich_seg;  // src/rich_text_state.hpp
+    using rich_line = internal::rich_line; // src/rich_text_state.hpp
 
     // open popup chain (0 = root context / bar menu, 1.. = submenus)
     static constexpr u32 max_menu_levels = 4;
@@ -2040,7 +2046,7 @@ private:
     // what set_scale needs to rebuild the atlas (owned strings; font_config views re-pointed)
     struct font_source;
     // zoomable chart views (survive between frames)
-    struct chart_view;
+    using chart_view = internal::chart_view; // src/chart_state.hpp
     [[nodiscard]] chart_view& chart_view_for(id key) noexcept;
     void chart_impl(std::string_view label, std::span<const plot_series> series, const plot_options& o);
 
@@ -2061,7 +2067,7 @@ private:
     [[nodiscard]] code_state& code_state_for(id key);
 
     // label_size() cache: direct-mapped (font, string) -> size, cleared when the atlas changes. rich labels skip it.
-    struct measure_slot;
+    using measure_slot = internal::measure_slot; // src/measure_cache_state.hpp
     static constexpr u32 measure_cache_size = 4096;   // bulk open also applies to nodes revealed later
 
     // right gutter stack (push_right_gutter)

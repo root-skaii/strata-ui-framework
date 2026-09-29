@@ -166,7 +166,7 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
         for (std::size_t si = 0; si < series.size(); ++si) {
             const color c = series_color(si, series[si].col, m_->style_);
             if (kind == plot_kind::lines) {
-                m_->plot_scratch_.clear();
+                m_->chart_.plot_scratch_.clear();
                 if (static_cast<f32>(n) > width_px * 2.0f) { // more samples than pixels: keep each bucket's extremes
                     const std::size_t buckets = static_cast<std::size_t>(width_px);
                     for (std::size_t b = 0; b < buckets; ++b) {
@@ -180,18 +180,18 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
                         const std::size_t first = std::min(imin, imax);
                         const std::size_t second = std::max(imin, imax);
                         const f32 x = inner.min.x + inner.width() * static_cast<f32>(b) / static_cast<f32>(std::max<std::size_t>(buckets - 1, 1));
-                        m_->plot_scratch_.push_back({x, y_of(sample(series[si], first))});
-                        if (second != first) { m_->plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
+                        m_->chart_.plot_scratch_.push_back({x, y_of(sample(series[si], first))});
+                        if (second != first) { m_->chart_.plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
                     }
                 } else {
                     for (std::size_t i = 0; i < n; ++i) {
-                        m_->plot_scratch_.push_back({n > 1 ? inner.min.x + dx * static_cast<f32>(i) : inner.center().x, y_of(sample(series[si], i))});
+                        m_->chart_.plot_scratch_.push_back({n > 1 ? inner.min.x + dx * static_cast<f32>(i) : inner.center().x, y_of(sample(series[si], i))});
                     }
                 }
-                if (m_->plot_scratch_.size() >= 2) {
-                    m_->dl_.polyline(m_->plot_scratch_, c, compact ? 1.25f : 1.6f, false);
-                } else if (m_->plot_scratch_.size() == 1) {
-                    m_->dl_.circle_filled(m_->plot_scratch_[0], 2.5f, c);
+                if (m_->chart_.plot_scratch_.size() >= 2) {
+                    m_->dl_.polyline(m_->chart_.plot_scratch_, c, compact ? 1.25f : 1.6f, false);
+                } else if (m_->chart_.plot_scratch_.size() == 1) {
+                    m_->dl_.circle_filled(m_->chart_.plot_scratch_[0], 2.5f, c);
                 }
             } else {
                 const f32 base = y_of(std::clamp(0.0f, lo, hi));
@@ -256,8 +256,8 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
 
 context::chart_view& context::chart_view_for(id key) noexcept
 {
-    chart_view* oldest = &m_->chart_views_[0];
-    for (chart_view& v : m_->chart_views_) {
+    chart_view* oldest = &m_->chart_.chart_views_[0];
+    for (chart_view& v : m_->chart_.chart_views_) {
         if (v.key == key) { v.last_frame = m_->frame_; return v; }
         if (v.last_frame < oldest->last_frame) { oldest = &v; }
     }
@@ -270,7 +270,7 @@ context::chart_view& context::chart_view_for(id key) noexcept
 bool context::plot_zoomed(std::string_view label) const
 {
     const id key = hash_id(label, current_seed());
-    for (const chart_view& v : m_->chart_views_) {
+    for (const chart_view& v : m_->chart_.chart_views_) {
         if (v.key == key) { return v.x_set || v.y_set; }
     }
     return false;
@@ -279,7 +279,7 @@ bool context::plot_zoomed(std::string_view label) const
 vec2 context::plot_x_range(std::string_view label) const
 {
     const id key = hash_id(label, current_seed());
-    for (const chart_view& v : m_->chart_views_) {
+    for (const chart_view& v : m_->chart_.chart_views_) {
         if (v.key == key) { return {v.sx_lo, v.sx_hi}; }
     }
     return {};
@@ -288,7 +288,7 @@ vec2 context::plot_x_range(std::string_view label) const
 void context::plot_reset_view(std::string_view label)
 {
     const id key = widget_id(label);
-    for (chart_view& v : m_->chart_views_) {
+    for (chart_view& v : m_->chart_.chart_views_) {
         if (v.key == key) { v.x_set = v.y_set = false; }
     }
 }
@@ -497,7 +497,7 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
             const color c = series_color(si, series[si].col, m_->style_);
             if (!hist) {
                 if (pass == 0 && !o.fill) { continue; }
-                m_->plot_scratch_.clear();
+                m_->chart_.plot_scratch_.clear();
                 if (static_cast<f32>(count) > width_px * 2.0f) { // more samples than pixels: keep each bucket's extremes
                     const std::size_t buckets = static_cast<std::size_t>(width_px);
                     for (std::size_t b = 0; b < buckets; ++b) {
@@ -511,20 +511,20 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
                         const f32 x = x_of(o.x_start + static_cast<f32>(from) * x_step);
                         const std::size_t first = std::min(imin, imax);
                         const std::size_t second = std::max(imin, imax);
-                        m_->plot_scratch_.push_back({x, y_of(sample(series[si], first))});
-                        if (second != first) { m_->plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
+                        m_->chart_.plot_scratch_.push_back({x, y_of(sample(series[si], first))});
+                        if (second != first) { m_->chart_.plot_scratch_.push_back({x, y_of(sample(series[si], second))}); }
                     }
                 } else {
                     for (std::size_t i = i0; i <= i1; ++i) {
-                        m_->plot_scratch_.push_back({x_of(o.x_start + static_cast<f32>(i) * x_step), y_of(sample(series[si], i))});
+                        m_->chart_.plot_scratch_.push_back({x_of(o.x_start + static_cast<f32>(i) * x_step), y_of(sample(series[si], i))});
                     }
                 }
                 if (pass == 0) {
-                    if (m_->plot_scratch_.size() >= 2) { m_->dl_.area_fill(m_->plot_scratch_, base_y, c.scaled_alpha(o.fill_alpha), c.scaled_alpha(0.0f)); }
-                } else if (m_->plot_scratch_.size() >= 2) {
-                    m_->dl_.polyline(m_->plot_scratch_, c, 1.6f, false);
-                } else if (m_->plot_scratch_.size() == 1) {
-                    m_->dl_.circle_filled(m_->plot_scratch_[0], 2.5f, c);
+                    if (m_->chart_.plot_scratch_.size() >= 2) { m_->dl_.area_fill(m_->chart_.plot_scratch_, base_y, c.scaled_alpha(o.fill_alpha), c.scaled_alpha(0.0f)); }
+                } else if (m_->chart_.plot_scratch_.size() >= 2) {
+                    m_->dl_.polyline(m_->chart_.plot_scratch_, c, 1.6f, false);
+                } else if (m_->chart_.plot_scratch_.size() == 1) {
+                    m_->dl_.circle_filled(m_->chart_.plot_scratch_[0], 2.5f, c);
                 }
             } else if (pass == 1) {
                 const f32 bw_full = x_step * kx;

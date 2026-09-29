@@ -142,12 +142,12 @@ void context::apply_input_mask()
 {
     const std::vector<mask_slot> slots = parse_mask(m_->edit_mask_);
     std::size_t before = 0;
-    const std::string raw = mask_extract(slots, m_->edit_buf_, m_->edit_cursor_, before);
+    const std::string raw = mask_extract(slots, m_->edit_.edit_buf_, m_->edit_.edit_cursor_, before);
     std::size_t caret = 0;
     const std::string out = mask_format(slots, raw, before, caret);
-    m_->edit_buf_.assign(out.data(), out.size());
-    m_->edit_cursor_ = m_->edit_anchor_ = caret;
-    ++m_->edit_version_;
+    m_->edit_.edit_buf_.assign(out.data(), out.size());
+    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = caret;
+    ++m_->edit_.edit_version_;
 }
 
 bool context::input_masked(std::string_view label, std::string& value, std::string_view mask, std::string_view hint,
@@ -166,8 +166,8 @@ bool context::input_masked(std::string_view label, std::string& value, std::stri
     bool changed = input_core(label, value, hint, flags, mask.size() + 8);
     m_->edit_mask_ = {};
     if (changed) { // refused characters are dropped, possibly leaving the text unchanged
-        changed = std::string_view{m_->edit_buf_} != std::string_view{value};
-        if (changed) { value.assign(m_->edit_buf_.data(), m_->edit_buf_.size()); }
+        changed = std::string_view{m_->edit_.edit_buf_} != std::string_view{value};
+        if (changed) { value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size()); }
     }
     return changed;
 }
@@ -208,10 +208,10 @@ void context::code_find(std::string_view label, std::string_view text, bool with
 // Tab / Shift+Tab over the lines a selection touches (or the caret's line)
 bool context::edit_indent_lines(bool unindent, int tab_size)
 {
-    const std::string_view t = m_->edit_buf_;
+    const std::string_view t = m_->edit_.edit_buf_;
     const std::size_t tab = static_cast<std::size_t>(std::max(tab_size, 1));
-    const std::size_t lo  = std::min(m_->edit_cursor_, m_->edit_anchor_);
-    const std::size_t hi  = std::max(m_->edit_cursor_, m_->edit_anchor_);
+    const std::size_t lo  = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+    const std::size_t hi  = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
     const std::size_t nl  = lo == 0 ? npos : t.rfind('\n', lo - 1);
     const std::size_t s   = nl == npos ? 0 : nl + 1;
     std::size_t e = hi;
@@ -254,10 +254,10 @@ bool context::edit_indent_lines(bool unindent, int tab_size)
     const bool changed = edit_replace(s, e - s, out, edit_kind::other);
     if (lo == hi) {
         const std::ptrdiff_t at = static_cast<std::ptrdiff_t>(lo) + first_delta;
-        m_->edit_cursor_ = m_->edit_anchor_ = std::clamp<std::size_t>(static_cast<std::size_t>(std::max<std::ptrdiff_t>(at, 0)), s, s + out.size());
+        m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::clamp<std::size_t>(static_cast<std::size_t>(std::max<std::ptrdiff_t>(at, 0)), s, s + out.size());
     } else {
-        m_->edit_anchor_ = s;
-        m_->edit_cursor_ = s + out.size();
+        m_->edit_.edit_anchor_ = s;
+        m_->edit_.edit_cursor_ = s + out.size();
     }
     return changed;
 }
@@ -272,15 +272,15 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
     const id   key           = widget_id(label);
     const bool focused_here  = m_->focus_id_ == key;
     const bool find_shortcut = has(code_flags::find_replace) && focused_here;
-    const std::size_t caret  = focused_here ? std::min(m_->edit_cursor_, m_->edit_anchor_) : 0;
+    const std::size_t caret  = focused_here ? std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_) : 0;
     code_state& cs = code_state_for(key);
 
     bool changed = false;
     std::size_t goto_offset = npos;
 
     // input_spans() is for the code field: the find bar's own text fields must not use it up
-    std::vector<text_span> spans = std::move(m_->edit_spans_pending_);
-    m_->edit_spans_pending_.clear();
+    std::vector<text_span> spans = std::move(m_->edit_.edit_spans_pending_);
+    m_->edit_.edit_spans_pending_.clear();
 
     if (has(code_flags::find_replace)) {
         push_id(label);
@@ -374,11 +374,11 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
             if (off != npos) { ++off; }
         }
         goto_offset = off == npos ? value.size() : off;
-        if (focused_here) { m_->edit_cursor_ = m_->edit_anchor_ = std::min(goto_offset, m_->edit_buf_.size()); }
+        if (focused_here) { m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::min(goto_offset, m_->edit_.edit_buf_.size()); }
         cs.want_line = 0;
     }
 
-    m_->edit_spans_pending_ = std::move(spans);
+    m_->edit_.edit_spans_pending_ = std::move(spans);
 
     m_->code_ = {};
     m_->code_.on          = true;
@@ -392,7 +392,7 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
     vec2 field = size;
     if (field.y <= 0.0f) { field.y = m_->font_.line_height(current_font()) * 12.0f + m_->style_.frame_padding.y * 2.0f; }
     if (input_multiline_core(label, value, field, input_flags::no_wrap, hint, max_bytes)) {
-        value.assign(m_->edit_buf_.data(), m_->edit_buf_.size());
+        value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
         changed = true;
     }
     return changed;

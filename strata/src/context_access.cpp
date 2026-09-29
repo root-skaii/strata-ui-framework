@@ -30,7 +30,7 @@ cursor_kind context::cursor() const noexcept
 { return m_->cursor_; }
 
 bool context::input_submitted() const noexcept
-{ return m_->submitted_; }
+{ return m_->edit_.submitted_; }
 
 void context::set_clipboard(const clipboard_hooks& hooks) noexcept
 { m_->clipboard_ = hooks; }
@@ -75,13 +75,13 @@ void context::set_next_item_width(f32 w) noexcept
 { m_->layout_.next_width = w; }
 
 bool context::ime_wanted() const noexcept
-{ return m_->ime_want_; }
+{ return m_->edit_.ime_want_; }
 
 vec2 context::ime_position() const noexcept
-{ return m_->ime_pos_; }
+{ return m_->edit_.ime_pos_; }
 
 f32 context::ime_line_height() const noexcept
-{ return m_->ime_line_h_; }
+{ return m_->edit_.ime_line_h_; }
 
 bool context::ime_composing() const noexcept
 { return m_->input_.ime_len_ != 0; }
@@ -90,10 +90,10 @@ std::string_view context::ime_composition() const noexcept
 { return {m_->input_.ime_text_.data(), m_->input_.ime_len_}; }
 
 bool context::item_pressed() const noexcept
-{ return m_->item_pressed_; }
+{ return m_->tree_table_.item_pressed_; }
 
 void context::set_next_item_gutter(f32 width) noexcept
-{ m_->next_gutter_ = width; }
+{ m_->accessory_.next_gutter_ = width; }
 
 void context::set_next_item_open(bool open) noexcept
 { m_->next_open_ = open ? 1 : 2; }
@@ -108,19 +108,19 @@ bool context::item_focused() const noexcept
 { return m_->last_item_focused_ || (m_->focus_id_ != 0 && m_->focus_id_ == m_->last_item_key_); }
 
 std::string_view context::rich_link_clicked() const noexcept
-{ return m_->rich_clicked_; }
+{ return m_->rich_.rich_clicked_; }
 
 std::string_view context::rich_link_hovered() const noexcept
-{ return m_->rich_hovered_; }
+{ return m_->rich_.rich_hovered_; }
 
 void context::push_rich_labels() noexcept
-{ ++m_->rich_depth_; }
+{ ++m_->rich_.rich_depth_; }
 
 void context::pop_rich_labels() noexcept
-{ if (m_->rich_depth_ > 0) { --m_->rich_depth_; } }
+{ if (m_->rich_.rich_depth_ > 0) { --m_->rich_.rich_depth_; } }
 
 bool context::rich_labels_active() const noexcept
-{ return m_->rich_depth_ > 0; }
+{ return m_->rich_.rich_depth_ > 0; }
 
 void context::push_alpha(f32 a) noexcept
 { m_->dl_.push_alpha(a); }
@@ -172,10 +172,10 @@ rect context::last_item_rect() const noexcept
 { return m_->last_item_rect_; }
 
 bool context::dragging() const noexcept
-{ return m_->dd_active_; }
+{ return m_->dnd_.dd_active_; }
 
 std::string_view context::drag_payload_type() const noexcept
-{ return m_->dd_active_ ? std::string_view{m_->dd_type_} : std::string_view{}; }
+{ return m_->dnd_.dd_active_ ? std::string_view{m_->dnd_.dd_type_} : std::string_view{}; }
 
 void context::push_selectable_text() noexcept
 { ++m_->selectable_depth_; }
@@ -187,7 +187,7 @@ bool context::modal_open() const noexcept
 { return m_->modal_.modal_count_ != 0; }
 
 u64 context::confirm_data() const noexcept
-{ return m_->confirm_data_; }
+{ return m_->confirm_.confirm_data_; }
 
 f32 context::main_menu_bar_height() const noexcept
 { return m_->menu_.menu_bar_h_; }
@@ -317,13 +317,13 @@ id context::current_seed() const noexcept
 
 void context::note_row_anchor(id key, const rect& r) noexcept
 {
-    m_->row_anchor_      = key;
-    m_->row_anchor_rect_ = r;
+    m_->accessory_.row_anchor_      = key;
+    m_->accessory_.row_anchor_rect_ = r;
 }
 
 bool context::caret_visible() const noexcept
 {
-    return m_->caret_blink_ <= 0.0f || std::fmod(m_->time_ - m_->caret_time_, 2.0 * m_->caret_blink_) < m_->caret_blink_;
+    return m_->caret_blink_ <= 0.0f || std::fmod(m_->time_ - m_->edit_.caret_time_, 2.0 * m_->caret_blink_) < m_->caret_blink_;
 }
 
 } // namespace strata

@@ -138,13 +138,13 @@ static void parse_rich_runs(std::string_view s, font_id base_font, color base_co
 // runs share a baseline (tallest ascent); the line is as tall as its tallest run.
 vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f32 wrap_width, bool markup)
 {
-    m_->rich_runs_.clear();
-    m_->rich_segs_.clear();
-    m_->rich_lines_.clear();
+    m_->rich_.rich_runs_.clear();
+    m_->rich_.rich_segs_.clear();
+    m_->rich_.rich_lines_.clear();
     if (markup) {
-        parse_rich_runs(text, base, base_col, m_->font_.font_count(), m_->rich_runs_);
+        parse_rich_runs(text, base, base_col, m_->font_.font_count(), m_->rich_.rich_runs_);
     } else if (!text.empty()) {
-        m_->rich_runs_.push_back({text, base, base_col, text_flags::none, {}, false});
+        m_->rich_.rich_runs_.push_back({text, base, base_col, text_flags::none, {}, false});
     }
 
     f32 x = 0.0f;                 // pen on the current line (approximate while wrapping)
@@ -160,13 +160,13 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
         desc = std::max(desc, m_->font_.line_height(f) - a);
     };
     const auto end_line = [&] {
-        const u32 count = static_cast<u32>(m_->rich_segs_.size()) - line_first;
+        const u32 count = static_cast<u32>(m_->rich_.rich_segs_.size()) - line_first;
         if (count == 0) { // an empty line is as high as the base font
             note_font(base);
         }
         f32 pen = 0.0f;
         for (u32 k = line_first; k < line_first + count; ++k) {
-            rich_seg& seg = m_->rich_segs_[k];
+            rich_seg& seg = m_->rich_.rich_segs_[k];
             seg.x = pen;
             pen  += m_->font_.measure(seg.font, seg.text).x; // exact, kerning included
         }
@@ -177,10 +177,10 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
         line.asc    = asc;
         line.height = asc + desc;
         line.y      = y;
-        m_->rich_lines_.push_back(line);
+        m_->rich_.rich_lines_.push_back(line);
         y += line.height;
         max_width = std::max(max_width, pen);
-        line_first = static_cast<u32>(m_->rich_segs_.size());
+        line_first = static_cast<u32>(m_->rich_.rich_segs_.size());
         x = 0.0f;
         asc = desc = 0.0f;
     };
@@ -188,8 +188,8 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
     const auto add = [&](const rich_run& run, std::size_t a, std::size_t b, f32 w) {
         if (b <= a) { return; }
         const std::string_view piece = run.text.substr(a, b - a);
-        if (m_->rich_segs_.size() > line_first) {
-            rich_seg& last = m_->rich_segs_.back();
+        if (m_->rich_.rich_segs_.size() > line_first) {
+            rich_seg& last = m_->rich_.rich_segs_.back();
             if (last.font == run.font && last.col == run.col && last.style == run.style && last.link == run.link &&
                 last.text.data() + last.text.size() == piece.data()) {
                 last.text = std::string_view{last.text.data(), last.text.size() + piece.size()};
@@ -198,12 +198,12 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
                 return;
             }
         }
-        m_->rich_segs_.push_back({piece, run.font, run.col, run.style, 0.0f, run.link, run.own_col});
+        m_->rich_.rich_segs_.push_back({piece, run.font, run.col, run.style, 0.0f, run.link, run.own_col});
         x += w;
         note_font(run.font);
     };
 
-    for (const rich_run& run : m_->rich_runs_) {
+    for (const rich_run& run : m_->rich_.rich_runs_) {
         const std::string_view t = run.text;
         std::size_t i = 0;
         while (i < t.size()) {
@@ -238,7 +238,7 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
             i = te;
         }
     }
-    if (!m_->rich_segs_.empty() || !m_->rich_lines_.empty() || !text.empty()) {
+    if (!m_->rich_.rich_segs_.empty() || !m_->rich_.rich_lines_.empty() || !text.empty()) {
         end_line();
     }
     return {max_width, y};
@@ -246,9 +246,9 @@ vec2 context::rich_layout(std::string_view text, font_id base, color base_col, f
 
 void context::rich_draw(vec2 pos)
 {
-    for (const rich_line& line : m_->rich_lines_) {
+    for (const rich_line& line : m_->rich_.rich_lines_) {
         for (u32 k = line.first; k < line.first + line.count; ++k) {
-            const rich_seg& seg = m_->rich_segs_[k];
+            const rich_seg& seg = m_->rich_.rich_segs_[k];
             const vec2 at{pos.x + seg.x, pos.y + line.y + line.asc - m_->font_.ascent(seg.font)};
             color      col   = seg.col;
             text_flags style = seg.style;
@@ -257,16 +257,16 @@ void context::rich_draw(vec2 pos)
                 // accent colour unless the markup chose one, always underlined so links are visible without hovering
                 if (!seg.own_col) { col = m_->style_.accent; }
                 style = style | text_flags::underline;
-                if (m_->rich_links_live_) {
+                if (m_->rich_.rich_links_live_) {
                     // measured only for links; every other segment gets its width from the next one's x
                     const f32  w = m_->font_.measure(seg.font, seg.text).x;
                     const rect box{at, {at.x + w, at.y + m_->font_.line_height(seg.font)}};
                     if (pointer_over(box)) {
                         m_->cursor_        = cursor_kind::hand;
-                        m_->rich_hovered_.assign(seg.link);
+                        m_->rich_.rich_hovered_.assign(seg.link);
                         if (!seg.own_col) { col = m_->style_.accent_hover; }
                         if (m_->input_.mouse_pressed_) {
-                            m_->rich_clicked_.assign(seg.link);
+                            m_->rich_.rich_clicked_.assign(seg.link);
                             m_->press_claimed_ = true; // the click belongs to the link, not to the window behind it
                         }
                     }
@@ -279,7 +279,7 @@ void context::rich_draw(vec2 pos)
 
 vec2 context::label_size(font_id f, std::string_view s)
 {
-    if (m_->rich_depth_ == 0) {
+    if (m_->rich_.rich_depth_ == 0) {
         return measure_cached(f, s);
     }
     const vec2 size = rich_layout(s, f, m_->style_.text, 0.0f, true);
@@ -288,7 +288,7 @@ vec2 context::label_size(font_id f, std::string_view s)
 
 void context::label_draw(vec2 pos, color c, std::string_view s, font_id f)
 {
-    if (m_->rich_depth_ == 0) {
+    if (m_->rich_.rich_depth_ == 0) {
         m_->dl_.text(pos, c, s, f);
         return;
     }
@@ -302,13 +302,13 @@ void context::rich_text(std::string_view markup)
         return;
     }
     const vec2 size = rich_layout(markup, current_font(), m_->style_.text, 0.0f, true);
-    if (m_->rich_lines_.empty()) {
+    if (m_->rich_.rich_lines_.empty()) {
         return;
     }
     const rect r = layout_place(size); // centered on the line by layout_place itself
-    m_->rich_links_live_ = true;
+    m_->rich_.rich_links_live_ = true;
     rich_draw(r.min);
-    m_->rich_links_live_ = false;
+    m_->rich_.rich_links_live_ = false;
 }
 
 void context::rich_text_wrapped(std::string_view markup)
@@ -319,13 +319,13 @@ void context::rich_text_wrapped(std::string_view markup)
     const f32 w = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
     m_->layout_.next_width = 0.0f;
     const vec2 size = rich_layout(markup, current_font(), m_->style_.text, std::max(w, 1.0f), true);
-    if (m_->rich_lines_.empty()) {
+    if (m_->rich_.rich_lines_.empty()) {
         return;
     }
     const rect r = layout_place(size);
-    m_->rich_links_live_ = true;
+    m_->rich_.rich_links_live_ = true;
     rich_draw(r.min);
-    m_->rich_links_live_ = false;
+    m_->rich_.rich_links_live_ = false;
 }
 
 void context::text_wrapped_colored(color c, std::string_view s)
@@ -340,8 +340,8 @@ void context::text_wrapped_colored(color c, std::string_view s)
     }
     const f32 w = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
     m_->layout_.next_width = 0.0f;
-    const vec2 size = rich_layout(s, current_font(), c, std::max(w, 1.0f), m_->rich_depth_ > 0);
-    if (m_->rich_lines_.empty()) {
+    const vec2 size = rich_layout(s, current_font(), c, std::max(w, 1.0f), m_->rich_.rich_depth_ > 0);
+    if (m_->rich_.rich_lines_.empty()) {
         return;
     }
     const rect r = layout_place(size);

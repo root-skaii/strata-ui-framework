@@ -68,7 +68,7 @@ void wipe_tail(secure_string& s, std::size_t from) noexcept
 
 void context::edit_history_clear() noexcept
 {
-    for (edit_history* h : {&m_->undo_, &m_->redo_}) {
+    for (edit_history* h : {&m_->edit_.undo_, &m_->edit_.redo_}) {
         h->text.resize(h->text.capacity()); // also reaches what an earlier, longer text left behind
         detail::secure_wipe(h->text.data(), h->text.size());
         h->text.clear();
@@ -103,31 +103,31 @@ void context::edit_history_add(edit_history& h, const edit_op& op, std::string_v
 // second merges into one step.
 bool context::edit_replace(std::size_t pos, std::size_t len, std::string_view with, edit_kind kind)
 {
-    pos = std::min(pos, m_->edit_buf_.size());
-    len = std::min(len, m_->edit_buf_.size() - pos);
+    pos = std::min(pos, m_->edit_.edit_buf_.size());
+    len = std::min(len, m_->edit_.edit_buf_.size() - pos);
     if (len == 0 && with.empty()) {
         return false;
     }
 
-    if (m_->edit_history_on_) {
+    if (m_->edit_.edit_history_on_) {
         bool merged = false;
-        if (!m_->undo_.ops.empty() && kind != edit_kind::other) {
-            edit_op& last = m_->undo_.ops.back();
+        if (!m_->edit_.undo_.ops.empty() && kind != edit_kind::other) {
+            edit_op& last = m_->edit_.undo_.ops.back();
             if (last.kind == kind && m_->time_ - last.time < 1.0) {
-                const std::string_view removed = std::string_view{m_->edit_buf_}.substr(pos, len);
+                const std::string_view removed = std::string_view{m_->edit_.edit_buf_}.substr(pos, len);
                 if (kind == edit_kind::typing && last.rem_len == 0 && len == 0 && pos == last.pos + last.ins_len) {
-                    m_->undo_.text.append(with);
+                    m_->edit_.undo_.text.append(with);
                     last.ins_len     += with.size();
                     last.cursor_after = pos + with.size();
                     merged = true;
                 } else if (kind == edit_kind::erase_back && last.ins_len == 0 && with.empty() && pos + len == last.pos) {
-                    m_->undo_.text.insert(last.off, removed);
+                    m_->edit_.undo_.text.insert(last.off, removed);
                     last.rem_len     += len;
                     last.pos          = pos;
                     last.cursor_after = pos;
                     merged = true;
                 } else if (kind == edit_kind::erase_fwd && last.ins_len == 0 && with.empty() && pos == last.pos) {
-                    m_->undo_.text.append(removed);
+                    m_->edit_.undo_.text.append(removed);
                     last.rem_len     += len;
                     last.cursor_after = pos;
                     merged = true;
@@ -140,46 +140,46 @@ bool context::edit_replace(std::size_t pos, std::size_t len, std::string_view wi
             op.pos           = pos;
             op.rem_len       = len;
             op.ins_len       = with.size();
-            op.cursor_before = m_->edit_cursor_;
-            op.anchor_before = m_->edit_anchor_;
+            op.cursor_before = m_->edit_.edit_cursor_;
+            op.anchor_before = m_->edit_.edit_anchor_;
             op.cursor_after  = pos + with.size();
             op.kind          = kind;
             op.time          = m_->time_;
-            edit_history_add(m_->undo_, op, std::string_view{m_->edit_buf_}.substr(pos, len), with);
+            edit_history_add(m_->edit_.undo_, op, std::string_view{m_->edit_.edit_buf_}.substr(pos, len), with);
         }
         // a new change ends the redo chain
-        m_->redo_.text.resize(m_->redo_.text.capacity());
-        detail::secure_wipe(m_->redo_.text.data(), m_->redo_.text.size());
-        m_->redo_.text.clear();
-        m_->redo_.ops.clear();
+        m_->edit_.redo_.text.resize(m_->edit_.redo_.text.capacity());
+        detail::secure_wipe(m_->edit_.redo_.text.data(), m_->edit_.redo_.text.size());
+        m_->edit_.redo_.text.clear();
+        m_->edit_.redo_.ops.clear();
     }
 
-    m_->edit_buf_.replace(pos, len, with);
-    m_->edit_cursor_ = m_->edit_anchor_ = pos + with.size();
-    ++m_->edit_version_;
+    m_->edit_.edit_buf_.replace(pos, len, with);
+    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = pos + with.size();
+    ++m_->edit_.edit_version_;
     return true;
 }
 
 bool context::edit_delete_selection()
 {
-    if (m_->edit_cursor_ == m_->edit_anchor_) {
+    if (m_->edit_.edit_cursor_ == m_->edit_.edit_anchor_) {
         return false;
     }
-    const std::size_t lo = std::min(m_->edit_cursor_, m_->edit_anchor_);
-    const std::size_t hi = std::max(m_->edit_cursor_, m_->edit_anchor_);
+    const std::size_t lo = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+    const std::size_t hi = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
     return edit_replace(lo, hi - lo, {}, edit_kind::other);
 }
 
 // typed / pasted text replaces the selection; cut at the byte limit on a code point boundary
 bool context::edit_insert(std::string_view s, bool typed)
 {
-    if (m_->edit_readonly_) {
+    if (m_->edit_.edit_readonly_) {
         return false;
     }
-    const std::size_t lo   = std::min(m_->edit_cursor_, m_->edit_anchor_);
-    const std::size_t hi   = std::max(m_->edit_cursor_, m_->edit_anchor_);
-    const std::size_t base = m_->edit_buf_.size() - (hi - lo);
-    const std::size_t room = m_->edit_max_bytes_ > base ? m_->edit_max_bytes_ - base : 0;
+    const std::size_t lo   = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+    const std::size_t hi   = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+    const std::size_t base = m_->edit_.edit_buf_.size() - (hi - lo);
+    const std::size_t room = m_->edit_.edit_max_bytes_ > base ? m_->edit_.edit_max_bytes_ - base : 0;
     if (s.size() > room) {
         std::size_t n = room;
         while (n > 0 && n < s.size() && is_continuation(s[n])) { --n; }
@@ -193,60 +193,60 @@ bool context::edit_insert(std::string_view s, bool typed)
 
 bool context::edit_undo()
 {
-    if (!m_->edit_history_on_ || m_->undo_.ops.empty()) {
+    if (!m_->edit_.edit_history_on_ || m_->edit_.undo_.ops.empty()) {
         return false;
     }
-    const edit_op op = m_->undo_.ops.back();
-    if (op.pos + op.ins_len > m_->edit_buf_.size()) { // the buffer was changed behind our back: the history is useless
+    const edit_op op = m_->edit_.undo_.ops.back();
+    if (op.pos + op.ins_len > m_->edit_.edit_buf_.size()) { // the buffer was changed behind our back: the history is useless
         edit_history_clear();
         return false;
     }
-    const std::string_view removed{m_->undo_.text.data() + op.off, op.rem_len};
-    const std::string_view inserted{m_->undo_.text.data() + op.off + op.rem_len, op.ins_len};
-    edit_history_add(m_->redo_, op, removed, inserted);
-    m_->edit_buf_.replace(op.pos, op.ins_len, removed);
+    const std::string_view removed{m_->edit_.undo_.text.data() + op.off, op.rem_len};
+    const std::string_view inserted{m_->edit_.undo_.text.data() + op.off + op.rem_len, op.ins_len};
+    edit_history_add(m_->edit_.redo_, op, removed, inserted);
+    m_->edit_.edit_buf_.replace(op.pos, op.ins_len, removed);
 
-    wipe_tail(m_->undo_.text, op.off);
-    m_->undo_.ops.pop_back();
-    m_->edit_cursor_ = std::min(op.cursor_before, m_->edit_buf_.size());
-    m_->edit_anchor_ = std::min(op.anchor_before, m_->edit_buf_.size());
-    ++m_->edit_version_;
+    wipe_tail(m_->edit_.undo_.text, op.off);
+    m_->edit_.undo_.ops.pop_back();
+    m_->edit_.edit_cursor_ = std::min(op.cursor_before, m_->edit_.edit_buf_.size());
+    m_->edit_.edit_anchor_ = std::min(op.anchor_before, m_->edit_.edit_buf_.size());
+    ++m_->edit_.edit_version_;
     return true;
 }
 
 bool context::edit_redo()
 {
-    if (!m_->edit_history_on_ || m_->redo_.ops.empty()) {
+    if (!m_->edit_.edit_history_on_ || m_->edit_.redo_.ops.empty()) {
         return false;
     }
-    const edit_op op = m_->redo_.ops.back();
-    if (op.pos + op.rem_len > m_->edit_buf_.size()) {
+    const edit_op op = m_->edit_.redo_.ops.back();
+    if (op.pos + op.rem_len > m_->edit_.edit_buf_.size()) {
         edit_history_clear();
         return false;
     }
-    const std::string_view removed{m_->redo_.text.data() + op.off, op.rem_len};
-    const std::string_view inserted{m_->redo_.text.data() + op.off + op.rem_len, op.ins_len};
-    edit_history_add(m_->undo_, op, removed, inserted);
-    m_->edit_buf_.replace(op.pos, op.rem_len, inserted);
+    const std::string_view removed{m_->edit_.redo_.text.data() + op.off, op.rem_len};
+    const std::string_view inserted{m_->edit_.redo_.text.data() + op.off + op.rem_len, op.ins_len};
+    edit_history_add(m_->edit_.undo_, op, removed, inserted);
+    m_->edit_.edit_buf_.replace(op.pos, op.rem_len, inserted);
 
-    wipe_tail(m_->redo_.text, op.off);
-    m_->redo_.ops.pop_back();
-    m_->edit_cursor_ = m_->edit_anchor_ = std::min(op.cursor_after, m_->edit_buf_.size());
-    ++m_->edit_version_;
+    wipe_tail(m_->edit_.redo_.text, op.off);
+    m_->edit_.redo_.ops.pop_back();
+    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::min(op.cursor_after, m_->edit_.edit_buf_.size());
+    ++m_->edit_.edit_version_;
     return true;
 }
 
 // ctrl+a / c / x / v / z / y on the focused field. returns true when the text changed.
 bool context::edit_shortcut(const key_event& ev, bool password, bool multiline)
 {
-    const std::string_view t = m_->edit_buf_;
-    const std::size_t lo = std::min(m_->edit_cursor_, m_->edit_anchor_);
-    const std::size_t hi = std::max(m_->edit_cursor_, m_->edit_anchor_);
+    const std::string_view t = m_->edit_.edit_buf_;
+    const std::size_t lo = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+    const std::size_t hi = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
 
     switch (ev.k) {
     case key::a:
-        m_->edit_anchor_ = 0;
-        m_->edit_cursor_ = t.size();
+        m_->edit_.edit_anchor_ = 0;
+        m_->edit_.edit_cursor_ = t.size();
         return false;
     case key::c:
         if (!password && lo != hi && m_->clipboard_.set != nullptr) {
@@ -254,7 +254,7 @@ bool context::edit_shortcut(const key_event& ev, bool password, bool multiline)
         }
         return false;
     case key::x:
-        if (!password && !m_->edit_readonly_ && lo != hi) {
+        if (!password && !m_->edit_.edit_readonly_ && lo != hi) {
             if (m_->clipboard_.set != nullptr) {
                 m_->clipboard_.set(m_->clipboard_.user, t.substr(lo, hi - lo));
             }
@@ -262,7 +262,7 @@ bool context::edit_shortcut(const key_event& ev, bool password, bool multiline)
         }
         return false;
     case key::v: {
-        if (m_->edit_readonly_ || m_->clipboard_.get == nullptr) {
+        if (m_->edit_.edit_readonly_ || m_->clipboard_.get == nullptr) {
             return false;
         }
         std::string pasted;
@@ -305,9 +305,9 @@ bool context::edit_shortcut(const key_event& ev, bool password, bool multiline)
 std::size_t context::ml_line_of(std::size_t index) const noexcept
 {
     // the last line that starts at or before the index (a wrapped line owns its first position)
-    const auto it = std::upper_bound(m_->ml_lines_.begin(), m_->ml_lines_.end(), index,
+    const auto it = std::upper_bound(m_->edit_.ml_lines_.begin(), m_->edit_.ml_lines_.end(), index,
                                      [](std::size_t i, const ml_line& l) { return i < l.start; });
-    return it == m_->ml_lines_.begin() ? 0 : static_cast<std::size_t>(it - m_->ml_lines_.begin()) - 1;
+    return it == m_->edit_.ml_lines_.begin() ? 0 : static_cast<std::size_t>(it - m_->edit_.ml_lines_.begin()) - 1;
 }
 
 // splits into display lines at '\n' and, with `wrap`, at word boundaries past `width`
@@ -316,15 +316,15 @@ void context::ml_layout(std::string_view t, f32 width, font_id f, bool wrap)
     u64 h = 1469598103934665603ull; // fnv-1a over the text, so an unchanged text keeps its lines
     for (const char c : t) { h = (h ^ static_cast<u8>(c)) * 1099511628211ull; }
     h ^= (static_cast<u64>(std::bit_cast<u32>(width)) << 24) ^ (static_cast<u64>(f) << 56) ^ (wrap ? 0x5bd1e995ull : 0ull) ^
-         (static_cast<u64>(t.size()) * 0x9e3779b97f4a7c15ull) ^ (m_->edit_spans_hash_ * 0xff51afd7ed558ccdull);
-    if (h == m_->ml_cache_key_ && !m_->ml_lines_.empty()) {
+         (static_cast<u64>(t.size()) * 0x9e3779b97f4a7c15ull) ^ (m_->edit_.edit_spans_hash_ * 0xff51afd7ed558ccdull);
+    if (h == m_->edit_.ml_cache_key_ && !m_->edit_.ml_lines_.empty()) {
         return;
     }
-    m_->ml_cache_key_ = h;
-    m_->ml_lines_.clear();
+    m_->edit_.ml_cache_key_ = h;
+    m_->edit_.ml_lines_.clear();
 
     const auto push = [&](std::size_t a, std::size_t b) {
-        m_->ml_lines_.push_back({static_cast<u32>(a), static_cast<u32>(b)});
+        m_->edit_.ml_lines_.push_back({static_cast<u32>(a), static_cast<u32>(b)});
     };
     const auto break_line = [&](std::size_t ls, std::size_t le) {
         if (!wrap || ls == le || ed_measure(f, t, ls, le) <= width) {
@@ -393,7 +393,7 @@ bool context::input_multiline(std::string_view label, std::string& value, vec2 s
                               std::string_view hint, std::size_t max_bytes)
 {
     if (input_multiline_core(label, value, size, flags, hint, max_bytes)) {
-        value.assign(m_->edit_buf_.data(), m_->edit_buf_.size());
+        value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
         return true;
     }
     return false;
@@ -403,7 +403,7 @@ bool context::input_multiline(std::string_view label, secure_string& value, vec2
                               std::string_view hint, std::size_t max_bytes)
 {
     if (input_multiline_core(label, value, size, flags, hint, max_bytes)) {
-        value.assign(m_->edit_buf_.data(), m_->edit_buf_.size());
+        value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
         return true;
     }
     return false;
@@ -422,7 +422,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     const bool    readonly = has_flag(flags, input_flags::read_only);
     const bool    wrap     = !has_flag(flags, input_flags::no_wrap);
     const id      key      = widget_id(label);
-    ed_prepare_spans(m_->focus_id_ == key ? m_->edit_buf_.size() : current.size(), fnt, lh, asc, false);
+    ed_prepare_spans(m_->focus_id_ == key ? m_->edit_.edit_buf_.size() : current.size(), fnt, lh, asc, false);
 
     // what input_code asks of this field (it applies to this call only)
     const code_mode code = m_->code_;
@@ -441,8 +441,8 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         m_->layout_.next_width = 0.0f;
         f32 h = size.y;
         if (auto_h || h <= 0.0f) {
-            ml_layout(m_->focus_id_ == key ? std::string_view{m_->edit_buf_} : current, std::max(w, 8.0f), fnt, wrap);
-            h = static_cast<f32>(m_->ml_lines_.size()) * lh;
+            ml_layout(m_->focus_id_ == key ? std::string_view{m_->edit_.edit_buf_} : current, std::max(w, 8.0f), fnt, wrap);
+            h = static_cast<f32>(m_->edit_.ml_lines_.size()) * lh;
         }
         fl.control = layout_place({w, std::max(h, lh)});
     } else {
@@ -452,7 +452,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     }
     const rect box = fl.control;
 
-    child_state* st = internal::state_for(m_->children_, key, m_->frame_); // vertical scroll and content height of this field
+    child_state* st = internal::state_for(m_->children_cards_.children_, key, m_->frame_); // vertical scroll and content height of this field
     constexpr f32 bar_w = 10.0f;
 
     // the scrollbar column is its own control, so it comes before the field claims the press
@@ -464,7 +464,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     f32 gutter_w = 0.0f;
     if (has_code(code_flags::line_numbers)) {
         std::size_t lines = 1;
-        for (const char c : (m_->focus_id_ == key ? std::string_view{m_->edit_buf_} : current)) { lines += c == '\n' ? 1u : 0u; }
+        for (const char c : (m_->focus_id_ == key ? std::string_view{m_->edit_.edit_buf_} : current)) { lines += c == '\n' ? 1u : 0u; }
         int digits = 1;
         for (std::size_t n = lines; n >= 10; n /= 10) { ++digits; }
         gutter_w = m_->font_.measure(fnt, "0").x * static_cast<f32>(std::max(digits, 3)) + 18.0f;
@@ -491,7 +491,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     if (in.hovered || (in.held && m_->focus_id_ == key)) { m_->cursor_ = cursor_kind::text; }
 
     bool focused = m_->focus_id_ == key;
-    const auto text_now = [&]() -> std::string_view { return focused ? std::string_view{m_->edit_buf_} : current; };
+    const auto text_now = [&]() -> std::string_view { return focused ? std::string_view{m_->edit_.edit_buf_} : current; };
     ml_layout(text_now(), view_w, fnt, wrap);
 
     // caret geometry --------------------------------------------------------------------------------
@@ -500,18 +500,18 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     std::size_t line_bidi_for = ~std::size_t{0};
     u64         line_bidi_version = ~u64{0};
     const auto rtl_line = [&](std::size_t li) -> const bidi_layout* {
-        const ml_line& l = m_->ml_lines_[li];
+        const ml_line& l = m_->edit_.ml_lines_[li];
         const std::string_view t = text_now();
         if (l.end <= l.start || !has_rtl_text(t.substr(l.start, l.end - l.start))) { return nullptr; }
-        if (line_bidi_for != li || line_bidi_version != m_->edit_version_ + m_->ml_cache_key_) {
+        if (line_bidi_for != li || line_bidi_version != m_->edit_.edit_version_ + m_->edit_.ml_cache_key_) {
             line_bidi.build(m_->font_, fnt, t.substr(l.start, l.end - l.start));
             line_bidi_for     = li;
-            line_bidi_version = m_->edit_version_ + m_->ml_cache_key_;
+            line_bidi_version = m_->edit_.edit_version_ + m_->edit_.ml_cache_key_;
         }
         return &line_bidi;
     };
     const auto line_x = [&](std::size_t li, std::size_t index) -> f32 { // x of a byte index inside a line, unscrolled
-        const ml_line& l = m_->ml_lines_[li];
+        const ml_line& l = m_->edit_.ml_lines_[li];
         const std::size_t at = std::clamp<std::size_t>(index, l.start, l.end);
         if (const bidi_layout* b = rtl_line(li)) {
             return b->caret_x(at - l.start);
@@ -520,13 +520,13 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     };
     // the last position the caret may take on a line: not past the break of a wrapped line
     const auto line_hi = [&](std::size_t li) -> std::size_t {
-        const ml_line& l = m_->ml_lines_[li];
-        const bool soft = li + 1 < m_->ml_lines_.size() && m_->ml_lines_[li + 1].start == l.end;
+        const ml_line& l = m_->edit_.ml_lines_[li];
+        const bool soft = li + 1 < m_->edit_.ml_lines_.size() && m_->edit_.ml_lines_[li + 1].start == l.end;
         return soft && l.end > l.start ? prev_boundary(text_now(), l.end) : l.end;
     };
     const auto index_in_line = [&](std::size_t li, f32 rel_x) -> std::size_t {
         const std::string_view t = text_now();
-        const ml_line&    l  = m_->ml_lines_[li];
+        const ml_line&    l  = m_->edit_.ml_lines_[li];
         const std::size_t hi = line_hi(li);
         if (const bidi_layout* b = rtl_line(li)) {
             return std::min<std::size_t>(l.start + b->index_at(rel_x), hi);
@@ -550,8 +550,8 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     };
     const auto index_at = [&](vec2 p) -> std::size_t {
         const f32 fy = (p.y - inner.min.y + st->scroll) / lh;
-        const std::size_t li = fy <= 0.0f ? 0 : std::min<std::size_t>(static_cast<std::size_t>(fy), m_->ml_lines_.size() - 1);
-        return index_in_line(li, p.x - inner.min.x + (wrap ? 0.0f : m_->edit_scroll_));
+        const std::size_t li = fy <= 0.0f ? 0 : std::min<std::size_t>(static_cast<std::size_t>(fy), m_->edit_.ml_lines_.size() - 1);
+        return index_in_line(li, p.x - inner.min.x + (wrap ? 0.0f : m_->edit_.edit_scroll_));
     };
 
     // focus and mouse --------------------------------------------------------------------------------------
@@ -562,32 +562,32 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
             m_->focus_id_    = key;
             focused      = true;
             wipe_edit_buffer(); // nothing of the previous field's text may stay behind
-            m_->edit_buf_.assign(current);
-            m_->edit_scroll_ = 0.0f;
-            m_->edit_cursor_ = m_->edit_buf_.size();
-            m_->edit_anchor_ = has_flag(flags, input_flags::select_all_on_focus) ? 0 : m_->edit_cursor_;
-            m_->caret_time_  = m_->time_;
+            m_->edit_.edit_buf_.assign(current);
+            m_->edit_.edit_scroll_ = 0.0f;
+            m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
+            m_->edit_.edit_anchor_ = has_flag(flags, input_flags::select_all_on_focus) ? 0 : m_->edit_.edit_cursor_;
+            m_->edit_.caret_time_  = m_->time_;
         }
         const std::size_t idx  = index_at(m_->input_.mouse_);
         const u32         clicks = register_click();
-        m_->edit_pref_x_     = -1.0f;
+        m_->edit_.edit_pref_x_     = -1.0f;
         if (clicks == 3) { // triple click: the line between two line breaks, with its break
-            const std::size_t at = std::min(idx, m_->edit_buf_.size());
-            const std::size_t nl_before = at == 0 ? std::string::npos : std::string_view{m_->edit_buf_}.rfind('\n', at - 1);
-            const std::size_t nl_after  = std::string_view{m_->edit_buf_}.find('\n', at);
-            m_->edit_anchor_ = nl_before == std::string::npos ? 0 : nl_before + 1;
-            m_->edit_cursor_ = nl_after == std::string::npos ? m_->edit_buf_.size() : nl_after + 1;
+            const std::size_t at = std::min(idx, m_->edit_.edit_buf_.size());
+            const std::size_t nl_before = at == 0 ? std::string::npos : std::string_view{m_->edit_.edit_buf_}.rfind('\n', at - 1);
+            const std::size_t nl_after  = std::string_view{m_->edit_.edit_buf_}.find('\n', at);
+            m_->edit_.edit_anchor_ = nl_before == std::string::npos ? 0 : nl_before + 1;
+            m_->edit_.edit_cursor_ = nl_after == std::string::npos ? m_->edit_.edit_buf_.size() : nl_after + 1;
         } else if (clicks == 2) {
-            m_->edit_anchor_ = word_start(m_->edit_buf_, idx);
-            m_->edit_cursor_ = word_end(m_->edit_buf_, idx);
-        } else if (!has_flag(flags, input_flags::select_all_on_focus) || m_->edit_cursor_ != 0) {
-            m_->edit_cursor_ = idx;
-            m_->edit_anchor_ = idx;
+            m_->edit_.edit_anchor_ = word_start(m_->edit_.edit_buf_, idx);
+            m_->edit_.edit_cursor_ = word_end(m_->edit_.edit_buf_, idx);
+        } else if (!has_flag(flags, input_flags::select_all_on_focus) || m_->edit_.edit_cursor_ != 0) {
+            m_->edit_.edit_cursor_ = idx;
+            m_->edit_.edit_anchor_ = idx;
         }
-        m_->caret_time_ = m_->time_;
+        m_->edit_.caret_time_ = m_->time_;
     } else if (focused && in.held) {
-        m_->edit_cursor_ = index_at(m_->input_.mouse_); // dragging selects, and pulls the view along past the edges
-        m_->caret_time_  = m_->time_;
+        m_->edit_.edit_cursor_ = index_at(m_->input_.mouse_); // dragging selects, and pulls the view along past the edges
+        m_->edit_.caret_time_  = m_->time_;
         if (m_->input_.mouse_.y < inner.min.y)      { st->scroll -= (inner.min.y - m_->input_.mouse_.y) * 8.0f * m_->dt_ + 1.0f; }
         else if (m_->input_.mouse_.y > inner.max.y) { st->scroll += (m_->input_.mouse_.y - inner.max.y) * 8.0f * m_->dt_ + 1.0f; }
     }
@@ -599,56 +599,56 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     bool changed     = false;
     bool caret_moved = press_here;
     if (focused) {
-        m_->edit_readonly_   = readonly;
-        m_->edit_max_bytes_  = max_bytes;
-        m_->edit_history_on_ = !readonly;
+        m_->edit_.edit_readonly_   = readonly;
+        m_->edit_.edit_max_bytes_  = max_bytes;
+        m_->edit_.edit_history_on_ = !readonly;
 
         if (m_->input_.typed_len_ != 0) {
-            if (has_code(code_flags::auto_indent) && m_->input_.typed_len_ == 1 && m_->input_.typed_[0] == '}' && m_->edit_cursor_ == m_->edit_anchor_) {
+            if (has_code(code_flags::auto_indent) && m_->input_.typed_len_ == 1 && m_->input_.typed_[0] == '}' && m_->edit_.edit_cursor_ == m_->edit_.edit_anchor_) {
                 // a } on a line that holds only indentation steps back one level
-                const std::string_view t0 = m_->edit_buf_;
-                const std::size_t nl = m_->edit_cursor_ == 0 ? npos : t0.rfind('\n', m_->edit_cursor_ - 1);
+                const std::string_view t0 = m_->edit_.edit_buf_;
+                const std::size_t nl = m_->edit_.edit_cursor_ == 0 ? npos : t0.rfind('\n', m_->edit_.edit_cursor_ - 1);
                 const std::size_t ls = nl == npos ? 0 : nl + 1;
-                bool blank = m_->edit_cursor_ > ls;
-                for (std::size_t i = ls; i < m_->edit_cursor_ && blank; ++i) { blank = t0[i] == ' '; }
+                bool blank = m_->edit_.edit_cursor_ > ls;
+                for (std::size_t i = ls; i < m_->edit_.edit_cursor_ && blank; ++i) { blank = t0[i] == ' '; }
                 if (blank) {
-                    const std::size_t drop = std::min<std::size_t>(m_->edit_cursor_ - ls, static_cast<std::size_t>(std::max(code.tab_size, 1)));
-                    changed = edit_replace(m_->edit_cursor_ - drop, drop, {}, edit_kind::other) || changed;
+                    const std::size_t drop = std::min<std::size_t>(m_->edit_.edit_cursor_ - ls, static_cast<std::size_t>(std::max(code.tab_size, 1)));
+                    changed = edit_replace(m_->edit_.edit_cursor_ - drop, drop, {}, edit_kind::other) || changed;
                 }
             }
             changed = edit_insert({m_->input_.typed_.data(), m_->input_.typed_len_}, true) || changed;
             m_->input_.typed_len_   = 0;
-            m_->caret_time_  = m_->time_;
-            m_->edit_pref_x_ = -1.0f;
+            m_->edit_.caret_time_  = m_->time_;
+            m_->edit_.edit_pref_x_ = -1.0f;
             caret_moved  = true;
         }
 
         for (u32 i = 0; i < m_->input_.key_count_ && focused; ++i) {
             const key_event& ev = m_->input_.keys_[i];
             if (ev.alt) { continue; } // Alt + key is a shortcut of the host, not editing
-            ml_layout(m_->edit_buf_, view_w, fnt, wrap); // earlier keys of this frame may have changed the lines
-            const std::string_view t = m_->edit_buf_;
-            const bool has_sel = m_->edit_cursor_ != m_->edit_anchor_;
-            const std::size_t li = ml_line_of(m_->edit_cursor_);
+            ml_layout(m_->edit_.edit_buf_, view_w, fnt, wrap); // earlier keys of this frame may have changed the lines
+            const std::string_view t = m_->edit_.edit_buf_;
+            const bool has_sel = m_->edit_.edit_cursor_ != m_->edit_.edit_anchor_;
+            const std::size_t li = ml_line_of(m_->edit_.edit_cursor_);
             bool vertical = false;
-            m_->caret_time_ = m_->time_;
+            m_->edit_.caret_time_ = m_->time_;
             caret_moved = true;
 
             switch (ev.k) {
             case key::left:
                 if (!ev.shift && !ev.ctrl && has_sel) {
-                    m_->edit_cursor_ = m_->edit_anchor_ = std::min(m_->edit_cursor_, m_->edit_anchor_);
+                    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
                 } else {
-                    m_->edit_cursor_ = ev.ctrl ? prev_word(t, m_->edit_cursor_) : prev_boundary(t, m_->edit_cursor_);
-                    if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                    m_->edit_.edit_cursor_ = ev.ctrl ? prev_word(t, m_->edit_.edit_cursor_) : prev_boundary(t, m_->edit_.edit_cursor_);
+                    if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 }
                 break;
             case key::right:
                 if (!ev.shift && !ev.ctrl && has_sel) {
-                    m_->edit_cursor_ = m_->edit_anchor_ = std::max(m_->edit_cursor_, m_->edit_anchor_);
+                    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
                 } else {
-                    m_->edit_cursor_ = ev.ctrl ? next_word(t, m_->edit_cursor_) : next_boundary(t, m_->edit_cursor_);
-                    if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                    m_->edit_.edit_cursor_ = ev.ctrl ? next_word(t, m_->edit_.edit_cursor_) : next_boundary(t, m_->edit_.edit_cursor_);
+                    if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 }
                 break;
             case key::up:
@@ -656,7 +656,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
             case key::page_up:
             case key::page_down: {
                 vertical = true;
-                if (m_->edit_pref_x_ < 0.0f) { m_->edit_pref_x_ = line_x(li, m_->edit_cursor_); }
+                if (m_->edit_.edit_pref_x_ < 0.0f) { m_->edit_.edit_pref_x_ = line_x(li, m_->edit_.edit_cursor_); }
                 const auto page = std::max<std::ptrdiff_t>(1, static_cast<std::ptrdiff_t>(view_h / lh) - 1);
                 std::ptrdiff_t delta = 1;
                 if (ev.k == key::up)             { delta = -1; }
@@ -664,31 +664,31 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
                 else if (ev.k == key::page_down) { delta = page; }
                 const std::ptrdiff_t target = static_cast<std::ptrdiff_t>(li) + delta;
                 if (target < 0) {
-                    m_->edit_cursor_ = 0;
-                } else if (target >= static_cast<std::ptrdiff_t>(m_->ml_lines_.size())) {
-                    m_->edit_cursor_ = t.size();
+                    m_->edit_.edit_cursor_ = 0;
+                } else if (target >= static_cast<std::ptrdiff_t>(m_->edit_.ml_lines_.size())) {
+                    m_->edit_.edit_cursor_ = t.size();
                 } else {
-                    m_->edit_cursor_ = index_in_line(static_cast<std::size_t>(target), m_->edit_pref_x_);
+                    m_->edit_.edit_cursor_ = index_in_line(static_cast<std::size_t>(target), m_->edit_.edit_pref_x_);
                 }
-                if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 break;
             }
             case key::home:
-                m_->edit_cursor_ = ev.ctrl ? 0 : m_->ml_lines_[li].start;
-                if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                m_->edit_.edit_cursor_ = ev.ctrl ? 0 : m_->edit_.ml_lines_[li].start;
+                if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 break;
             case key::end:
-                m_->edit_cursor_ = ev.ctrl ? t.size() : line_hi(li);
-                if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                m_->edit_.edit_cursor_ = ev.ctrl ? t.size() : line_hi(li);
+                if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 break;
             case key::backspace:
                 if (!readonly) {
                     if (edit_delete_selection()) {
                         changed = true;
                     } else {
-                        const std::size_t a = ev.ctrl ? prev_word(t, m_->edit_cursor_) : prev_boundary(t, m_->edit_cursor_);
-                        if (a < m_->edit_cursor_) {
-                            changed = edit_replace(a, m_->edit_cursor_ - a, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_back) || changed;
+                        const std::size_t a = ev.ctrl ? prev_word(t, m_->edit_.edit_cursor_) : prev_boundary(t, m_->edit_.edit_cursor_);
+                        if (a < m_->edit_.edit_cursor_) {
+                            changed = edit_replace(a, m_->edit_.edit_cursor_ - a, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_back) || changed;
                         }
                     }
                 }
@@ -698,20 +698,20 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
                     if (edit_delete_selection()) {
                         changed = true;
                     } else {
-                        const std::size_t b = ev.ctrl ? next_word(t, m_->edit_cursor_) : next_boundary(t, m_->edit_cursor_);
-                        if (b > m_->edit_cursor_) {
-                            changed = edit_replace(m_->edit_cursor_, b - m_->edit_cursor_, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_fwd) || changed;
+                        const std::size_t b = ev.ctrl ? next_word(t, m_->edit_.edit_cursor_) : next_boundary(t, m_->edit_.edit_cursor_);
+                        if (b > m_->edit_.edit_cursor_) {
+                            changed = edit_replace(m_->edit_.edit_cursor_, b - m_->edit_.edit_cursor_, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_fwd) || changed;
                         }
                     }
                 }
                 break;
             case key::enter:
                 if (ev.ctrl) {
-                    m_->submitted_ = true;
+                    m_->edit_.submitted_ = true;
                 } else if (!readonly) {
                     if (has_code(code_flags::auto_indent)) {
                         // the new line starts with the indentation of this one, a level deeper after an opening bracket
-                        const std::size_t lo = std::min(m_->edit_cursor_, m_->edit_anchor_);
+                        const std::size_t lo = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
                         const std::size_t nl = lo == 0 ? npos : t.rfind('\n', lo - 1);
                         const std::size_t ls = nl == npos ? 0 : nl + 1;
                         std::size_t n = 0;
@@ -732,8 +732,8 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
             case key::tab:
                 if (!readonly) {
                     if (code_on) {
-                        const std::size_t lo = std::min(m_->edit_cursor_, m_->edit_anchor_);
-                        const std::size_t hi = std::max(m_->edit_cursor_, m_->edit_anchor_);
+                        const std::size_t lo = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+                        const std::size_t hi = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
                         const bool many_lines = has_sel && t.substr(lo, hi - lo).find('\n') != npos;
                         if (many_lines || ev.shift) {
                             changed = edit_indent_lines(ev.shift, code.tab_size) || changed;
@@ -764,14 +764,14 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
                 caret_moved = false;
                 break;
             }
-            if (!vertical) { m_->edit_pref_x_ = -1.0f; }
+            if (!vertical) { m_->edit_.edit_pref_x_ = -1.0f; }
         }
         m_->input_.key_count_ = 0;
     }
     ml_layout(text_now(), view_w, fnt, wrap);
 
     // scrolling ---------------------------------------------------------------------------------------------
-    const std::size_t line_count = m_->ml_lines_.size();
+    const std::size_t line_count = m_->edit_.ml_lines_.size();
     const f32 content_h  = static_cast<f32>(line_count) * lh;
     const f32 max_scroll = std::max(0.0f, content_h - view_h);
     st->content_h = content_h;
@@ -785,19 +785,19 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         m_->wheel_consumed_ = true;
     }
     if (focused && caret_moved && !sb_active) { // keep the caret in view
-        const std::size_t cl = ml_line_of(m_->edit_cursor_);
+        const std::size_t cl = ml_line_of(m_->edit_.edit_cursor_);
         const f32 top = static_cast<f32>(cl) * lh;
         if (top < st->scroll)                       { st->scroll = top; }
         if (top + lh > st->scroll + view_h)         { st->scroll = top + lh - view_h; }
         if (!wrap) {
-            const f32 cx = line_x(cl, m_->edit_cursor_);
-            if (cx - m_->edit_scroll_ > view_w - 2.0f) { m_->edit_scroll_ = cx - view_w + 2.0f; }
-            if (cx - m_->edit_scroll_ < 0.0f)          { m_->edit_scroll_ = cx; }
+            const f32 cx = line_x(cl, m_->edit_.edit_cursor_);
+            if (cx - m_->edit_.edit_scroll_ > view_w - 2.0f) { m_->edit_.edit_scroll_ = cx - view_w + 2.0f; }
+            if (cx - m_->edit_.edit_scroll_ < 0.0f)          { m_->edit_.edit_scroll_ = cx; }
         }
     }
     st->scroll = std::clamp(st->scroll, 0.0f, max_scroll);
-    if (wrap && focused) { m_->edit_scroll_ = 0.0f; }
-    m_->edit_scroll_ = std::max(m_->edit_scroll_, 0.0f);
+    if (wrap && focused) { m_->edit_.edit_scroll_ = 0.0f; }
+    m_->edit_.edit_scroll_ = std::max(m_->edit_.edit_scroll_, 0.0f);
 
     // drawing -----------------------------------------------------------------------------------------------
     anim_slot& a = anim_for(key);
@@ -818,13 +818,13 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
 
     m_->dl_.push_clip({{inner.min.x, box.min.y + (frameless ? 0.0f : 1.0f)}, {inner.max.x, box.max.y - (frameless ? 0.0f : 1.0f)}});
     const std::string_view t = text_now();
-    const f32 text_x = inner.min.x - (wrap || !focused ? 0.0f : m_->edit_scroll_);
+    const f32 text_x = inner.min.x - (wrap || !focused ? 0.0f : m_->edit_.edit_scroll_);
     const std::size_t first = static_cast<std::size_t>(std::max(0.0f, std::floor(st->scroll / lh)));
     const std::size_t last  = std::min(line_count, first + static_cast<std::size_t>(view_h / lh) + 2);
 
-    const bool        has_selection = focused && m_->edit_cursor_ != m_->edit_anchor_;
-    const std::size_t sel_lo        = std::min(m_->edit_cursor_, m_->edit_anchor_);
-    const std::size_t sel_hi        = std::max(m_->edit_cursor_, m_->edit_anchor_);
+    const bool        has_selection = focused && m_->edit_.edit_cursor_ != m_->edit_.edit_anchor_;
+    const std::size_t sel_lo        = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+    const std::size_t sel_hi        = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
     shape_style sel;
     sel.radius      = radii(2.0f);
     sel.fill_top    = m_->style_.accent.scaled_alpha(0.45f);
@@ -832,12 +832,12 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
 
     std::size_t bracket_a = npos, bracket_b = npos;
     if (has_code(code_flags::bracket_match) && focused && !has_selection) {
-        (void)find_bracket_pair(t, m_->edit_cursor_, bracket_a, bracket_b);
+        (void)find_bracket_pair(t, m_->edit_.edit_cursor_, bracket_a, bracket_b);
     }
-    const std::size_t caret_line = focused ? ml_line_of(m_->edit_cursor_) : npos;
+    const std::size_t caret_line = focused ? ml_line_of(m_->edit_.edit_cursor_) : npos;
 
     for (std::size_t li = first; li < last; ++li) {
-        const ml_line& l = m_->ml_lines_[li];
+        const ml_line& l = m_->edit_.ml_lines_[li];
         const f32 y = inner.min.y + static_cast<f32>(li) * lh - st->scroll;
         if (has_code(code_flags::highlight_line) && li == caret_line && !has_selection) {
             m_->dl_.rect_filled({{inner.min.x - 3.0f, y}, {inner.max.x + 2.0f, y + lh}}, m_->style_.accent.scaled_alpha(0.07f));
@@ -865,7 +865,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
             m_->dl_.rect_outline({{x0, y}, {x1, y + lh}}, m_->style_.accent_hover, 2.0f, 1.0f);
         }
         if (has_selection) {
-            const bool hard = !(li + 1 < line_count && m_->ml_lines_[li + 1].start == l.end);
+            const bool hard = !(li + 1 < line_count && m_->edit_.ml_lines_[li + 1].start == l.end);
             const std::size_t sa = std::clamp<std::size_t>(sel_lo, l.start, l.end);
             const std::size_t sb = std::clamp<std::size_t>(sel_hi, l.start, l.end);
             const bool covers_newline = hard && l.end < t.size() && sel_lo <= l.end && sel_hi > l.end;
@@ -876,7 +876,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
             }
         }
         if (l.end > l.start) {
-            if (m_->edit_spans_.empty()) {
+            if (m_->edit_.edit_spans_.empty()) {
                 m_->dl_.text({text_x, y}, text_col, t.substr(l.start, l.end - l.start), fnt);
             } else {
                 ed_draw({text_x, y}, asc, text_col, t, l.start, l.end, fnt);
@@ -890,12 +890,12 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     vec2 chip_at{};
     bool want_chip = false;
     if (focused && !readonly) {
-        const std::size_t cl = ml_line_of(m_->edit_cursor_);
-        const f32 cx = std::round(text_x + line_x(cl, m_->edit_cursor_));
+        const std::size_t cl = ml_line_of(m_->edit_.edit_cursor_);
+        const f32 cx = std::round(text_x + line_x(cl, m_->edit_.edit_cursor_));
         const f32 cy = inner.min.y + static_cast<f32>(cl) * lh - st->scroll;
-        m_->ime_want_   = true;
-        m_->ime_pos_    = {cx * m_->scale_, (cy + lh) * m_->scale_};
-        m_->ime_line_h_ = lh * m_->scale_;
+        m_->edit_.ime_want_   = true;
+        m_->edit_.ime_pos_    = {cx * m_->scale_, (cy + lh) * m_->scale_};
+        m_->edit_.ime_line_h_ = lh * m_->scale_;
         if (m_->input_.ime_len_ != 0) {
             want_chip = true;
             chip_at   = {cx, cy + lh};
@@ -935,58 +935,58 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
 
 u32 context::register_click() noexcept
 {
-    const vec2 moved = m_->input_.mouse_ - m_->last_click_pos_;
-    const bool near_ = m_->time_ - m_->last_click_time_ < m_->double_click_ && dot(moved, moved) < 25.0f;
-    m_->click_count_     = near_ ? (m_->click_count_ >= 3 ? 1u : m_->click_count_ + 1u) : 1u;
-    m_->last_click_time_ = m_->time_;
-    m_->last_click_pos_  = m_->input_.mouse_;
-    return m_->click_count_;
+    const vec2 moved = m_->input_.mouse_ - m_->edit_.last_click_pos_;
+    const bool near_ = m_->time_ - m_->edit_.last_click_time_ < m_->double_click_ && dot(moved, moved) < 25.0f;
+    m_->edit_.click_count_     = near_ ? (m_->edit_.click_count_ >= 3 ? 1u : m_->edit_.click_count_ + 1u) : 1u;
+    m_->edit_.last_click_time_ = m_->time_;
+    m_->edit_.last_click_pos_  = m_->input_.mouse_;
+    return m_->edit_.click_count_;
 }
 
 void context::input_spans(std::span<const text_span> spans)
 {
-    m_->edit_spans_pending_.assign(spans.begin(), spans.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(spans.size(), 4096)));
+    m_->edit_.edit_spans_pending_.assign(spans.begin(), spans.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(spans.size(), 4096)));
 }
 
 // takes this field's spans: sorted, clamped, non-overlapping; the line grows to the tallest font
 void context::ed_prepare_spans(std::size_t text_size, font_id base, f32& line_h, f32& ascent, bool ignore)
 {
-    m_->edit_spans_.clear();
-    m_->edit_spans_hash_ = 0;
-    if (m_->edit_spans_pending_.empty()) {
+    m_->edit_.edit_spans_.clear();
+    m_->edit_.edit_spans_hash_ = 0;
+    if (m_->edit_.edit_spans_pending_.empty()) {
         return;
     }
     if (!ignore) {
-        std::stable_sort(m_->edit_spans_pending_.begin(), m_->edit_spans_pending_.end(),
+        std::stable_sort(m_->edit_.edit_spans_pending_.begin(), m_->edit_.edit_spans_pending_.end(),
                          [](const text_span& a, const text_span& b) { return a.start < b.start; });
         u32 reach = 0;
         u64 h = 1469598103934665603ull;
-        for (text_span s : m_->edit_spans_pending_) {
+        for (text_span s : m_->edit_.edit_spans_pending_) {
             s.end   = static_cast<u32>(std::min<std::size_t>(s.end, text_size));
             s.start = std::max(s.start, reach);
             if (s.end <= s.start) { continue; }
             if (s.font >= m_->font_.font_count()) { s.font = base; }
             reach = s.end;
-            m_->edit_spans_.push_back(s);
+            m_->edit_.edit_spans_.push_back(s);
             line_h = std::max(line_h, m_->font_.line_height(s.font));
             ascent = std::max(ascent, m_->font_.ascent(s.font));
             for (const u32 v : {s.start, s.end, s.font, static_cast<u32>(s.style)}) { h = (h ^ v) * 1099511628211ull; }
         }
-        m_->edit_spans_hash_ = h | 1ull;
+        m_->edit_.edit_spans_hash_ = h | 1ull;
     }
-    m_->edit_spans_pending_.clear();
+    m_->edit_.edit_spans_pending_.clear();
 }
 
 f32 context::ed_measure(font_id base, std::string_view t, std::size_t a, std::size_t b) const
 {
     b = std::min(b, t.size());
     a = std::min(a, b);
-    if (m_->edit_spans_.empty()) {
+    if (m_->edit_.edit_spans_.empty()) {
         return b > a ? m_->font_.measure(base, t.substr(a, b - a)).x : 0.0f;
     }
     f32 x = 0.0f;
     std::size_t pos = a;
-    for (const text_span& s : m_->edit_spans_) {
+    for (const text_span& s : m_->edit_.edit_spans_) {
         if (s.end <= pos) { continue; }
         if (s.start >= b) { break; }
         if (s.start > pos) {
@@ -1003,7 +1003,7 @@ f32 context::ed_measure(font_id base, std::string_view t, std::size_t a, std::si
 
 font_id context::ed_font_at(font_id base, std::size_t i) const noexcept
 {
-    for (const text_span& s : m_->edit_spans_) {
+    for (const text_span& s : m_->edit_.edit_spans_) {
         if (i < s.start) { break; }
         if (i < s.end) { return s.font; }
     }
@@ -1023,7 +1023,7 @@ void context::ed_draw(vec2 pos, f32 line_ascent, color col, std::string_view t, 
         m_->dl_.text({pos.x + x, pos.y + line_ascent - m_->font_.ascent(f)}, c, piece, f, style);
         x += m_->font_.measure(f, piece).x;
     };
-    for (const text_span& s : m_->edit_spans_) {
+    for (const text_span& s : m_->edit_.edit_spans_) {
         if (s.end <= at) { continue; }
         if (s.start >= b) { break; }
         if (s.start > at) { run(at, s.start, base, col, text_flags::none); at = s.start; }

@@ -185,13 +185,13 @@ context::~context()
 void context::wipe_edit_buffer() noexcept
 {
     // also clears the bytes beyond size() that an earlier, longer text left in the buffer
-    m_->edit_buf_.resize(m_->edit_buf_.capacity());
-    detail::secure_wipe(m_->edit_buf_.data(), m_->edit_buf_.size());
-    m_->edit_buf_.clear();
-    m_->edit_cursor_ = 0;
-    m_->edit_anchor_ = 0;
-    m_->edit_pref_x_ = -1.0f;
-    m_->ml_cache_key_ = 0;
+    m_->edit_.edit_buf_.resize(m_->edit_.edit_buf_.capacity());
+    detail::secure_wipe(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
+    m_->edit_.edit_buf_.clear();
+    m_->edit_.edit_cursor_ = 0;
+    m_->edit_.edit_anchor_ = 0;
+    m_->edit_.edit_pref_x_ = -1.0f;
+    m_->edit_.ml_cache_key_ = 0;
     edit_history_clear(); // the undo history holds typed text as well
 }
 
@@ -299,15 +299,15 @@ void context::begin_frame(const input_state& in)
     m_->input_.ime_text_    = in.ime;
     m_->input_.ime_len_     = std::min<u32>(in.ime_len, static_cast<u32>(in.ime.size()));
     m_->input_.ime_cursor_  = std::min(in.ime_cursor, m_->input_.ime_len_);
-    m_->ime_want_    = false;
+    m_->edit_.ime_want_    = false;
     m_->input_.keys_      = in.keys;
     m_->input_.key_count_ = std::min(in.key_count, max_key_events);
     m_->input_.typed_     = in.typed;
     m_->input_.typed_len_ = std::min(in.typed_len, max_typed_bytes);
 
     m_->anim_moved_   = m_->input_.wheel_moving_; // (a scroll still being let out asks for the next frame like an animation)
-    m_->rich_clicked_.clear();
-    m_->rich_hovered_.clear();
+    m_->rich_.rich_clicked_.clear();
+    m_->rich_.rich_hovered_.clear();
 
     m_->win_.hovered_window_prev_ = m_->win_.hovered_window_cur_;
     m_->win_.hovered_window_cur_  = 0;
@@ -316,9 +316,9 @@ void context::begin_frame(const input_state& in)
     m_->win_.hovered_z_           = no_z;
     m_->win_.frame_window_count_  = 0;
     m_->style_stack_.reset_font();
-    m_->rich_depth_          = 0;
-    m_->table_depth_         = 0;
-    m_->table_               = {};
+    m_->rich_.rich_depth_          = 0;
+    m_->tree_table_.table_depth_         = 0;
+    m_->tree_table_.table_               = {};
 
     m_->dock_->any_set     = false;
     for (dock_space& sp : m_->dock_->spaces) {
@@ -334,8 +334,8 @@ void context::begin_frame(const input_state& in)
 
     m_->focus_seen_    = false;
     m_->hotkey_.hotkey_seen_   = false;
-    m_->child_depth_   = 0;
-    m_->card_depth_    = 0;
+    m_->children_cards_.child_depth_   = 0;
+    m_->children_cards_.card_depth_    = 0;
     m_->hover_key_prev_ = m_->hover_key_cur_;
     m_->hover_key_cur_  = 0;
     m_->last_item_hovered_ = false;
@@ -343,16 +343,16 @@ void context::begin_frame(const input_state& in)
     m_->last_item_pressed_ = false;
     m_->last_item_double_  = false;
     m_->press_claimed_ = false;
-    m_->submitted_     = false;
+    m_->edit_.submitted_     = false;
 
     m_->input_.keys_held_      = in.keys_held;
     m_->stats_cur_      = {};
     m_->disabled_depth_ = 0;
     m_->disabled_alpha_ = false;
     m_->disabled_count_ = 0;
-    m_->next_gutter_    = 0.0f;
-    m_->accessory_row_  = 0;
-    m_->row_anchor_     = 0;
+    m_->accessory_.next_gutter_    = 0.0f;
+    m_->accessory_.accessory_row_  = 0;
+    m_->accessory_.row_anchor_     = 0;
     m_->last_item_arrow_     = false;
     m_->last_item_truncated_ = false;
     m_->engaged_prev_        = m_->engaged_cur_;
@@ -461,15 +461,15 @@ void context::end_frame()
 
     if (!m_->input_.mouse_down_) {
         m_->active_       = 0; // a widget that vanished mid-drag must not stay active forever
-        m_->dd_active_    = false;
-        m_->dd_candidate_ = 0;
-        m_->dd_cancelled_ = false;
+        m_->dnd_.dd_active_    = false;
+        m_->dnd_.dd_candidate_ = 0;
+        m_->dnd_.dd_cancelled_ = false;
     }
     // an unclaimed press drops keyboard focus; so does a field that was not drawn
     if ((m_->input_.mouse_pressed_ && !m_->press_claimed_) || (m_->focus_id_ != 0 && !m_->focus_seen_)) {
         m_->focus_id_ = 0;
     }
-    if (m_->focus_id_ == 0 && !m_->edit_buf_.empty()) {
+    if (m_->focus_id_ == 0 && !m_->edit_.edit_buf_.empty()) {
         wipe_edit_buffer();
     }
     detail::secure_wipe(m_->input_.typed_.data(), m_->input_.typed_.size());
@@ -524,7 +524,7 @@ void context::end_frame()
         if (tooltip_pending) { wake = std::min(wake, static_cast<f64>(m_->style_.tooltip_delay_s - m_->hover_time_)); }
         if (m_->focus_id_ != 0 && m_->caret_blink_ > 0.0f) { // the next flip of the caret
             const f64 period = 2.0 * m_->caret_blink_;
-            const f64 phase  = std::fmod(m_->time_ - m_->caret_time_, period);
+            const f64 phase  = std::fmod(m_->time_ - m_->edit_.caret_time_, period);
             wake = std::min(wake, phase < m_->caret_blink_ ? m_->caret_blink_ - phase : period - phase);
         }
         if (m_->hotkey_.hotkey_capture_ != 0 && m_->hotkey_.seq_edit_count_ > 0) { wake = std::min(wake, m_->hotkey_.seq_edit_deadline_ - m_->time_); }
@@ -1073,7 +1073,7 @@ bool context::item_culled(const rect& r) noexcept
 {
     ++m_->stats_cur_.items_submitted;
     // off-screen measuring passes (popup / drag previews) need every item's size: no culling
-    if (m_->dd_hidden_ || m_->gpopup_hidden_) {
+    if (m_->dnd_.dd_hidden_ || m_->gpopup_hidden_) {
         return false;
     }
     constexpr f32 margin = 2.0f;
@@ -1092,7 +1092,7 @@ void context::note_culled_item(id key, const rect& r) noexcept
     m_->last_item_focused_ = m_->nav_.scope != 0 && m_->nav_.cursor == key; // it is still the row the cursor is on
     m_->last_item_pressed_ = false;
     m_->last_item_double_  = false;
-    m_->item_pressed_      = false;
+    m_->tree_table_.item_pressed_      = false;
 }
 
 // the same labels are measured every frame: a direct-mapped (font, text) -> size cache. collisions overwrite, so it
@@ -1102,16 +1102,16 @@ vec2 context::measure_cached(font_id f, std::string_view s) noexcept
     if (s.empty()) {
         return m_->font_.measure(f, s);
     }
-    if (m_->measure_cache_.size() != measure_cache_size || m_->measure_cache_gen_ != m_->font_generation_) {
-        m_->measure_cache_.assign(measure_cache_size, measure_slot{});
-        m_->measure_cache_gen_ = m_->font_generation_;
+    if (m_->measure_.measure_cache_.size() != measure_cache_size || m_->measure_.measure_cache_gen_ != m_->font_generation_) {
+        m_->measure_.measure_cache_.assign(measure_cache_size, measure_slot{});
+        m_->measure_.measure_cache_gen_ = m_->font_generation_;
     }
     u64 h = 0xcbf29ce484222325ull ^ (static_cast<u64>(f) << 56);
     for (const char c : s) {
         h = (h ^ static_cast<u8>(c)) * 0x100000001b3ull;
     }
     h |= 1ull; // 0 marks an empty slot
-    measure_slot& slot = m_->measure_cache_[static_cast<u32>(h >> 20) & (measure_cache_size - 1)];
+    measure_slot& slot = m_->measure_.measure_cache_[static_cast<u32>(h >> 20) & (measure_cache_size - 1)];
     if (slot.key == h) {
         ++m_->stats_cur_.measure_hits;
         return slot.size;
@@ -1216,7 +1216,7 @@ context::interaction context::interact_impl(id key, const rect& r, bool in_windo
     if (m_->active_ == key) {
         out.held = m_->input_.mouse_down_;
         if (m_->input_.mouse_released_) {
-            out.pressed = over && !(m_->dd_active_ && m_->dd_source_ == key); // the release that ends a drag is not a click
+            out.pressed = over && !(m_->dnd_.dd_active_ && m_->dnd_.dd_source_ == key); // the release that ends a drag is not a click
             out.held    = false;
             m_->active_     = 0;
         }
@@ -1379,23 +1379,23 @@ bool context::selection_click(selection_state& sel, int index) const
 // row or no room.
 bool context::accessory_slot(f32 width, rect& out) noexcept
 {
-    if (m_->cur_ == nullptr || m_->row_anchor_ == 0) {
+    if (m_->cur_ == nullptr || m_->accessory_.row_anchor_ == 0) {
         return false;
     }
-    if (m_->accessory_row_ != m_->row_anchor_) { // the first accessory of this row
-        m_->accessory_row_      = m_->row_anchor_;
-        m_->accessory_row_rect_ = m_->row_anchor_rect_;
-        m_->accessory_x_        = std::min(m_->row_anchor_rect_.max.x, m_->layout_.origin.x + m_->layout_.width + m_->layout_.gutter);
-        allow_item_overlap_at(m_->row_anchor_, m_->row_anchor_rect_); // the row lets go of the press where they sit
+    if (m_->accessory_.accessory_row_ != m_->accessory_.row_anchor_) { // the first accessory of this row
+        m_->accessory_.accessory_row_      = m_->accessory_.row_anchor_;
+        m_->accessory_.accessory_row_rect_ = m_->accessory_.row_anchor_rect_;
+        m_->accessory_.accessory_x_        = std::min(m_->accessory_.row_anchor_rect_.max.x, m_->layout_.origin.x + m_->layout_.width + m_->layout_.gutter);
+        allow_item_overlap_at(m_->accessory_.row_anchor_, m_->accessory_.row_anchor_rect_); // the row lets go of the press where they sit
     }
-    const rect& row = m_->accessory_row_rect_;
+    const rect& row = m_->accessory_.accessory_row_rect_;
     const f32   h   = std::min(width, std::max(row.height() - 4.0f, 4.0f));
-    const f32   x1  = m_->accessory_x_ - 2.0f;
+    const f32   x1  = m_->accessory_.accessory_x_ - 2.0f;
     const f32   x0  = x1 - width;
     if (x0 < row.min.x) {
         return false; // the row is too narrow for one more
     }
-    m_->accessory_x_ = x0;
+    m_->accessory_.accessory_x_ = x0;
     out = {{x0, row.min.y + (row.height() - h) * 0.5f}, {x1, row.min.y + (row.height() + h) * 0.5f}};
     return true;
 }
@@ -1451,7 +1451,7 @@ bool context::row_accessory_button(font_id icon_font, std::string_view icon, std
     if (!accessory_slot(side, box)) {
         return false;
     }
-    const id key = hash_id(icon, hash_id(id_extra, hash_id("##acc", m_->accessory_row_)));
+    const id key = hash_id(icon, hash_id(id_extra, hash_id("##acc", m_->accessory_.accessory_row_)));
     const interaction in = interact(key, box);
     const press_anim  a  = button_anim(key, in);
     if (a.hover > 0.01f || a.active > 0.01f) {
@@ -1476,7 +1476,7 @@ bool context::row_accessory_checkbox(std::string_view id_extra, bool& value)
     if (!accessory_slot(side, box)) {
         return false;
     }
-    const id key = hash_id(id_extra, hash_id("##accbox", m_->accessory_row_));
+    const id key = hash_id(id_extra, hash_id("##accbox", m_->accessory_.accessory_row_));
     const interaction in = interact(key, box);
     if (in.pressed) { value = !value; }
 
@@ -1505,7 +1505,7 @@ bool context::row_accessory_toggle(std::string_view id_extra, bool& value)
     if (!accessory_slot(h * 1.9f, box)) {
         return false;
     }
-    const id key = hash_id(id_extra, hash_id("##accsw", m_->accessory_row_));
+    const id key = hash_id(id_extra, hash_id("##accsw", m_->accessory_.accessory_row_));
     const interaction in = interact(key, box);
     if (in.pressed) { value = !value; }
 
@@ -1575,7 +1575,7 @@ f32 context::label_clipped(vec2 pos, f32 max_width, color c, std::string_view s,
     if (s.empty() || max_width <= 0.0f) {
         return 0.0f;
     }
-    if (m_->rich_depth_ > 0) { // markup cannot be cut safely: clip it instead
+    if (m_->rich_.rich_depth_ > 0) { // markup cannot be cut safely: clip it instead
         const vec2 size = label_size(f, s);
         m_->dl_.push_clip({pos, {pos.x + max_width, pos.y + size.y}});
         label_draw(pos, c, s, f);
@@ -2368,7 +2368,7 @@ bool context::input_text(std::string_view label, std::string& value, std::string
                          std::size_t max_bytes)
 {
     if (input_core(label, value, hint, flags, max_bytes)) {
-        value.assign(m_->edit_buf_.data(), m_->edit_buf_.size());
+        value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
         return true;
     }
     return false;
@@ -2378,7 +2378,7 @@ bool context::input_text(std::string_view label, secure_string& value, std::stri
                          std::size_t max_bytes)
 {
     if (input_core(label, value, hint, flags, max_bytes)) {
-        value.assign(m_->edit_buf_.data(), m_->edit_buf_.size());
+        value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
         return true;
     }
     return false;
@@ -2396,8 +2396,8 @@ bool context::input_text(std::string_view label, char* buffer, std::size_t capac
     if (!input_core(label, {buffer, len}, hint, flags, capacity - 1)) {
         return false;
     }
-    const std::size_t n = std::min(m_->edit_buf_.size(), capacity - 1);
-    std::copy_n(m_->edit_buf_.data(), n, buffer);
+    const std::size_t n = std::min(m_->edit_.edit_buf_.size(), capacity - 1);
+    std::copy_n(m_->edit_.edit_buf_.data(), n, buffer);
     buffer[n] = '\0';
     return true;
 }
@@ -2416,7 +2416,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     const bool    reveal_btn = password && has_flag(flags, input_flags::reveal);
     const bool    readonly = has_flag(flags, input_flags::read_only);
     const id      key      = widget_id(label);
-    ed_prepare_spans(m_->focus_id_ == key ? m_->edit_buf_.size() : current.size(), fnt, lh, asc, password);
+    ed_prepare_spans(m_->focus_id_ == key ? m_->edit_.edit_buf_.size() : current.size(), fnt, lh, asc, password);
 
     field_layout fl;
     if (m_->input_rect_set_) { // a widget that owns the box (number fields): no caption, no layout
@@ -2444,7 +2444,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     const bool hide = password && !revealed; // what is drawn as bullets
 
     // clear button (x while the field has text), tested before the field so it takes the press
-    const bool has_text  = m_->focus_id_ == key ? !m_->edit_buf_.empty() : !current.empty();
+    const bool has_text  = m_->focus_id_ == key ? !m_->edit_.edit_buf_.empty() : !current.empty();
     const bool clear_btn = has_flag(flags, input_flags::clear_button) && !readonly && has_text;
     const f32  clear_w   = clear_btn ? 22.0f : 0.0f;
     const rect clear_r   = {{box.max.x - reveal_w - clear_w - 2.0f, box.min.y + 2.0f},
@@ -2467,7 +2467,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
 
     // what is shown: the live edit buffer while focused, the caller's text otherwise
     bool focused = m_->focus_id_ == key;
-    const auto text_now = [&]() -> std::string_view { return focused ? std::string_view{m_->edit_buf_} : current; };
+    const auto text_now = [&]() -> std::string_view { return focused ? std::string_view{m_->edit_.edit_buf_} : current; };
 
     std::string masked;
     const auto rebuild_mask = [&] {
@@ -2501,7 +2501,7 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     };
     const auto index_at = [&](f32 mouse_x) {
         const std::string_view t = text_now();
-        const f32 rel = mouse_x - inner.min.x + m_->edit_scroll_;
+        const f32 rel = mouse_x - inner.min.x + m_->edit_.edit_scroll_;
         if (const bidi_layout* b = rtl_layout()) {
             return b->index_at(rel);
         }
@@ -2523,11 +2523,11 @@ bool context::input_core(std::string_view label, std::string_view current, std::
             m_->focus_id_    = key;
             focused      = true;
             wipe_edit_buffer();
-            m_->edit_buf_.assign(current);
-            m_->edit_scroll_ = 0.0f;
-            m_->edit_cursor_ = m_->edit_buf_.size();
-            m_->edit_anchor_ = 0;
-            m_->caret_time_  = m_->time_;
+            m_->edit_.edit_buf_.assign(current);
+            m_->edit_.edit_scroll_ = 0.0f;
+            m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
+            m_->edit_.edit_anchor_ = 0;
+            m_->edit_.caret_time_  = m_->time_;
             rebuild_mask();
         }
     }
@@ -2538,30 +2538,30 @@ bool context::input_core(std::string_view label, std::string_view current, std::
             m_->focus_id_    = key;
             focused      = true;
             wipe_edit_buffer(); // nothing of the previous field's text may stay behind
-            m_->edit_buf_.assign(current);
-            m_->edit_scroll_ = 0.0f;
-            m_->edit_cursor_ = m_->edit_buf_.size();
-            m_->edit_anchor_ = has_flag(flags, input_flags::select_all_on_focus) ? 0 : m_->edit_cursor_;
-            m_->caret_time_  = m_->time_;
+            m_->edit_.edit_buf_.assign(current);
+            m_->edit_.edit_scroll_ = 0.0f;
+            m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
+            m_->edit_.edit_anchor_ = has_flag(flags, input_flags::select_all_on_focus) ? 0 : m_->edit_.edit_cursor_;
+            m_->edit_.caret_time_  = m_->time_;
             rebuild_mask();
         }
 
         const std::size_t idx = index_at(m_->input_.mouse_.x);
         const u32 clicks = register_click();
         if (clicks == 3) { // triple click: the whole line (a single-line field is one line)
-            m_->edit_anchor_ = 0;
-            m_->edit_cursor_ = m_->edit_buf_.size();
+            m_->edit_.edit_anchor_ = 0;
+            m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
         } else if (clicks == 2) {
-            m_->edit_anchor_ = word_start(m_->edit_buf_, idx);
-            m_->edit_cursor_ = word_end(m_->edit_buf_, idx);
-        } else if (!has_flag(flags, input_flags::select_all_on_focus) || m_->edit_cursor_ != 0) {
-            m_->edit_cursor_ = idx;
-            m_->edit_anchor_ = idx;
+            m_->edit_.edit_anchor_ = word_start(m_->edit_.edit_buf_, idx);
+            m_->edit_.edit_cursor_ = word_end(m_->edit_.edit_buf_, idx);
+        } else if (!has_flag(flags, input_flags::select_all_on_focus) || m_->edit_.edit_cursor_ != 0) {
+            m_->edit_.edit_cursor_ = idx;
+            m_->edit_.edit_anchor_ = idx;
         }
-        m_->caret_time_ = m_->time_;
+        m_->edit_.caret_time_ = m_->time_;
     } else if (focused && in.held) {
-        m_->edit_cursor_ = index_at(m_->input_.mouse_.x);
-        m_->caret_time_  = m_->time_;
+        m_->edit_.edit_cursor_ = index_at(m_->input_.mouse_.x);
+        m_->edit_.caret_time_  = m_->time_;
     }
     if (focused) {
         m_->focus_seen_ = true;
@@ -2570,64 +2570,64 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     // --- keyboard ----------------------------------------------------------------
     bool changed = false;
     if (cleared) { // empties the field whether or not it has the keyboard
-        m_->edit_buf_.clear();
-        m_->edit_cursor_ = 0;
-        m_->edit_anchor_ = 0;
-        m_->edit_scroll_ = 0.0f;
+        m_->edit_.edit_buf_.clear();
+        m_->edit_.edit_cursor_ = 0;
+        m_->edit_.edit_anchor_ = 0;
+        m_->edit_.edit_scroll_ = 0.0f;
         edit_history_clear();
-        ++m_->edit_version_;
+        ++m_->edit_.edit_version_;
         changed = true;
     }
     if (focused) {
-        m_->edit_readonly_   = readonly;
-        m_->edit_max_bytes_  = max_bytes;
-        m_->edit_history_on_ = !password && !readonly && m_->edit_mask_.empty();
+        m_->edit_.edit_readonly_   = readonly;
+        m_->edit_.edit_max_bytes_  = max_bytes;
+        m_->edit_.edit_history_on_ = !password && !readonly && m_->edit_mask_.empty();
 
         if (m_->input_.typed_len_ != 0) {
             changed = edit_insert({m_->input_.typed_.data(), m_->input_.typed_len_}, true) || changed;
             m_->input_.typed_len_  = 0;
-            m_->caret_time_ = m_->time_;
+            m_->edit_.caret_time_ = m_->time_;
         }
 
         for (u32 i = 0; i < m_->input_.key_count_ && focused; ++i) {
             const key_event& ev = m_->input_.keys_[i];
             if (ev.alt) { continue; } // Alt + key is a shortcut of the host, not editing
-            const std::string_view t = m_->edit_buf_;
-            const bool has_sel = m_->edit_cursor_ != m_->edit_anchor_;
-            m_->caret_time_ = m_->time_;
+            const std::string_view t = m_->edit_.edit_buf_;
+            const bool has_sel = m_->edit_.edit_cursor_ != m_->edit_.edit_anchor_;
+            m_->edit_.caret_time_ = m_->time_;
             switch (ev.k) {
             case key::left:
                 if (!ev.shift && !ev.ctrl && has_sel) {
-                    m_->edit_cursor_ = m_->edit_anchor_ = std::min(m_->edit_cursor_, m_->edit_anchor_);
+                    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
                 } else {
-                    m_->edit_cursor_ = ev.ctrl ? prev_word(t, m_->edit_cursor_) : prev_boundary(t, m_->edit_cursor_);
-                    if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                    m_->edit_.edit_cursor_ = ev.ctrl ? prev_word(t, m_->edit_.edit_cursor_) : prev_boundary(t, m_->edit_.edit_cursor_);
+                    if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 }
                 break;
             case key::right:
                 if (!ev.shift && !ev.ctrl && has_sel) {
-                    m_->edit_cursor_ = m_->edit_anchor_ = std::max(m_->edit_cursor_, m_->edit_anchor_);
+                    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
                 } else {
-                    m_->edit_cursor_ = ev.ctrl ? next_word(t, m_->edit_cursor_) : next_boundary(t, m_->edit_cursor_);
-                    if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                    m_->edit_.edit_cursor_ = ev.ctrl ? next_word(t, m_->edit_.edit_cursor_) : next_boundary(t, m_->edit_.edit_cursor_);
+                    if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 }
                 break;
             case key::home:
-                m_->edit_cursor_ = 0;
-                if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                m_->edit_.edit_cursor_ = 0;
+                if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 break;
             case key::end:
-                m_->edit_cursor_ = t.size();
-                if (!ev.shift) { m_->edit_anchor_ = m_->edit_cursor_; }
+                m_->edit_.edit_cursor_ = t.size();
+                if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
                 break;
             case key::backspace:
                 if (!readonly) {
                     if (edit_delete_selection()) {
                         changed = true;
                     } else {
-                        const std::size_t a = ev.ctrl ? prev_word(t, m_->edit_cursor_) : prev_boundary(t, m_->edit_cursor_);
-                        if (a < m_->edit_cursor_) {
-                            changed = edit_replace(a, m_->edit_cursor_ - a, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_back) || changed;
+                        const std::size_t a = ev.ctrl ? prev_word(t, m_->edit_.edit_cursor_) : prev_boundary(t, m_->edit_.edit_cursor_);
+                        if (a < m_->edit_.edit_cursor_) {
+                            changed = edit_replace(a, m_->edit_.edit_cursor_ - a, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_back) || changed;
                         }
                     }
                 }
@@ -2637,15 +2637,15 @@ bool context::input_core(std::string_view label, std::string_view current, std::
                     if (edit_delete_selection()) {
                         changed = true;
                     } else {
-                        const std::size_t b = ev.ctrl ? next_word(t, m_->edit_cursor_) : next_boundary(t, m_->edit_cursor_);
-                        if (b > m_->edit_cursor_) {
-                            changed = edit_replace(m_->edit_cursor_, b - m_->edit_cursor_, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_fwd) || changed;
+                        const std::size_t b = ev.ctrl ? next_word(t, m_->edit_.edit_cursor_) : next_boundary(t, m_->edit_.edit_cursor_);
+                        if (b > m_->edit_.edit_cursor_) {
+                            changed = edit_replace(m_->edit_.edit_cursor_, b - m_->edit_.edit_cursor_, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_fwd) || changed;
                         }
                     }
                 }
                 break;
             case key::enter:
-                m_->submitted_ = true;
+                m_->edit_.submitted_ = true;
                 break;
             case key::escape:
             case key::tab:
@@ -2673,12 +2673,12 @@ bool context::input_core(std::string_view label, std::string_view current, std::
         const f32 view_w  = std::max(inner.width(), 1.0f);
         const bool composing_now = !readonly && !password && m_->input_.ime_len_ != 0;
         const std::string_view comp{m_->input_.ime_text_.data(), m_->input_.ime_len_};
-        const f32 caret_x = prefix_width(m_->edit_cursor_) + (composing_now ? m_->font_.measure(fnt, comp.substr(0, m_->input_.ime_cursor_)).x : 0.0f);
-        if (caret_x - m_->edit_scroll_ > view_w - 2.0f) { m_->edit_scroll_ = caret_x - view_w + 2.0f; }
-        if (caret_x - m_->edit_scroll_ < 0.0f)          { m_->edit_scroll_ = caret_x; }
+        const f32 caret_x = prefix_width(m_->edit_.edit_cursor_) + (composing_now ? m_->font_.measure(fnt, comp.substr(0, m_->input_.ime_cursor_)).x : 0.0f);
+        if (caret_x - m_->edit_.edit_scroll_ > view_w - 2.0f) { m_->edit_.edit_scroll_ = caret_x - view_w + 2.0f; }
+        if (caret_x - m_->edit_.edit_scroll_ < 0.0f)          { m_->edit_.edit_scroll_ = caret_x; }
         const bidi_layout* rtl_now = rtl_layout();
         const f32 total = (rtl_now != nullptr ? rtl_now->width() : prefix_width(text_now().size())) + (composing_now ? m_->font_.measure(fnt, comp).x : 0.0f);
-        if (total - m_->edit_scroll_ < view_w - 2.0f)   { m_->edit_scroll_ = std::max(0.0f, total - view_w + 2.0f); }
+        if (total - m_->edit_.edit_scroll_ < view_w - 2.0f)   { m_->edit_.edit_scroll_ = std::max(0.0f, total - view_w + 2.0f); }
     }
 
     // --- drawing -----------------------------------------------------------------
@@ -2728,22 +2728,22 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     }
 
     m_->dl_.push_clip({{inner.min.x, box.min.y + 1.0f}, {inner.max.x, box.max.y - 1.0f}});
-    const f32 text_x = inner.min.x - (focused ? m_->edit_scroll_ : 0.0f);
+    const f32 text_x = inner.min.x - (focused ? m_->edit_.edit_scroll_ : 0.0f);
 
     const std::string_view shown_text = text_now();
     const bool composing = focused && !readonly && !password && m_->input_.ime_len_ != 0;
     const std::string_view comp{m_->input_.ime_text_.data(), m_->input_.ime_len_};
     std::string disp; // the text with the composition inserted at the caret
     if (composing) {
-        const std::size_t at = std::min(m_->edit_cursor_, shown_text.size());
+        const std::size_t at = std::min(m_->edit_.edit_cursor_, shown_text.size());
         disp.assign(shown_text.substr(0, at));
         disp.append(comp);
         disp.append(shown_text.substr(at));
     }
     const auto disp_width = [&](std::size_t n) { return m_->font_.measure(fnt, std::string_view{disp}.substr(0, n)).x; };
-    if (focused && m_->edit_cursor_ != m_->edit_anchor_ && !composing) {
-        const std::size_t lo = std::min(m_->edit_cursor_, m_->edit_anchor_);
-        const std::size_t hi = std::max(m_->edit_cursor_, m_->edit_anchor_);
+    if (focused && m_->edit_.edit_cursor_ != m_->edit_.edit_anchor_ && !composing) {
+        const std::size_t lo = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
+        const std::size_t hi = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
         shape_style sel;
         sel.radius      = radii(2.0f);
         sel.fill_top    = m_->style_.accent.scaled_alpha(0.45f);
@@ -2758,24 +2758,24 @@ bool context::input_core(std::string_view label, std::string_view current, std::
     } else if (hide) {
         m_->dl_.text({text_x, text_y}, m_->style_.text, masked, fnt);
     } else if (composing) { // the composition sits in the text, underlined and lightly marked
-        const std::size_t at = std::min(m_->edit_cursor_, shown_text.size());
+        const std::size_t at = std::min(m_->edit_.edit_cursor_, shown_text.size());
         const f32 x0 = text_x + disp_width(at);
         const f32 x1 = text_x + disp_width(at + comp.size());
         m_->dl_.rect_filled({{x0, text_y - 1.0f}, {x1, text_y + lh + 1.0f}}, m_->style_.accent.scaled_alpha(0.18f));
         m_->dl_.text({text_x, text_y}, m_->style_.text, disp, fnt);
         m_->dl_.rect_filled({{x0, text_y + lh - 1.0f}, {x1, text_y + lh + 0.5f}}, m_->style_.accent_hover);
-    } else if (!m_->edit_spans_.empty()) {
+    } else if (!m_->edit_.edit_spans_.empty()) {
         ed_draw({text_x, text_y}, asc, m_->style_.text, shown_text, 0, shown_text.size(), fnt);
     } else {
         m_->dl_.text({text_x, text_y}, m_->style_.text, shown_text, fnt);
     }
 
     if (focused) { // where the input method puts its candidate window
-        const f32 caret_x = composing ? text_x + disp_width(std::min(m_->edit_cursor_, shown_text.size()) + m_->input_.ime_cursor_)
-                                      : text_x + prefix_width(m_->edit_cursor_);
-        m_->ime_want_   = !password; // (a password field turns the input method off)
-        m_->ime_pos_    = {caret_x * m_->scale_, (text_y + lh) * m_->scale_};
-        m_->ime_line_h_ = lh * m_->scale_;
+        const f32 caret_x = composing ? text_x + disp_width(std::min(m_->edit_.edit_cursor_, shown_text.size()) + m_->input_.ime_cursor_)
+                                      : text_x + prefix_width(m_->edit_.edit_cursor_);
+        m_->edit_.ime_want_   = !password; // (a password field turns the input method off)
+        m_->edit_.ime_pos_    = {caret_x * m_->scale_, (text_y + lh) * m_->scale_};
+        m_->edit_.ime_line_h_ = lh * m_->scale_;
         if (caret_visible()) {
             const f32 cx = std::round(caret_x);
             m_->dl_.rect_filled({{cx, text_y}, {cx + 1.5f, text_y + lh}}, m_->style_.text);

@@ -161,28 +161,28 @@ bool context::begin_drag_source()
         return false;
     }
     const id src = m_->last_item_key_;
-    if (!m_->dd_active_ && !m_->dd_cancelled_) {
+    if (!m_->dnd_.dd_active_ && !m_->dnd_.dd_cancelled_) {
         if (m_->active_ == src && m_->input_.mouse_pressed_) {
-            m_->dd_candidate_ = src;
-            m_->dd_press_pos_ = m_->input_.mouse_;
+            m_->dnd_.dd_candidate_ = src;
+            m_->dnd_.dd_press_pos_ = m_->input_.mouse_;
         }
-        if (m_->dd_candidate_ == src && m_->active_ == src && m_->input_.mouse_down_) {
-            const vec2 d = m_->input_.mouse_ - m_->dd_press_pos_;
+        if (m_->dnd_.dd_candidate_ == src && m_->active_ == src && m_->input_.mouse_down_) {
+            const vec2 d = m_->input_.mouse_ - m_->dnd_.dd_press_pos_;
             if (d.x * d.x + d.y * d.y > 25.0f) { // a few pixels of travel: a click is not a drag
-                m_->dd_active_ = true;
-                m_->dd_source_ = src;
-                m_->dd_type_.clear();
-                m_->dd_data_.clear();
+                m_->dnd_.dd_active_ = true;
+                m_->dnd_.dd_source_ = src;
+                m_->dnd_.dd_type_.clear();
+                m_->dnd_.dd_data_.clear();
             }
         }
     }
-    if (!m_->dd_active_ || m_->dd_source_ != src) {
+    if (!m_->dnd_.dd_active_ || m_->dnd_.dd_source_ != src) {
         return false;
     }
     for (u32 i = 0; i < m_->input_.key_count_; ++i) {
         if (m_->input_.keys_[i].k == key::escape) {
-            m_->dd_active_    = false;
-            m_->dd_cancelled_ = true;
+            m_->dnd_.dd_active_    = false;
+            m_->dnd_.dd_cancelled_ = true;
             return false;
         }
     }
@@ -192,18 +192,18 @@ bool context::begin_drag_source()
     m_->cursor_ = cursor_kind::arrow;
 
     // the drag preview: an overlay panel following the pointer, sized by last frame's content
-    m_->dd_saved_overlay_ = m_->in_overlay_;
-    m_->dd_saved_layout_  = m_->layout_;
-    m_->dd_prev_owner_    = m_->run_owner_;
+    m_->dnd_.dd_saved_overlay_ = m_->in_overlay_;
+    m_->dnd_.dd_saved_layout_  = m_->layout_;
+    m_->dnd_.dd_prev_owner_    = m_->run_owner_;
     switch_run(m_->popup_.overlay_run());
     m_->in_overlay_ = true;
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
-    const bool measured = m_->dd_size_.y > 0.0f;
-    m_->dd_hidden_ = !measured;
-    if (m_->dd_hidden_) { m_->dl_.push_alpha(0.0f); }
+    const bool measured = m_->dnd_.dd_size_.y > 0.0f;
+    m_->dnd_.dd_hidden_ = !measured;
+    if (m_->dnd_.dd_hidden_) { m_->dl_.push_alpha(0.0f); }
 
-    const vec2 size = measured ? m_->dd_size_ : vec2{40.0f, 24.0f};
+    const vec2 size = measured ? m_->dnd_.dd_size_ : vec2{40.0f, 24.0f};
     vec2 pos = m_->input_.mouse_ + vec2{16.0f, 18.0f};
     pos.x = std::max(4.0f, std::min(pos.x, m_->display_.x - size.x - 4.0f));
     pos.y = std::max(4.0f, std::min(pos.y, m_->display_.y - size.y - 4.0f));
@@ -229,31 +229,31 @@ bool context::begin_drag_source()
 
 void context::set_drag_payload(std::string_view type, const void* data, std::size_t size)
 {
-    if (!m_->dd_active_) {
+    if (!m_->dnd_.dd_active_) {
         return;
     }
-    m_->dd_type_.assign(type);
-    m_->dd_data_.assign(static_cast<const u8*>(data), static_cast<const u8*>(data) + size);
+    m_->dnd_.dd_type_.assign(type);
+    m_->dnd_.dd_data_.assign(static_cast<const u8*>(data), static_cast<const u8*>(data) + size);
 }
 
 void context::end_drag_source()
 {
     const f32 content_w = std::max(m_->layout_.right - m_->layout_.origin.x, 0.0f);
     const f32 content_h = m_->layout_.first ? 0.0f : m_->layout_.bottom - m_->layout_.origin.y;
-    m_->dd_size_ = {content_w + 16.0f, content_h + 12.0f};
+    m_->dnd_.dd_size_ = {content_w + 16.0f, content_h + 12.0f};
 
-    m_->layout_ = m_->dd_saved_layout_;
+    m_->layout_ = m_->dnd_.dd_saved_layout_;
     m_->dl_.pop_clip();
     m_->dl_.pop_clip();
-    if (m_->dd_hidden_) { m_->dl_.pop_alpha(); }
-    m_->in_overlay_ = m_->dd_saved_overlay_;
-    switch_run(m_->dd_prev_owner_);
+    if (m_->dnd_.dd_hidden_) { m_->dl_.pop_alpha(); }
+    m_->in_overlay_ = m_->dnd_.dd_saved_overlay_;
+    switch_run(m_->dnd_.dd_prev_owner_);
 }
 
 drop_result context::drop_target(std::string_view type, drop_flags flags)
 {
     drop_result r;
-    if (m_->cur_ == nullptr || !m_->dd_active_ || m_->dd_cancelled_ || m_->dd_type_ != type) {
+    if (m_->cur_ == nullptr || !m_->dnd_.dd_active_ || m_->dnd_.dd_cancelled_ || m_->dnd_.dd_type_ != type) {
         return r;
     }
     const rect target = m_->last_item_rect_;
@@ -273,7 +273,7 @@ drop_result context::drop_target(std::string_view type, drop_flags flags)
     }
     if (m_->input_.mouse_released_) {
         r.dropped = true;
-        r.data    = m_->dd_data_;
+        r.data    = m_->dnd_.dd_data_;
     }
     return r;
 }

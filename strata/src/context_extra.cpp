@@ -142,14 +142,14 @@ f32 context::layout_next_y() const noexcept
 
 bool context::begin_child(std::string_view id_label, vec2 size, child_flags flags)
 {
-    if (m_->cur_ != nullptr && m_->child_depth_ >= max_child_depth) {
+    if (m_->cur_ != nullptr && m_->children_cards_.child_depth_ >= max_child_depth) {
         report_limit("child regions inside child regions (max_child_depth)", max_child_depth);
     }
-    if (m_->cur_ == nullptr || m_->child_depth_ >= max_child_depth) {
+    if (m_->cur_ == nullptr || m_->children_cards_.child_depth_ >= max_child_depth) {
         return false;
     }
     const id key = widget_id(id_label);
-    child_state* st = state_for(m_->children_, key, m_->frame_);
+    child_state* st = state_for(m_->children_cards_.children_, key, m_->frame_);
     if (st->content_h > 0.0f) { apply_pending_scroll(key, st->scroll, &st->scroll_x); } // (once its content has been measured)
 
     // width: rest of the line; height: down to the window bottom
@@ -202,7 +202,7 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
 
     m_->dl_.push_clip({{r.min.x + 1.0f, r.min.y + 1.0f}, {r.max.x - 1.0f, r.max.y - 1.0f}});
 
-    m_->child_stack_[m_->child_depth_++] = {st, r, inner, m_->layout_, flags};
+    m_->children_cards_.child_stack_[m_->children_cards_.child_depth_++] = {st, r, inner, m_->layout_, flags};
     push_id(id_label);
 
     m_->layout_              = {};
@@ -214,10 +214,10 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
 
 void context::end_child()
 {
-    if (m_->child_depth_ == 0) {
+    if (m_->children_cards_.child_depth_ == 0) {
         return;
     }
-    const child_frame f = m_->child_stack_[--m_->child_depth_];
+    const child_frame f = m_->children_cards_.child_stack_[--m_->children_cards_.child_depth_];
     child_state& st     = *f.state;
 
     const bool horiz = has_flag(f.flags, child_flags::horizontal);
@@ -303,15 +303,15 @@ void context::end_child()
 
 bool context::begin_card(std::string_view title, std::string_view icon, font_id icon_font)
 {
-    if (m_->cur_ != nullptr && m_->card_depth_ >= max_card_depth) {
+    if (m_->cur_ != nullptr && m_->children_cards_.card_depth_ >= max_card_depth) {
         report_limit("cards inside cards (max_card_depth)", max_card_depth);
     }
-    if (m_->cur_ == nullptr || m_->card_depth_ >= max_card_depth) {
+    if (m_->cur_ == nullptr || m_->children_cards_.card_depth_ >= max_card_depth) {
         return false;
     }
     const font_id f = current_font();
     const id key    = widget_id(title);
-    card_state* st  = state_for(m_->cards_, key, m_->frame_);
+    card_state* st  = state_for(m_->children_cards_.cards_, key, m_->frame_);
 
     const std::string_view shown = visible_label(title);
     const bool has_head = !shown.empty() || !icon.empty();
@@ -350,7 +350,7 @@ bool context::begin_card(std::string_view title, std::string_view icon, font_id 
         label_draw({x, r.min.y + (head_h - title_h) * 0.5f}, m_->style_.text, shown, f);
     }
 
-    m_->card_stack_[m_->card_depth_++] = {st, m_->layout_};
+    m_->children_cards_.card_stack_[m_->children_cards_.card_depth_++] = {st, m_->layout_};
     push_id(title);
     m_->layout_              = {};
     m_->layout_.origin       = {r.min.x + pad, r.min.y + head_h + pad};
@@ -360,10 +360,10 @@ bool context::begin_card(std::string_view title, std::string_view icon, font_id 
 
 void context::end_card()
 {
-    if (m_->card_depth_ == 0) {
+    if (m_->children_cards_.card_depth_ == 0) {
         return;
     }
-    const card_frame f = m_->card_stack_[--m_->card_depth_];
+    const card_frame f = m_->children_cards_.card_stack_[--m_->children_cards_.card_depth_];
     f.state->content_h = m_->layout_.first ? 0.0f : m_->layout_.bottom - m_->layout_.origin.y;
     m_->layout_ = f.outer;
     pop_id();

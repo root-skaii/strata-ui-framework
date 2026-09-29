@@ -152,8 +152,8 @@ void context::nav_end()
 // scroll offset and visible rect of the innermost scrolling region (child being built, else window); nullptr if none.
 f32* context::scroll_slot(rect& view) noexcept
 {
-    if (m_->child_depth_ > 0) {
-        child_frame& cf = m_->child_stack_[m_->child_depth_ - 1];
+    if (m_->children_cards_.child_depth_ > 0) {
+        child_frame& cf = m_->children_cards_.child_stack_[m_->children_cards_.child_depth_ - 1];
         if (cf.state == nullptr) { return nullptr; }
         view = cf.inner;
         return &cf.state->scroll;
@@ -186,7 +186,7 @@ f32 context::scroll_max_y() const noexcept
         return 0.0f;
     }
     // last frame's value: this frame's content is not finished yet
-    const f32 content = m_->child_depth_ > 0 ? m_->child_stack_[m_->child_depth_ - 1].state->content_h
+    const f32 content = m_->children_cards_.child_depth_ > 0 ? m_->children_cards_.child_stack_[m_->children_cards_.child_depth_ - 1].state->content_h
                                          : m_->cur_->content_h + 2.0f * (m_->cur_->menubar ? 0.0f : m_->style_.padding);
     return std::max(0.0f, content - view.height());
 }
@@ -202,9 +202,9 @@ void context::set_scroll_y(f32 y) noexcept
 // only child_flags::horizontal children scroll sideways: the innermost one owns the x offset
 context::child_state* context::horizontal_child() const noexcept
 {
-    for (u32 d = m_->child_depth_; d-- > 0;) {
-        if (has_flag(m_->child_stack_[d].flags, child_flags::horizontal)) {
-            return m_->child_stack_[d].state;
+    for (u32 d = m_->children_cards_.child_depth_; d-- > 0;) {
+        if (has_flag(m_->children_cards_.child_stack_[d].flags, child_flags::horizontal)) {
+            return m_->children_cards_.child_stack_[d].state;
         }
     }
     return nullptr;
@@ -223,9 +223,9 @@ f32 context::scroll_max_x() const noexcept
         return 0.0f;
     }
     // last frame's value, like scroll_max_y
-    for (u32 d = m_->child_depth_; d-- > 0;) {
-        if (m_->child_stack_[d].state == st) {
-            return std::max(0.0f, st->content_w - m_->child_stack_[d].inner.width());
+    for (u32 d = m_->children_cards_.child_depth_; d-- > 0;) {
+        if (m_->children_cards_.child_stack_[d].state == st) {
+            return std::max(0.0f, st->content_w - m_->children_cards_.child_stack_[d].inner.width());
         }
     }
     return 0.0f;

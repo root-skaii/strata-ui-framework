@@ -166,13 +166,13 @@ void context::ask_confirm(std::string_view id_label, std::string_view message, u
 {
     // the id is global like a modal title: ask_confirm() inside a window and confirm() outside must match
     const id key = hash_id(id_label, 0);
-    m_->confirm_key_      = key;
-    m_->confirm_data_     = user_data;
-    m_->confirm_message_.assign(message);
-    m_->confirm_remember_ = false;
-    m_->confirm_answer_     = 0;
-    m_->confirm_answer_key_ = 0;
-    m_->confirm_pending_    = true; // opened by the next confirm() call, which knows the options
+    m_->confirm_.confirm_key_      = key;
+    m_->confirm_.confirm_data_     = user_data;
+    m_->confirm_.confirm_message_.assign(message);
+    m_->confirm_.confirm_remember_ = false;
+    m_->confirm_.confirm_answer_     = 0;
+    m_->confirm_.confirm_answer_key_ = 0;
+    m_->confirm_.confirm_pending_    = true; // opened by the next confirm() call, which knows the options
 }
 
 int context::confirm(std::string_view id_label, std::initializer_list<std::string_view> buttons,
@@ -181,21 +181,21 @@ int context::confirm(std::string_view id_label, std::initializer_list<std::strin
     const id key = hash_id(id_label, 0);
 
     // the answer of the frame the button was pressed, handed out once
-    if (m_->confirm_answer_key_ == key && m_->confirm_answer_ != 0) {
-        const int answer    = m_->confirm_answer_;
-        m_->confirm_answer_     = 0;
-        m_->confirm_answer_key_ = 0;
+    if (m_->confirm_.confirm_answer_key_ == key && m_->confirm_.confirm_answer_ != 0) {
+        const int answer    = m_->confirm_.confirm_answer_;
+        m_->confirm_.confirm_answer_     = 0;
+        m_->confirm_.confirm_answer_key_ = 0;
         return answer;
     }
-    if (m_->confirm_pending_ && m_->confirm_key_ == key) {
-        m_->confirm_pending_ = false;
+    if (m_->confirm_.confirm_pending_ && m_->confirm_.confirm_key_ == key) {
+        m_->confirm_.confirm_pending_ = false;
         if (options.remember != nullptr && *options.remember) {
             return options.remembered; // the user asked not to be asked
         }
         open_modal(options.title.empty() ? std::string_view{"Confirm"} : options.title);
-        m_->confirm_open_ = key;
+        m_->confirm_.confirm_open_ = key;
     }
-    if (m_->confirm_open_ != key) {
+    if (m_->confirm_.confirm_open_ != key) {
         return 0;
     }
 
@@ -204,19 +204,19 @@ int context::confirm(std::string_view id_label, std::initializer_list<std::strin
     bool open = false;
     for (u32 i = 0; i < m_->modal_.modal_count_; ++i) { open = open || m_->modal_.modal_stack_[i] == wid; }
     if (!open) {
-        m_->confirm_open_ = 0;
+        m_->confirm_.confirm_open_ = 0;
         return 0;
     }
     if (!begin_modal(title, {380.0f, 0.0f}, modal_flags::esc_closes | modal_flags::backdrop_closes)) {
-        m_->confirm_open_ = 0;
+        m_->confirm_.confirm_open_ = 0;
         return -1; // dismissed with Esc / a click outside
     }
 
     int result = 0;
-    text_wrapped(m_->confirm_message_);
+    text_wrapped(m_->confirm_.confirm_message_);
     if (options.remember != nullptr) {
         spacing(m_->style_.item_spacing);
-        (void)checkbox(options.remember_label, m_->confirm_remember_);
+        (void)checkbox(options.remember_label, m_->confirm_.confirm_remember_);
     }
     spacing(m_->style_.item_spacing * 1.5f);
 
@@ -247,11 +247,11 @@ int context::confirm(std::string_view id_label, std::initializer_list<std::strin
     end_modal();
     if (result != 0) {
         close_modal();
-        m_->confirm_open_ = 0;
-        if (options.remember != nullptr && m_->confirm_remember_) { *options.remember = true; }
+        m_->confirm_.confirm_open_ = 0;
+        if (options.remember != nullptr && m_->confirm_.confirm_remember_) { *options.remember = true; }
         // reported on the next frame, so it is not mistaken for the click that pressed the button
-        m_->confirm_answer_     = result;
-        m_->confirm_answer_key_ = key;
+        m_->confirm_.confirm_answer_     = result;
+        m_->confirm_.confirm_answer_key_ = key;
     }
     return 0;
 }

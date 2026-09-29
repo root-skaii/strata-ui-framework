@@ -135,7 +135,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
         body_h = m_->layout_.bound_bottom > 0.0f ? std::max(m_->layout_.bound_bottom - layout_next_y(), 60.0f) : 220.0f;
     }
     if (begin_child("##body", {size.x, body_h}, child_flags::frame)) {
-        child_frame& cf = m_->child_stack_[m_->child_depth_ - 1];
+        child_frame& cf = m_->children_cards_.child_stack_[m_->children_cards_.child_depth_ - 1];
         child_state& st = *cf.state;
         const f32 row_h  = m_->font_.line_height(f) + 3.0f;
         const f32 time_w = v.show_time ? m_->font_.measure(f, v.clock ? "00:00:00.000 " : "000.0 ").x + 4.0f : 0.0f;

@@ -223,7 +223,7 @@ bool context::sequence_pressed(const key_sequence& seq) const
 
 void context::draw_mnemonic(vec2 pos, color c, std::string_view text, std::size_t at, std::size_t len, bool underline, font_id f)
 {
-    if (len == 0 || !underline || m_->rich_depth_ > 0) {
+    if (len == 0 || !underline || m_->rich_.rich_depth_ > 0) {
         label_draw(pos, c, text, f);
         return;
     }

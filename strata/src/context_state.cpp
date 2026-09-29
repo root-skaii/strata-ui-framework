@@ -60,13 +60,13 @@ void context::save_state(config& cfg, std::string_view section) const
         i = e + 1;
     }
 
-    for (const table_state& t : m_->tables_) {
+    for (const table_state& t : m_->tree_table_.tables_) {
         if (t.key != 0 && t.inited) { cfg.set(section, std::format("table_{:x}", t.key), table_layout_text(t)); }
     }
 
     std::string line;
     std::size_t in_line = 0, chunk = 0;
-    for (const tree_state& t : m_->tree_states_) {
+    for (const tree_state& t : m_->tree_table_.tree_states_) {
         line += std::format("{}{:x}:{}", line.empty() ? "" : " ", t.key, t.open ? 1 : 0);
         if (++in_line == tree_chunk) {
             cfg.set(section, std::format("tree_{:04}", chunk++), line);
@@ -79,7 +79,7 @@ void context::save_state(config& cfg, std::string_view section) const
     for (const window_state& w : m_->win_.windows_) {
         if (w.key != 0 && w.scroll > 0.0f) { cfg.set(section, std::format("scroll_{:x}", w.key), std::format("{}", w.scroll)); }
     }
-    for (const child_state& c : m_->children_) {
+    for (const child_state& c : m_->children_cards_.children_) {
         if (c.key != 0 && (c.scroll > 0.0f || c.scroll_x > 0.0f)) {
             cfg.set(section, std::format("scroll_{:x}", c.key), std::format("{} {}", c.scroll, c.scroll_x));
         }
@@ -110,10 +110,10 @@ bool context::load_state(const config& cfg, std::string_view section)
                 u64 k{};
                 if (colon == std::string_view::npos || !parse_hex(w.substr(0, colon), k) || k == 0) { continue; }
                 const bool open = w.substr(colon + 1) == "1";
-                const auto it = std::lower_bound(m_->tree_states_.begin(), m_->tree_states_.end(), k,
+                const auto it = std::lower_bound(m_->tree_table_.tree_states_.begin(), m_->tree_table_.tree_states_.end(), k,
                                                  [](const tree_state& s, id x) { return s.key < x; });
-                if (it != m_->tree_states_.end() && it->key == k) { it->open = open; }
-                else { m_->tree_states_.insert(it, tree_state{k, 0, open}); } // (its parent scope is learnt when it is shown)
+                if (it != m_->tree_table_.tree_states_.end() && it->key == k) { it->open = open; }
+                else { m_->tree_table_.tree_states_.insert(it, tree_state{k, 0, open}); } // (its parent scope is learnt when it is shown)
             }
         } else if (key.starts_with("scroll_")) {
             u64 k{};
