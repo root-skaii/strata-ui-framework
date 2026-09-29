@@ -11,6 +11,10 @@ target_link_libraries(strata_overlay PUBLIC strata::strata PRIVATE $<BUILD_INTER
 
 add_library(strata_overlay_demo SHARED demo/demo_dll.cpp)
 target_link_libraries(strata_overlay_demo PRIVATE strata_overlay $<BUILD_INTERFACE:strata_options> user32.lib)
+if(STRATA_BUILD_OPENVR)
+    target_link_libraries(strata_overlay_demo PRIVATE openvr_api)
+    strata_openvr_copy_dll(strata_overlay_demo)
+endif()
 
 add_executable(strata_overlay_host WIN32 tools/test_host.cpp)
 target_link_libraries(strata_overlay_host PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib d3d12.lib dxgi.lib user32.lib shell32.lib delayimp.lib)

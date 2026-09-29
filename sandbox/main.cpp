@@ -1,7 +1,9 @@
 #include "demo2.hpp"
 #include "gfx_host.hpp"
 #include "imgio.hpp"
+#include "openvr_main.hpp"
 #include "selftest.hpp"
+#include "xr_main.hpp"
 
 #include <strata/platform/win32.hpp>
 #include <strata/strata.hpp>
@@ -25,6 +27,8 @@ namespace {
 
 struct options {
     bool           use_dx12   = false;
+    bool           use_xr     = false; // --xr: standalone vr loop (xr_main.cpp), skips the windowed path entirely
+    bool           use_openvr = false; // --openvr: standalone steamvr overlay loop (openvr_main.cpp)
     bool           vsync      = true;
     int            fps_cap    = -1;    // -1: display refresh when vsync is on, 0: unlimited
     strata::i32    width      = 1280;
@@ -74,6 +78,10 @@ struct options {
 constexpr const wchar_t* usage_text =
     L"strata_sandbox [options]\n\n"
     L"  --dx11 | --dx12          graphics backend (default dx11)\n"
+    L"  --xr                     standalone vr loop instead of a window (needs a build with STRATA_BUILD_OPENXR;\n"
+    L"                           uses --width/--height as the panel's pixel size, --face/--size/--theme as usual)\n"
+    L"  --openvr                 standalone steamvr overlay loop instead of a window (needs STRATA_BUILD_OPENVR);\n"
+    L"                           same --width/--height/--face/--size/--theme as --xr\n"
     L"  --vsync | --novsync      present interval (default vsync)\n"
     L"  --fps N                  frame cap; 0 = unlimited (default: the display refresh rate, since some drivers\n"
     L"                           ignore vsync and would otherwise run at thousands of fps)\n"
@@ -155,6 +163,8 @@ struct app {
         const std::wstring_view a = argv[i];
         if (a == L"--dx12")                { opt.use_dx12 = true; }
         else if (a == L"--dx11")           { opt.use_dx12 = false; }
+        else if (a == L"--xr")             { opt.use_xr = true; }
+        else if (a == L"--openvr")         { opt.use_openvr = true; }
         else if (a == L"--vsync")          { opt.vsync = true; }
         else if (a == L"--novsync")        { opt.vsync = false; }
         else if (a == L"--fps")            { opt.fps_cap = std::max(integer(i), 0); }
@@ -1271,6 +1281,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     if (opt.selftest) {
         return run_selftest();
     }
+
+#if STRATA_HAS_OPENXR
+    if (opt.use_xr) {
+        return run_xr_sandbox(opt.face, opt.size, opt.theme, static_cast<strata::u32>(opt.width),
+                              static_cast<strata::u32>(opt.height));
+    }
+#else
+    if (opt.use_xr) {
+        ::MessageBoxW(nullptr, L"this build has no openxr backend (configure with -DSTRATA_BUILD_OPENXR=ON)",
+                      L"strata sandbox", MB_ICONERROR);
+        return 1;
+    }
+#endif
+
+#if STRATA_HAS_OPENVR
+    if (opt.use_openvr) {
+        return run_openvr_sandbox(opt.face, opt.size, opt.theme, static_cast<strata::u32>(opt.width),
+                                  static_cast<strata::u32>(opt.height));
+    }
+#else
+    if (opt.use_openvr) {
+        ::MessageBoxW(nullptr, L"this build has no openvr backend (configure with -DSTRATA_BUILD_OPENVR=ON)",
+                      L"strata sandbox", MB_ICONERROR);
+        return 1;
+    }
+#endif
 
     std::unique_ptr<gfx_host> host;
 #if STRATA_HAS_DX12

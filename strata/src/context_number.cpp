@@ -64,7 +64,7 @@ bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f
     // --- typing ------------------------------------------------------------------------------------------------
     if (m_->number_edit_ == wkey) {
         bool esc = false;
-        for (u32 i = 0; i < m_->key_count_; ++i) { esc = esc || m_->keys_[i].k == key::escape; }
+        for (u32 i = 0; i < m_->input_.key_count_; ++i) { esc = esc || m_->input_.keys_[i].k == key::escape; }
 
         m_->input_rect_     = box;
         m_->input_rect_set_ = true;
@@ -101,21 +101,21 @@ bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f
         // nothing changes until the pointer leaves a small dead zone (clicks never nudge the value); then the distance
         // travelled applies at once
         f32 dx = 0.0f;
-        if (m_->mouse_pressed_) {
+        if (m_->input_.mouse_pressed_) {
             m_->drag_frac_  = 0.0f;
-            m_->drag_start_ = m_->mouse_;
+            m_->drag_start_ = m_->input_.mouse_;
             m_->drag_moved_ = false;
         } else if (!m_->drag_moved_) {
-            const vec2 d = m_->mouse_ - m_->drag_start_;
+            const vec2 d = m_->input_.mouse_ - m_->drag_start_;
             if (dot(d, d) > 25.0f) {
                 m_->drag_moved_ = true;
                 dx          = d.x;
             }
         } else {
-            dx = m_->mouse_delta_.x;
+            dx = m_->input_.mouse_delta_.x;
         }
         if (dx != 0.0f) {
-            const f32 mul   = m_->mod_shift_ ? 0.1f : (m_->mod_alt_ ? 10.0f : 1.0f);
+            const f32 mul   = m_->input_.mod_shift_ ? 0.1f : (m_->input_.mod_alt_ ? 10.0f : 1.0f);
             // with a range the box is a ruler: its width spans [lo, hi], so the fill follows the pointer 1:1
             const f32 per_pixel = bounded ? (hi - lo) / std::max(box.width(), 1.0f) : speed;
             f32       delta = dx * per_pixel * mul;

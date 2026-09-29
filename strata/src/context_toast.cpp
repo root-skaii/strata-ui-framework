@@ -51,17 +51,17 @@ toast_handle context::toast(const toast_options& o)
     t.kind     = o.kind;
     t.sticky   = o.seconds <= 0.0f;
     t.duration = t.sticky ? 0.0f : std::max(o.seconds, 0.5f);
-    t.seq      = ++m_->toast_seq_;
+    t.seq      = ++m_->toast_.toast_seq_;
     t.progress = o.progress;
     for (const std::string_view a : o.actions) {
         if (t.actions.size() < 3) { t.actions.emplace_back(a); }
     }
     if (t.title.empty()) { t.title = std::string{kind_name(o.kind)}; }
     const toast_handle h = t.seq;
-    m_->toasts_.push_back(std::move(t));
+    m_->toast_.toasts_.push_back(std::move(t));
     constexpr std::size_t max_toasts = 8;
-    if (m_->toasts_.size() > max_toasts) {
-        m_->toasts_.erase(m_->toasts_.begin());
+    if (m_->toast_.toasts_.size() > max_toasts) {
+        m_->toast_.toasts_.erase(m_->toast_.toasts_.begin());
     }
     return h;
 }
@@ -80,7 +80,7 @@ int context::toast_action(toast_handle h)
 
 void context::toast_progress(toast_handle h, f32 fraction, std::string_view text)
 {
-    for (toast_entry& t : m_->toasts_) {
+    for (toast_entry& t : m_->toast_.toasts_) {
         if (t.seq != h || t.dismissed) { continue; }
         if (!text.empty()) { t.text = std::string{text}; }
         if (fraction == toast_busy) {
@@ -98,14 +98,14 @@ void context::toast_progress(toast_handle h, f32 fraction, std::string_view text
 
 void context::toast_close(toast_handle h)
 {
-    for (toast_entry& t : m_->toasts_) {
+    for (toast_entry& t : m_->toast_.toasts_) {
         if (t.seq == h) { t.dismissed = true; }
     }
 }
 
 bool context::toast_alive(toast_handle h) const noexcept
 {
-    for (const toast_entry& t : m_->toasts_) {
+    for (const toast_entry& t : m_->toast_.toasts_) {
         if (t.seq == h && !t.dismissed) { return true; }
     }
     return false;
@@ -113,7 +113,7 @@ bool context::toast_alive(toast_handle h) const noexcept
 
 void context::toast_end_frame()
 {
-    if (m_->toasts_.empty()) {
+    if (m_->toast_.toasts_.empty()) {
         return;
     }
     const font_id f  = 0;
@@ -123,8 +123,8 @@ void context::toast_end_frame()
     const f32 margin = 14.0f;
     const f32 gap    = 8.0f;
     const f32 btn_h  = lh + 8.0f;
-    const bool at_bottom = m_->toast_corner_ == screen_corner::bottom_right || m_->toast_corner_ == screen_corner::bottom_left;
-    const bool at_right  = m_->toast_corner_ == screen_corner::top_right || m_->toast_corner_ == screen_corner::bottom_right;
+    const bool at_bottom = m_->toast_.toast_corner_ == screen_corner::bottom_right || m_->toast_.toast_corner_ == screen_corner::bottom_left;
+    const bool at_right  = m_->toast_.toast_corner_ == screen_corner::top_right || m_->toast_.toast_corner_ == screen_corner::bottom_right;
 
     const u32 previous_owner = m_->run_owner_;
     switch_run(run_overlay);
@@ -133,8 +133,8 @@ void context::toast_end_frame()
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
     f32 cursor = at_bottom ? m_->display_.y - margin : margin;
-    for (std::size_t n = m_->toasts_.size(); n-- > 0;) { // newest nearest the corner
-        toast_entry& t = m_->toasts_[n];
+    for (std::size_t n = m_->toast_.toasts_.size(); n-- > 0;) { // newest nearest the corner
+        toast_entry& t = m_->toast_.toasts_[n];
 
         const bool  has_bar   = t.progress >= 0.0f || t.progress == toast_busy;
         const bool  has_acts  = !t.actions.empty();
@@ -160,7 +160,7 @@ void context::toast_end_frame()
 
         // the controls first: they claim a press before the body can
         const rect close_r = rect::from_size({r.max.x - 26.0f, r.min.y + 6.0f}, {20.0f, 20.0f});
-        const bool over_body = r.contains(m_->mouse_);
+        const bool over_body = r.contains(m_->input_.mouse_);
         interaction close_in{};
         if (!plain && !t.dismissed) { close_in = interact(hash_id("##toastx", static_cast<id>(t.seq)), close_r); }
         std::array<rect, 3> btn{};
@@ -176,7 +176,7 @@ void context::toast_end_frame()
             }
         }
         const interaction in = interact(key, r);
-        if (in.hovered) { m_->toast_hover_cur_ = true; }
+        if (in.hovered) { m_->toast_.toast_hover_cur_ = true; }
         if (in.pressed && plain) { t.dismissed = true; }
         if (close_in.pressed) { t.dismissed = true; }
         for (std::size_t i = 0; i < t.actions.size(); ++i) {
@@ -272,7 +272,7 @@ void context::toast_end_frame()
     m_->in_overlay_ = saved_overlay;
     switch_run(previous_owner);
 
-    std::erase_if(m_->toasts_, [](const toast_entry& t) { return (!t.sticky && t.age >= t.duration) || (t.dismissed && t.anim < 0.02f); });
+    std::erase_if(m_->toast_.toasts_, [](const toast_entry& t) { return (!t.sticky && t.age >= t.duration) || (t.dismissed && t.anim < 0.02f); });
 }
 
 } // namespace strata

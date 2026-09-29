@@ -11,6 +11,9 @@ add_library(strata STATIC
     src/context_combo.cpp
     src/context_data.cpp
     src/context_nav.cpp
+    src/core/animation.cpp
+    src/core/id_stack.cpp
+    src/core/style_stack.cpp
     src/context_datetime.cpp
     src/context_debug.cpp
     src/context_dock.cpp
@@ -46,6 +49,9 @@ target_sources(strata PUBLIC
     FILES
         include/strata/backend/d3d11.hpp
         include/strata/backend/d3d12.hpp
+        include/strata/backend/openxr.hpp
+        include/strata/backend/openvr.hpp
+        include/strata/backend/vr_types.hpp
         include/strata/bidi.hpp
         include/strata/config.hpp
         include/strata/platform/win32.hpp
@@ -63,7 +69,7 @@ target_sources(strata PUBLIC
         include/strata/types.hpp
         include/strata/vmem.hpp
 )
-target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/dock_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp)
+target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/code_state.hpp src/combo_filter_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/hotkey_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
 # skipped for clang-cl: see the matching guard + comment in cmake/strata_options.cmake --
@@ -80,6 +86,8 @@ target_compile_definitions(strata PUBLIC
     _HAS_EXCEPTIONS=0
     $<$<BOOL:${STRATA_BUILD_DX11}>:STRATA_HAS_DX11=1>
     $<$<BOOL:${STRATA_BUILD_DX12}>:STRATA_HAS_DX12=1>
+    $<$<BOOL:${STRATA_BUILD_OPENXR}>:STRATA_HAS_OPENXR=1>
+    $<$<BOOL:${STRATA_BUILD_OPENVR}>:STRATA_HAS_OPENVR=1>
 )
 
 if(STRATA_BUILD_DX11 OR STRATA_BUILD_DX12)
@@ -106,6 +114,23 @@ if(STRATA_BUILD_DX12)
 endif()
 
 if(STRATA_BUILD_DX11 OR STRATA_BUILD_DX12)
+    target_link_libraries(strata INTERFACE delayimp.lib)
+endif()
+
+if(STRATA_BUILD_OPENXR)
+    target_sources(strata PRIVATE src/backend_openxr.cpp)
+    target_link_libraries(strata PRIVATE openxr_loader)
+    # delay-loaded so detect_vr() (openvr.hpp) sees an *injected* strata linking this as still "not loaded" until
+    # something actually calls into it -- an eager load would make the check true for every process this dll is
+    # in, whether or not the host game itself uses openxr.
+    target_link_options(strata INTERFACE /DELAYLOAD:openxr_loader.dll)
+    target_link_libraries(strata INTERFACE delayimp.lib)
+endif()
+
+if(STRATA_BUILD_OPENVR)
+    target_sources(strata PRIVATE src/backend_openvr.cpp)
+    target_link_libraries(strata PRIVATE openvr_api)
+    target_link_options(strata INTERFACE /DELAYLOAD:openvr_api.dll) # see the openxr_loader comment above
     target_link_libraries(strata INTERFACE delayimp.lib)
 endif()
 

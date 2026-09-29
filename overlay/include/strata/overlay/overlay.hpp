@@ -71,6 +71,9 @@ void show(bool visible);
 [[nodiscard]] bool attached() noexcept;
 // the swap chain's HWND once attached, else nullptr
 [[nodiscard]] void* window() noexcept;
+// the game's ID3D11Device once attached over d3d11 (nullptr otherwise, including d3d12 games): for building a
+// second renderer/output off the same device (e.g. an openvr overlay texture -- see overlay/demo/demo_dll.cpp).
+[[nodiscard]] void* device11() noexcept;
 
 // ui scale factor (1.0 = 1:1). callable from any thread; the atlas is rebuilt on the render thread next frame.
 void set_ui_scale(float scale) noexcept;

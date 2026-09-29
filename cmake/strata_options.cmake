@@ -8,6 +8,12 @@ option(STRATA_BUILD_SANDBOX "build the sandbox test application"   ${PROJECT_IS_
 option(STRATA_BUILD_DX11    "build the direct3d 11 backend"        ON)
 option(STRATA_BUILD_OVERLAY "build the in-game overlay (needs direct3d 11 and 12): dll, test host, injector" ON)
 option(STRATA_BUILD_DX12    "build the direct3d 12 backend"        ON)
+# vr: renders the ui as an openxr composition quad layer. off by default -- fetches the khronos loader
+# (strata's only external dependency) the first time it's turned on. needs STRATA_BUILD_DX11 (XR_KHR_D3D11_enable).
+option(STRATA_BUILD_OPENXR  "build the openxr (vr) backend"        OFF)
+# vr: an IVROverlay quad, positioned in the tracking volume and fed a d3d11 texture -- steamvr composites and
+# stereo-renders it, nothing is hooked. off by default -- fetches openvr's headers + prebuilt loader.
+option(STRATA_BUILD_OPENVR  "build the openvr (steamvr) backend"   OFF)
 option(STRATA_INSTALL       "generate install / package rules"     ${PROJECT_IS_TOP_LEVEL})
 option(STRATA_STATIC_CRT    "link the static msvc runtime (/MT)"   ON)
 option(STRATA_FAST_MATH     "compile with /fp:fast"                ON)
@@ -27,6 +33,14 @@ option(STRATA_BUILD_TESTS   "register the sandbox tests with ctest"  ${PROJECT_I
 
 if(NOT STRATA_BUILD_DX11 AND NOT STRATA_BUILD_DX12)
     message(FATAL_ERROR "enable at least one of STRATA_BUILD_DX11 / STRATA_BUILD_DX12")
+endif()
+
+if(STRATA_BUILD_OPENXR AND NOT STRATA_BUILD_DX11)
+    message(FATAL_ERROR "STRATA_BUILD_OPENXR needs STRATA_BUILD_DX11 (openxr interop is via XR_KHR_D3D11_enable)")
+endif()
+
+if(STRATA_BUILD_OPENVR AND NOT STRATA_BUILD_DX11)
+    message(FATAL_ERROR "STRATA_BUILD_OPENVR needs STRATA_BUILD_DX11 (IVROverlay::SetOverlayTexture here targets d3d11)")
 endif()
 
 if(PROJECT_IS_TOP_LEVEL)

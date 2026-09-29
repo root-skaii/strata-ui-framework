@@ -265,7 +265,7 @@ void context::rich_draw(vec2 pos)
                         m_->cursor_        = cursor_kind::hand;
                         m_->rich_hovered_.assign(seg.link);
                         if (!seg.own_col) { col = m_->style_.accent_hover; }
-                        if (m_->mouse_pressed_) {
+                        if (m_->input_.mouse_pressed_) {
                             m_->rich_clicked_.assign(seg.link);
                             m_->press_claimed_ = true; // the click belongs to the link, not to the window behind it
                         }

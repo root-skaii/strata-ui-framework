@@ -61,7 +61,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
         sc.custom_init = true;
         sc.custom      = -1.0f;
     }
-    if (overflow && pointer_over(region) && m_->wheel_ != 0.0f && !m_->wheel_consumed_) {
+    if (overflow && pointer_over(region) && m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_) {
         sc.active -= wheel_scroll(m_->font_.line_height(0), view_w);
         m_->wheel_consumed_ = true;
     }
@@ -76,7 +76,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     if (!overflow) { sc.toggle = sc.active = 0.0f; }
     const f32 shift = -sc.toggle;
 
-    if (m_->tabdrag_tab_ != 0 && !m_->mouse_down_) {
+    if (m_->tabdrag_tab_ != 0 && !m_->input_.mouse_down_) {
         m_->tabdrag_tab_ = 0;
     }
 
@@ -105,19 +105,19 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
             selected   = static_cast<int>(i);
             ev.changed = true;
         }
-        if (closable && in.hovered && m_->mouse_middle_pressed_) { ev.closed = static_cast<int>(i); }
+        if (closable && in.hovered && m_->input_.mouse_middle_pressed_) { ev.closed = static_cast<int>(i); }
         if (reorder) {
-            if (m_->active_ == key && m_->mouse_pressed_) {
+            if (m_->active_ == key && m_->input_.mouse_pressed_) {
                 m_->tabdrag_cand_    = key;
-                m_->tabdrag_press_x_ = m_->mouse_.x;
+                m_->tabdrag_press_x_ = m_->input_.mouse_.x;
             }
-            if (m_->tabdrag_tab_ == 0 && m_->tabdrag_cand_ == key && m_->active_ == key && m_->mouse_down_ && std::abs(m_->mouse_.x - m_->tabdrag_press_x_) > 5.0f) {
+            if (m_->tabdrag_tab_ == 0 && m_->tabdrag_cand_ == key && m_->active_ == key && m_->input_.mouse_down_ && std::abs(m_->input_.mouse_.x - m_->tabdrag_press_x_) > 5.0f) {
                 m_->tabdrag_tab_  = key;
-                m_->tabdrag_grab_ = m_->mouse_.x - cells[i].min.x;
+                m_->tabdrag_grab_ = m_->input_.mouse_.x - cells[i].min.x;
                 if (static_cast<int>(i) != selected) { selected = static_cast<int>(i); ev.changed = true; }
             }
-            if (m_->tabdrag_tab_ == key && m_->mouse_down_) {
-                const f32 left = std::clamp(m_->mouse_.x - m_->tabdrag_grab_, region.min.x, std::max(region.min.x, region.max.x - cells[i].width()));
+            if (m_->tabdrag_tab_ == key && m_->input_.mouse_down_) {
+                const f32 left = std::clamp(m_->input_.mouse_.x - m_->tabdrag_grab_, region.min.x, std::max(region.min.x, region.max.x - cells[i].width()));
                 drag_rect  = rect::from_size({left, cells[i].min.y}, {cells[i].width(), cells[i].height()});
                 drag_index = static_cast<int>(i);
             }

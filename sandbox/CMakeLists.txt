@@ -45,6 +45,16 @@ if(STRATA_BUILD_DX12)
     target_link_libraries(strata_sandbox PRIVATE d3d12.lib dxgi.lib)
 endif()
 
+if(STRATA_BUILD_OPENXR)
+    target_sources(strata_sandbox PRIVATE xr_main.cpp xr_main.hpp)
+endif()
+
+if(STRATA_BUILD_OPENVR)
+    target_sources(strata_sandbox PRIVATE openvr_main.cpp openvr_main.hpp)
+    target_link_libraries(strata_sandbox PRIVATE openvr_api)
+    strata_openvr_copy_dll(strata_sandbox)
+endif()
+
 set_target_properties(strata_sandbox PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )

@@ -13,9 +13,7 @@ namespace strata {
 
 void context::push_id_value(id key) noexcept
 {
-    if (m_->id_depth_ < max_id_depth) {
-        m_->id_stack_[++m_->id_depth_] = key;
-    } else {
+    if (!m_->ids_.push_raw(key)) {
         report_limit("push_id nesting (max_id_depth): ids will collide", max_id_depth);
     }
 }
@@ -36,7 +34,7 @@ void context::nav_begin(std::string_view id_label)
     m_->nav_.scope = key;
     m_->nav_.items.clear();
     // a text field with the keyboard uses the arrow keys itself
-    m_->nav_.active = m_->focus_id_ == 0 && m_->hotkey_capture_ == 0;
+    m_->nav_.active = m_->focus_id_ == 0 && m_->hotkey_.hotkey_capture_ == 0;
 }
 
 void context::nav_record(id key, const rect& r, u32 depth, bool node, bool open) noexcept
@@ -99,8 +97,8 @@ void context::nav_end()
             at    = static_cast<std::size_t>(std::clamp(static_cast<std::ptrdiff_t>(at) + d, std::ptrdiff_t{0}, n - 1));
             moved = true;
         };
-        for (u32 k = 0; k < m_->key_count_; ++k) {
-            const key_event& ev = m_->keys_[k];
+        for (u32 k = 0; k < m_->input_.key_count_; ++k) {
+            const key_event& ev = m_->input_.keys_[k];
             if (ev.ctrl) { continue; }
             switch (ev.k) {
             case key::down:

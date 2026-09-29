@@ -703,6 +703,24 @@ strata::overlay::install(opt);       // from a thread of your own, not from DllM
   command list before Present.
 - **Limits:** Vulkan / OpenGL need their own hook; not intended for online games with anti-cheat.
 
+## VR and XR overlays
+
+`STRATA_BUILD_OPENXR` / `STRATA_BUILD_OPENVR` put the same 2d ui on a quad placed in the tracking volume, raycast
+by the controllers instead of a mouse. Not yet verified on real hardware.
+
+```cpp
+strata::vr_panel panel;
+panel.width_meters = 0.6f;
+panel.head_locked  = true; // rides along with the hmd; see vr_panel for a panel that stays put in the room instead
+overlay.create("my.app", "My App", panel);
+// per frame: overlay.update_controllers(); input = vr_pointer_input(overlay.controllers(), input); ... overlay.submit_texture(tex);
+```
+
+- **OpenXR** (`xr_session`): a composition quad layer in the session's LOCAL space; `sandbox --xr`.
+- **OpenVR** (`vr_overlay`): a SteamVR `IVROverlay` quad. Aiming uses the Input System's per-model tip pose (a
+  generated action manifest), falling back to the raw device pose if that fails to bind.
+- `sandbox --openvr`, and `overlay/demo/demo_dll.cpp` mirrors the in-game overlay into a SteamVR panel.
+
 ## Hosting, state, HDR and diagnostics
 
 **`strata::app`** (target `strata::app`, `strata/app.hpp`) is a ready-made host: per-monitor-dpi window, flip-model

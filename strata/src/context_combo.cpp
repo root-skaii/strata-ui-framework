@@ -45,16 +45,16 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool open = m_->popup_has(key);
+    bool open = m_->popup_.popup_has(key);
     if (in.pressed) {
         if (open) {
-            m_->popup_close(key);
+            m_->popup_.popup_close(key);
             open = false;
         } else if (popup_push(key)) {
             open = true;
-            m_->combo_filter_.clear();
-            m_->combo_filter_hover_ = 0;
-            m_->combo_filter_focus_ = true; // the search field takes the keyboard on the frame it appears
+            m_->combo_.combo_filter_.clear();
+            m_->combo_.combo_filter_hover_ = 0;
+            m_->combo_.combo_filter_focus_ = true; // the search field takes the keyboard on the frame it appears
         }
     }
 
@@ -87,43 +87,43 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
     }
 
     // what is left after the filter, as indices into `items`
-    m_->combo_filter_hits_.clear();
+    m_->combo_.combo_filter_hits_.clear();
     for (std::size_t i = 0; i < count; ++i) {
-        if (contains_ci(visible_label(items[i]), m_->combo_filter_)) { m_->combo_filter_hits_.push_back(static_cast<u32>(i)); }
+        if (contains_ci(visible_label(items[i]), m_->combo_.combo_filter_)) { m_->combo_.combo_filter_hits_.push_back(static_cast<u32>(i)); }
     }
-    const int hits = static_cast<int>(m_->combo_filter_hits_.size());
-    m_->combo_filter_hover_ = hits == 0 ? 0 : std::clamp(m_->combo_filter_hover_, 0, hits - 1);
+    const int hits = static_cast<int>(m_->combo_.combo_filter_hits_.size());
+    m_->combo_.combo_filter_hover_ = hits == 0 ? 0 : std::clamp(m_->combo_.combo_filter_hover_, 0, hits - 1);
 
     // read the keys before the search field is submitted, since it consumes Up on the way
     int  want_pick = -1;
     bool close_now = false;
-    for (u32 i = 0; i < m_->key_count_; ++i) {
-        switch (m_->keys_[i].k) {
-        case key::down:   m_->combo_filter_hover_ = hits == 0 ? 0 : std::min(m_->combo_filter_hover_ + 1, hits - 1); break;
-        case key::up:     m_->combo_filter_hover_ = std::max(m_->combo_filter_hover_ - 1, 0); break;
-        case key::page_down: m_->combo_filter_hover_ = hits == 0 ? 0 : std::min(m_->combo_filter_hover_ + 8, hits - 1); break;
-        case key::page_up:   m_->combo_filter_hover_ = std::max(m_->combo_filter_hover_ - 8, 0); break;
+    for (u32 i = 0; i < m_->input_.key_count_; ++i) {
+        switch (m_->input_.keys_[i].k) {
+        case key::down:   m_->combo_.combo_filter_hover_ = hits == 0 ? 0 : std::min(m_->combo_.combo_filter_hover_ + 1, hits - 1); break;
+        case key::up:     m_->combo_.combo_filter_hover_ = std::max(m_->combo_.combo_filter_hover_ - 1, 0); break;
+        case key::page_down: m_->combo_.combo_filter_hover_ = hits == 0 ? 0 : std::min(m_->combo_.combo_filter_hover_ + 8, hits - 1); break;
+        case key::page_up:   m_->combo_.combo_filter_hover_ = std::max(m_->combo_.combo_filter_hover_ - 8, 0); break;
         case key::enter:
-            if (m_->combo_filter_hover_ < hits) { want_pick = static_cast<int>(m_->combo_filter_hits_[static_cast<std::size_t>(m_->combo_filter_hover_)]); }
+            if (m_->combo_.combo_filter_hover_ < hits) { want_pick = static_cast<int>(m_->combo_.combo_filter_hits_[static_cast<std::size_t>(m_->combo_.combo_filter_hover_)]); }
             break;
         default: break;
         }
     }
 
     const f32 row_h   = frame_height() - 2.0f;
-    const u32 visible = static_cast<u32>(std::min<std::size_t>(std::max<std::size_t>(m_->combo_filter_hits_.size(), 1), 9));
+    const u32 visible = static_cast<u32>(std::min<std::size_t>(std::max<std::size_t>(m_->combo_.combo_filter_hits_.size(), 1), 9));
     const f32 list_h  = static_cast<f32>(visible) * (row_h + m_->style_.item_spacing) + 6.0f;
     const f32 width   = std::max(box.width(), 220.0f);
     const f32 height  = frame_height() + m_->style_.item_spacing + list_h + 2.0f * m_->style_.padding;
 
     if (begin_popup_at(key, box, {width, height})) {
         push_id(label);
-        if (m_->combo_filter_focus_) {
+        if (m_->combo_.combo_filter_focus_) {
             request_text_focus("##filter");
-            m_->combo_filter_focus_ = false;
+            m_->combo_.combo_filter_focus_ = false;
         }
         set_next_item_width(m_->layout_.width);
-        (void)input_text("##filter", m_->combo_filter_, hint, input_flags::clear_button, 128);
+        (void)input_text("##filter", m_->combo_.combo_filter_, hint, input_flags::clear_button, 128);
 
         if (auto list = child("##hits", {0.0f, list_h}, child_flags::none)) {
             if (hits == 0) {
@@ -132,14 +132,14 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
                 list_clipper clip{*this, static_cast<std::size_t>(hits), row_h};
                 while (clip.step()) {
                     for (int k = clip.begin(); k < clip.end(); ++k) {
-                        const u32 item = m_->combo_filter_hits_[static_cast<std::size_t>(k)];
+                        const u32 item = m_->combo_.combo_filter_hits_[static_cast<std::size_t>(k)];
                         const std::string_view text_of = items[item];
                         if (selectable(text_of, {reinterpret_cast<const char*>(&item), sizeof(item)},
-                                       k == m_->combo_filter_hover_)) {
+                                       k == m_->combo_.combo_filter_hover_)) {
                             want_pick = static_cast<int>(item);
                         }
                         // keep the row the keyboard is on in view
-                        if (k == m_->combo_filter_hover_) { ensure_item_visible(); }
+                        if (k == m_->combo_.combo_filter_hover_) { ensure_item_visible(); }
                     }
                 }
             }
@@ -153,12 +153,12 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
     if (want_pick >= 0) {
         changed   = current != want_pick;
         current   = want_pick;
-        m_->popup_close(key);
+        m_->popup_.popup_close(key);
         m_->focus_id_ = 0;
     } else if (close_now) {
         m_->focus_id_ = 0;
     }
-    track_edit(key, changed, m_->popup_has(key));
+    track_edit(key, changed, m_->popup_.popup_has(key));
     return changed;
 }
 
@@ -175,14 +175,14 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool open = m_->popup_has(key);
+    bool open = m_->popup_.popup_has(key);
     if (in.pressed) {
         if (open) {
-            m_->popup_close(key);
+            m_->popup_.popup_close(key);
             open = false;
         } else if (popup_push(key)) {
-            m_->popup_scroll_ = 0.0f;
-            m_->popup_hover_  = 0;
+            m_->popup_.popup_scroll_ = 0.0f;
+            m_->popup_.popup_hover_  = 0;
             open = true;
         }
     }
@@ -243,35 +243,35 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     if (list.max.y > m_->display_.y - 4.0f && box.min.y - 4.0f - list_h >= 4.0f) {
         list = {{box.min.x, box.min.y - 4.0f - list_h}, {box.max.x, box.min.y - 4.0f}};
     }
-    const u32 level = m_->popup_level_of(key); // (before Esc below can close it: this frame still draws it)
+    const u32 level = m_->popup_.popup_level_of(key); // (before Esc below can close it: this frame still draws it)
 
     const f32 view_h     = static_cast<f32>(visible) * item_h;
     const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
-    if (list.contains(m_->mouse_) && m_->wheel_ != 0.0f) {
-        m_->popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
+    if (list.contains(m_->input_.mouse_) && m_->input_.wheel_ != 0.0f) {
+        m_->popup_.popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
         m_->wheel_consumed_ = true;
     }
-    for (u32 i = 0; i < m_->key_count_; ++i) { // keyboard: Up / Down move, Enter toggles, Esc closes
-        switch (m_->keys_[i].k) {
-        case key::down:   m_->popup_hover_ = std::min(m_->popup_hover_ + 1, static_cast<int>(count) - 1); break;
-        case key::up:     m_->popup_hover_ = std::max(m_->popup_hover_ - 1, 0); break;
+    for (u32 i = 0; i < m_->input_.key_count_; ++i) { // keyboard: Up / Down move, Enter toggles, Esc closes
+        switch (m_->input_.keys_[i].k) {
+        case key::down:   m_->popup_.popup_hover_ = std::min(m_->popup_.popup_hover_ + 1, static_cast<int>(count) - 1); break;
+        case key::up:     m_->popup_.popup_hover_ = std::max(m_->popup_.popup_hover_ - 1, 0); break;
         case key::enter:
-            if (m_->popup_hover_ >= 0 && m_->popup_hover_ < static_cast<int>(count)) {
-                selected[m_->popup_hover_] = !selected[m_->popup_hover_];
+            if (m_->popup_.popup_hover_ >= 0 && m_->popup_.popup_hover_ < static_cast<int>(count)) {
+                selected[m_->popup_.popup_hover_] = !selected[m_->popup_.popup_hover_];
                 changed = true;
             }
             break;
-        case key::escape: m_->popup_close(key); break;
+        case key::escape: m_->popup_.popup_close(key); break;
         default: break;
         }
     }
-    m_->key_count_ = 0;
-    if (m_->popup_hover_ >= 0) {
-        const f32 top = static_cast<f32>(m_->popup_hover_) * item_h;
-        if (top < m_->popup_scroll_)                   { m_->popup_scroll_ = top; }
-        if (top + item_h > m_->popup_scroll_ + view_h) { m_->popup_scroll_ = top + item_h - view_h; }
+    m_->input_.key_count_ = 0;
+    if (m_->popup_.popup_hover_ >= 0) {
+        const f32 top = static_cast<f32>(m_->popup_.popup_hover_) * item_h;
+        if (top < m_->popup_.popup_scroll_)                   { m_->popup_.popup_scroll_ = top; }
+        if (top + item_h > m_->popup_.popup_scroll_ + view_h) { m_->popup_.popup_scroll_ = top + item_h - view_h; }
     }
-    m_->popup_scroll_ = std::clamp(m_->popup_scroll_, 0.0f, max_scroll);
+    m_->popup_.popup_scroll_ = std::clamp(m_->popup_.popup_scroll_, 0.0f, max_scroll);
 
     popup_enter(level, list, box);
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
@@ -315,20 +315,20 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     const f32 rows_top = y0;
     m_->dl_.push_clip({{list.min.x, rows_top}, {list.max.x, rows_top + view_h}});
     for (std::size_t i = 0; i < count; ++i) {
-        const f32  y = rows_top + static_cast<f32>(i) * item_h - m_->popup_scroll_;
+        const f32  y = rows_top + static_cast<f32>(i) * item_h - m_->popup_.popup_scroll_;
         const rect r = {{list.min.x + pad, y}, {list.max.x - pad - (max_scroll > 0.0f ? 6.0f : 0.0f), y + item_h}};
         if (r.max.y < rows_top || r.min.y > rows_top + view_h) {
             continue;
         }
         const id ik = hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, key);
         const interaction it = interact(ik, r);
-        if (it.hovered) { m_->popup_hover_ = static_cast<int>(i); }
+        if (it.hovered) { m_->popup_.popup_hover_ = static_cast<int>(i); }
         if (it.pressed) {
             selected[i] = !selected[i];
             changed = true;
         }
 
-        const bool hot = static_cast<int>(i) == m_->popup_hover_;
+        const bool hot = static_cast<int>(i) == m_->popup_.popup_hover_;
         if (hot) {
             shape_style row;
             row.radius      = radii(m_->style_.rounding * 0.55f);
@@ -357,7 +357,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
 
     if (max_scroll > 0.0f) {
         const f32 thumb_h = std::max(16.0f, view_h * view_h / (view_h + max_scroll));
-        const f32 thumb_y = rows_top + (view_h - thumb_h) * (m_->popup_scroll_ / max_scroll);
+        const f32 thumb_y = rows_top + (view_h - thumb_h) * (m_->popup_.popup_scroll_ / max_scroll);
         shape_style thumb;
         thumb.radius      = radii(2.0f);
         thumb.fill_top    = m_->style_.text_dim.scaled_alpha(0.5f);
@@ -367,7 +367,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
 
     m_->dl_.pop_clip();
     popup_leave();
-    track_edit(key, changed, m_->popup_has(key));
+    track_edit(key, changed, m_->popup_.popup_has(key));
     return changed;
 }
 

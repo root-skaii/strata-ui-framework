@@ -76,7 +76,7 @@ void context::save_state(config& cfg, std::string_view section) const
     }
     if (!line.empty()) { cfg.set(section, std::format("tree_{:04}", chunk), line); }
 
-    for (const window_state& w : m_->windows_) {
+    for (const window_state& w : m_->win_.windows_) {
         if (w.key != 0 && w.scroll > 0.0f) { cfg.set(section, std::format("scroll_{:x}", w.key), std::format("{}", w.scroll)); }
     }
     for (const child_state& c : m_->children_) {
@@ -125,7 +125,7 @@ bool context::load_state(const config& cfg, std::string_view section)
             if (!x.empty() && !parse_float(x, s.x)) { continue; }
             // a window that exists already takes it now, the rest when they appear
             bool applied = false;
-            for (window_state& w : m_->windows_) {
+            for (window_state& w : m_->win_.windows_) {
                 if (w.key == k) { w.scroll = s.y; applied = true; }
             }
             if (!applied) { m_->scroll_pending_.emplace_back(k, s); }

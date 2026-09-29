@@ -73,7 +73,7 @@ void context::draw_tooltip_at(vec2 anchor, std::string_view text)
     pos.y = std::max(pos.y, 4.0f);
 
     const u32 previous_owner = m_->run_owner_;
-    switch_run(m_->overlay_run());
+    switch_run(m_->popup_.overlay_run());
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
     shape_style body;
     body.radius        = radii(m_->style_.rounding * 0.6f);
@@ -236,7 +236,7 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
     }
 
     if (in.hovered && n > 0 && inner.width() > 1.0f) {
-        const f32 t = std::clamp((m_->mouse_.x - inner.min.x) / inner.width(), 0.0f, 1.0f);
+        const f32 t = std::clamp((m_->input_.mouse_.x - inner.min.x) / inner.width(), 0.0f, 1.0f);
         const std::size_t idx = kind == plot_kind::lines ? static_cast<std::size_t>(std::lround(t * static_cast<f32>(n - 1)))
                                                           : std::min(n - 1, static_cast<std::size_t>(t * static_cast<f32>(n)));
         const f32 x = kind == plot_kind::lines && n > 1 ? inner.min.x + inner.width() * static_cast<f32>(idx) / static_cast<f32>(n - 1)
@@ -250,7 +250,7 @@ void context::plot_impl(std::string_view label, std::span<const plot_series> ser
             if (!series[si].name.empty()) { tip.append(series[si].name); tip += ": "; }
             tip += number_text(v, hi - lo);
         }
-        draw_tooltip_at(m_->mouse_ + vec2{14.0f, 20.0f}, tip);
+        draw_tooltip_at(m_->input_.mouse_ + vec2{14.0f, 20.0f}, tip);
     }
 }
 
@@ -330,34 +330,34 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
     if (o.zoom_pan && view.inner.width() > 1.0f && view.sx_hi > view.sx_lo) {
         const rect ir = view.inner;
         const f32 sx0 = view.sx_lo, sx1 = view.sx_hi, sy0 = view.sy_lo, sy1 = view.sy_hi;
-        const bool over = in.hovered && ir.contains(m_->mouse_);
-        if (over && m_->wheel_ != 0.0f && !m_->wheel_consumed_) {
+        const bool over = in.hovered && ir.contains(m_->input_.mouse_);
+        if (over && m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_) {
             m_->wheel_consumed_ = true;
-            const f32 k = std::pow(0.85f, m_->wheel_);
-            if (m_->mod_ctrl_) {
-                const f32 m = sy1 - (m_->mouse_.y - ir.min.y) / std::max(ir.height(), 1.0f) * (sy1 - sy0);
+            const f32 k = std::pow(0.85f, m_->input_.wheel_);
+            if (m_->input_.mod_ctrl_) {
+                const f32 m = sy1 - (m_->input_.mouse_.y - ir.min.y) / std::max(ir.height(), 1.0f) * (sy1 - sy0);
                 view.y_lo = m - (m - sy0) * k;
                 view.y_hi = m + (sy1 - m) * k;
                 view.y_set = true;
             } else {
-                const f32 m = sx0 + (m_->mouse_.x - ir.min.x) / std::max(ir.width(), 1.0f) * (sx1 - sx0);
+                const f32 m = sx0 + (m_->input_.mouse_.x - ir.min.x) / std::max(ir.width(), 1.0f) * (sx1 - sx0);
                 view.x_lo = m - (m - sx0) * k;
                 view.x_hi = m + (sx1 - m) * k;
                 view.x_set = true;
             }
         }
-        if (in.held && (m_->mouse_delta_.x != 0.0f || m_->mouse_delta_.y != 0.0f)) {
-            const f32 dx = -m_->mouse_delta_.x / ir.width() * (sx1 - sx0);
+        if (in.held && (m_->input_.mouse_delta_.x != 0.0f || m_->input_.mouse_delta_.y != 0.0f)) {
+            const f32 dx = -m_->input_.mouse_delta_.x / ir.width() * (sx1 - sx0);
             view.x_lo = sx0 + dx;
             view.x_hi = sx1 + dx;
             view.x_set = true;
             if (view.y_set) {
-                const f32 dy = m_->mouse_delta_.y / std::max(ir.height(), 1.0f) * (sy1 - sy0);
+                const f32 dy = m_->input_.mouse_delta_.y / std::max(ir.height(), 1.0f) * (sy1 - sy0);
                 view.y_lo = sy0 + dy;
                 view.y_hi = sy1 + dy;
             }
         }
-        if (over && m_->mouse_pressed_) { // double-click: back to the whole data
+        if (over && m_->input_.mouse_pressed_) { // double-click: back to the whole data
             if (m_->time_ - view.last_click < 0.35) { view.x_set = view.y_set = false; }
             view.last_click = m_->time_;
         }
@@ -554,8 +554,8 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
         m_->dl_.text({inner.max.x - tw - 6.0f, inner.min.y + 4.0f}, m_->style_.accent.scaled_alpha(0.85f), hint, f);
     }
 
-    if (in.hovered && n > 0 && inner.contains(m_->mouse_) && !(in.held && o.zoom_pan)) {
-        const f32 xm = xv0 + (m_->mouse_.x - inner.min.x) / kx;
+    if (in.hovered && n > 0 && inner.contains(m_->input_.mouse_) && !(in.held && o.zoom_pan)) {
+        const f32 xm = xv0 + (m_->input_.mouse_.x - inner.min.x) / kx;
         const std::size_t idx = static_cast<std::size_t>(std::clamp(std::round((xm - o.x_start) / x_step - (hist ? 0.5f : 0.0f)), 0.0f, static_cast<f32>(n - 1)));
         const f32 sx = x_of(o.x_start + static_cast<f32>(idx) * x_step + (hist ? 0.5f * x_step : 0.0f));
         if (sx >= inner.min.x && sx <= inner.max.x) {
@@ -571,7 +571,7 @@ void context::chart_impl(std::string_view label, std::span<const plot_series> se
                 if (!series[si].name.empty()) { tip.append(series[si].name); tip += ": "; }
                 tip += tick_text(v, ys_step, o.y.unit);
             }
-            draw_tooltip_at(m_->mouse_ + vec2{14.0f, 20.0f}, tip);
+            draw_tooltip_at(m_->input_.mouse_ + vec2{14.0f, 20.0f}, tip);
         }
     }
 

@@ -82,10 +82,10 @@ bool context::pick_cell(id key, const rect& r, std::string_view text, bool selec
 bool context::calendar_body(date& value, bool close_on_pick)
 {
     bool changed = false;
-    if (m_->cal_key_ != m_->popup_drawing_key()) { // just opened: show the month of the value
-        m_->cal_key_   = m_->popup_drawing_key();
-        m_->cal_year_  = value.year;
-        m_->cal_month_ = value.month;
+    if (m_->date_.cal_key_ != m_->popup_.popup_drawing_key()) { // just opened: show the month of the value
+        m_->date_.cal_key_   = m_->popup_.popup_drawing_key();
+        m_->date_.cal_year_  = value.year;
+        m_->date_.cal_month_ = value.month;
     }
     const f32 saved_spacing = m_->style_.item_spacing;
     m_->style_.item_spacing = 2.0f;
@@ -101,9 +101,9 @@ bool context::calendar_body(date& value, bool close_on_pick)
     for (std::size_t i = 0; i < steps.size(); ++i) {
         const rect r = rect::from_size({steps[i].x, bar.min.y}, {head, head});
         if (pick_cell(hash_id("##ym", static_cast<id>(i)), r, {}, false, false, false)) {
-            const date moved = add_months({m_->cal_year_, m_->cal_month_, 1}, steps[i].months);
-            m_->cal_year_  = moved.year;
-            m_->cal_month_ = moved.month;
+            const date moved = add_months({m_->date_.cal_year_, m_->date_.cal_month_, 1}, steps[i].months);
+            m_->date_.cal_year_  = moved.year;
+            m_->date_.cal_month_ = moved.month;
         }
         const vec2  c  = r.center();
         const f32   k  = 3.5f;
@@ -116,7 +116,7 @@ bool context::calendar_body(date& value, bool close_on_pick)
             m_->dl_.line({c.x + ox + d * k * 0.5f, c.y}, {c.x + ox - d * k * 0.5f, c.y + k}, m_->style_.text, 1.4f);
         }
     }
-    const std::string title = std::format("{} {}", month_name(m_->cal_month_), m_->cal_year_);
+    const std::string title = std::format("{} {}", month_name(m_->date_.cal_month_), m_->date_.cal_year_);
     const vec2 tsz = label_size(f, title);
     label_draw({bar.center().x - tsz.x * 0.5f, bar.min.y + (head - tsz.y) * 0.5f}, m_->style_.text, title, f);
 
@@ -132,7 +132,7 @@ bool context::calendar_body(date& value, bool close_on_pick)
     }
 
     // six weeks starting on the Monday on or before the 1st
-    const date first  = {m_->cal_year_, m_->cal_month_, 1};
+    const date first  = {m_->date_.cal_year_, m_->date_.cal_month_, 1};
     const date start  = add_days(first, -weekday(first));
     const date now_d  = today();
     const f32  ch     = frame_height() - 6.0f;
@@ -143,10 +143,10 @@ bool context::calendar_body(date& value, bool close_on_pick)
             const rect r = rect::from_size({line.min.x + cw * static_cast<f32>(col), line.min.y}, {cw, ch});
             const std::string num = std::to_string(d.day);
             const id key = hash_id("##day", static_cast<id>(row * 7 + col));
-            if (pick_cell(key, r.expanded(-1.0f), num, d == value, d.month != m_->cal_month_, d == now_d)) {
+            if (pick_cell(key, r.expanded(-1.0f), num, d == value, d.month != m_->date_.cal_month_, d == now_d)) {
                 value   = d;
                 changed = true;
-                if (d.month != m_->cal_month_) { m_->cal_year_ = d.year; m_->cal_month_ = d.month; }
+                if (d.month != m_->date_.cal_month_) { m_->date_.cal_year_ = d.year; m_->date_.cal_month_ = d.month; }
                 if (close_on_pick) { close_popup(); }
             }
         }
@@ -216,7 +216,7 @@ bool context::date_picker(std::string_view label, date& value)
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const interaction  in  = interact(key, fl.control);
     push_id(label);
-    if (in.pressed) { m_->cal_key_ = 0; toggle_popup("##calendar"); }
+    if (in.pressed) { m_->date_.cal_key_ = 0; toggle_popup("##calendar"); }
     picker_field(key, fl.control, in, popup_is_open("##calendar"), to_string(value), static_cast<int>(picker_icon::calendar));
 
     bool changed = false;
@@ -225,7 +225,7 @@ bool context::date_picker(std::string_view label, date& value)
         spacing(2.0f);
         if (button("Today")) {
             value   = today();
-            m_->cal_key_ = 0;
+            m_->date_.cal_key_ = 0;
             changed = true;
             close_popup();
         }
@@ -277,7 +277,7 @@ bool context::datetime_picker(std::string_view label, date& d, time_of_day& t, b
     const field_layout fl  = layout_field(visible_label(label), frame_height());
     const interaction  in  = interact(key, fl.control);
     push_id(label);
-    if (in.pressed) { m_->cal_key_ = 0; toggle_popup("##datetime"); }
+    if (in.pressed) { m_->date_.cal_key_ = 0; toggle_popup("##datetime"); }
     picker_field(key, fl.control, in, popup_is_open("##datetime"), to_string(d) + " " + to_string(t, seconds),
                  static_cast<int>(picker_icon::calendar));
 
@@ -290,7 +290,7 @@ bool context::datetime_picker(std::string_view label, date& d, time_of_day& t, b
         if (button("Now")) {
             d       = today();
             t       = now();
-            m_->cal_key_ = 0;
+            m_->date_.cal_key_ = 0;
             changed = true;
         }
         same_line();

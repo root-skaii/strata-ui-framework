@@ -480,7 +480,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         const f32 thumb_h    = std::max(20.0f, track.height() * view_h / st->content_h);
         const interaction sb = interact(hash_id("##mlscroll", key), track);
         if (sb.held) {
-            const f32 t = std::clamp((m_->mouse_.y - track.min.y - thumb_h * 0.5f) / std::max(track.height() - thumb_h, 1.0f), 0.0f, 1.0f);
+            const f32 t = std::clamp((m_->input_.mouse_.y - track.min.y - thumb_h * 0.5f) / std::max(track.height() - thumb_h, 1.0f), 0.0f, 1.0f);
             st->scroll  = t * max_scroll;
             sb_active   = true;
         }
@@ -555,7 +555,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     };
 
     // focus and mouse --------------------------------------------------------------------------------------
-    const bool press_here = m_->mouse_pressed_ && in.held;
+    const bool press_here = m_->input_.mouse_pressed_ && in.held;
     if (press_here) {
         m_->press_claimed_ = true;
         if (m_->focus_id_ != key) {
@@ -568,7 +568,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
             m_->edit_anchor_ = has_flag(flags, input_flags::select_all_on_focus) ? 0 : m_->edit_cursor_;
             m_->caret_time_  = m_->time_;
         }
-        const std::size_t idx  = index_at(m_->mouse_);
+        const std::size_t idx  = index_at(m_->input_.mouse_);
         const u32         clicks = register_click();
         m_->edit_pref_x_     = -1.0f;
         if (clicks == 3) { // triple click: the line between two line breaks, with its break
@@ -586,10 +586,10 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         }
         m_->caret_time_ = m_->time_;
     } else if (focused && in.held) {
-        m_->edit_cursor_ = index_at(m_->mouse_); // dragging selects, and pulls the view along past the edges
+        m_->edit_cursor_ = index_at(m_->input_.mouse_); // dragging selects, and pulls the view along past the edges
         m_->caret_time_  = m_->time_;
-        if (m_->mouse_.y < inner.min.y)      { st->scroll -= (inner.min.y - m_->mouse_.y) * 8.0f * m_->dt_ + 1.0f; }
-        else if (m_->mouse_.y > inner.max.y) { st->scroll += (m_->mouse_.y - inner.max.y) * 8.0f * m_->dt_ + 1.0f; }
+        if (m_->input_.mouse_.y < inner.min.y)      { st->scroll -= (inner.min.y - m_->input_.mouse_.y) * 8.0f * m_->dt_ + 1.0f; }
+        else if (m_->input_.mouse_.y > inner.max.y) { st->scroll += (m_->input_.mouse_.y - inner.max.y) * 8.0f * m_->dt_ + 1.0f; }
     }
     if (focused) {
         m_->focus_seen_ = true;
@@ -603,8 +603,8 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         m_->edit_max_bytes_  = max_bytes;
         m_->edit_history_on_ = !readonly;
 
-        if (m_->typed_len_ != 0) {
-            if (has_code(code_flags::auto_indent) && m_->typed_len_ == 1 && m_->typed_[0] == '}' && m_->edit_cursor_ == m_->edit_anchor_) {
+        if (m_->input_.typed_len_ != 0) {
+            if (has_code(code_flags::auto_indent) && m_->input_.typed_len_ == 1 && m_->input_.typed_[0] == '}' && m_->edit_cursor_ == m_->edit_anchor_) {
                 // a } on a line that holds only indentation steps back one level
                 const std::string_view t0 = m_->edit_buf_;
                 const std::size_t nl = m_->edit_cursor_ == 0 ? npos : t0.rfind('\n', m_->edit_cursor_ - 1);
@@ -616,15 +616,15 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
                     changed = edit_replace(m_->edit_cursor_ - drop, drop, {}, edit_kind::other) || changed;
                 }
             }
-            changed = edit_insert({m_->typed_.data(), m_->typed_len_}, true) || changed;
-            m_->typed_len_   = 0;
+            changed = edit_insert({m_->input_.typed_.data(), m_->input_.typed_len_}, true) || changed;
+            m_->input_.typed_len_   = 0;
             m_->caret_time_  = m_->time_;
             m_->edit_pref_x_ = -1.0f;
             caret_moved  = true;
         }
 
-        for (u32 i = 0; i < m_->key_count_ && focused; ++i) {
-            const key_event& ev = m_->keys_[i];
+        for (u32 i = 0; i < m_->input_.key_count_ && focused; ++i) {
+            const key_event& ev = m_->input_.keys_[i];
             if (ev.alt) { continue; } // Alt + key is a shortcut of the host, not editing
             ml_layout(m_->edit_buf_, view_w, fnt, wrap); // earlier keys of this frame may have changed the lines
             const std::string_view t = m_->edit_buf_;
@@ -766,7 +766,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
             }
             if (!vertical) { m_->edit_pref_x_ = -1.0f; }
         }
-        m_->key_count_ = 0;
+        m_->input_.key_count_ = 0;
     }
     ml_layout(text_now(), view_w, fnt, wrap);
 
@@ -780,7 +780,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         const std::size_t gl = ml_line_of(std::min(code.goto_offset, text_now().size()));
         st->scroll = std::max(0.0f, static_cast<f32>(gl) * lh - view_h * 0.35f);
     }
-    if (st->overflow && m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(box)) {
+    if (st->overflow && m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(box)) {
         st->scroll -= wheel_scroll(lh, view_h);
         m_->wheel_consumed_ = true;
     }
@@ -896,7 +896,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
         m_->ime_want_   = true;
         m_->ime_pos_    = {cx * m_->scale_, (cy + lh) * m_->scale_};
         m_->ime_line_h_ = lh * m_->scale_;
-        if (m_->ime_len_ != 0) {
+        if (m_->input_.ime_len_ != 0) {
             want_chip = true;
             chip_at   = {cx, cy + lh};
         } else if (caret_visible()) {
@@ -935,11 +935,11 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
 
 u32 context::register_click() noexcept
 {
-    const vec2 moved = m_->mouse_ - m_->last_click_pos_;
+    const vec2 moved = m_->input_.mouse_ - m_->last_click_pos_;
     const bool near_ = m_->time_ - m_->last_click_time_ < m_->double_click_ && dot(moved, moved) < 25.0f;
     m_->click_count_     = near_ ? (m_->click_count_ >= 3 ? 1u : m_->click_count_ + 1u) : 1u;
     m_->last_click_time_ = m_->time_;
-    m_->last_click_pos_  = m_->mouse_;
+    m_->last_click_pos_  = m_->input_.mouse_;
     return m_->click_count_;
 }
 
@@ -1037,7 +1037,7 @@ void context::ed_draw(vec2 pos, f32 line_ascent, color col, std::string_view t, 
 // IME composition in a multi-line field: a small box at the caret (text is not reflowed)
 void context::draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f)
 {
-    const std::string_view comp{m_->ime_text_.data(), m_->ime_len_};
+    const std::string_view comp{m_->input_.ime_text_.data(), m_->input_.ime_len_};
     const f32 pad = 6.0f;
     const vec2 ts = m_->font_.measure(f, comp);
     vec2 pos{caret_bottom.x, caret_bottom.y + 2.0f};
@@ -1047,7 +1047,7 @@ void context::draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f)
     pos.x = std::max(pos.x, 4.0f);
 
     const u32 previous_owner = m_->run_owner_;
-    switch_run(m_->overlay_run());
+    switch_run(m_->popup_.overlay_run());
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
     shape_style body;
     body.radius       = radii(m_->style_.rounding * 0.5f);
@@ -1062,7 +1062,7 @@ void context::draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f)
     const vec2 tp{pos.x + pad, pos.y + 2.0f};
     m_->dl_.text(tp, m_->style_.text, comp, f);
     m_->dl_.rect_filled({{tp.x, tp.y + line_h - 1.0f}, {tp.x + ts.x, tp.y + line_h + 0.5f}}, m_->style_.accent_hover);
-    const f32 cx = std::round(tp.x + m_->font_.measure(f, comp.substr(0, m_->ime_cursor_)).x);
+    const f32 cx = std::round(tp.x + m_->font_.measure(f, comp.substr(0, m_->input_.ime_cursor_)).x);
     m_->dl_.rect_filled({{cx, tp.y}, {cx + 1.5f, tp.y + line_h}}, m_->style_.text);
     m_->dl_.pop_clip();
     switch_run(previous_owner);

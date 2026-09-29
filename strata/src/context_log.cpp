@@ -186,24 +186,24 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
         const rect hit = {cf.bounds.min, {cf.bounds.max.x - (overflowing ? 12.0f : 0.0f), cf.bounds.max.y}};
         const interaction in = interact(widget_id("##rows"), hit);
         if (in.held && count > 0) {
-            const std::size_t idx = row_at(m_->mouse_.y - m_->layout_.origin.y);
+            const std::size_t idx = row_at(m_->input_.mouse_.y - m_->layout_.origin.y);
             const u64 seq = log.lines_[log.visible_[idx]].seq;
-            if (m_->mouse_pressed_) {
+            if (m_->input_.mouse_pressed_) {
                 v.sel_cursor = seq;
-                if (!(m_->mod_shift_ && v.sel_anchor != 0)) { v.sel_anchor = seq; }
+                if (!(m_->input_.mod_shift_ && v.sel_anchor != 0)) { v.sel_anchor = seq; }
                 log.focused_ = true;
             } else {
                 v.sel_cursor = seq; // dragging extends
             }
-        } else if (m_->mouse_pressed_ && !cf.bounds.contains(m_->mouse_)) {
+        } else if (m_->input_.mouse_pressed_ && !cf.bounds.contains(m_->input_.mouse_)) {
             log.focused_ = false;
         }
         if (log.focused_) { // Ctrl+A / Ctrl+C on the selected rows
-            for (u32 i = 0; i < m_->key_count_; ++i) {
-                if (m_->keys_[i].k == key::a && count > 0) {
+            for (u32 i = 0; i < m_->input_.key_count_; ++i) {
+                if (m_->input_.keys_[i].k == key::a && count > 0) {
                     v.sel_anchor = log.lines_[log.visible_.front()].seq;
                     v.sel_cursor = log.lines_[log.visible_.back()].seq;
-                } else if (m_->keys_[i].k == key::c && v.sel_anchor != 0 && m_->clipboard_.set != nullptr) {
+                } else if (m_->input_.keys_[i].k == key::c && v.sel_anchor != 0 && m_->clipboard_.set != nullptr) {
                     const u64 lo = std::min(v.sel_anchor, v.sel_cursor);
                     const u64 hi = std::max(v.sel_anchor, v.sel_cursor);
                     std::string text;

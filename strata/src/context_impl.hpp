@@ -4,7 +4,22 @@
 
 #include "strata/context.hpp"
 
+#include "core/animation.hpp"
+#include "core/id_stack.hpp"
+#include "core/input_frame.hpp"
+#include "core/layout_state.hpp"
+#include "core/style_stack.hpp"
+#include "core/window_registry.hpp"
+#include "code_state.hpp"
+#include "combo_filter_state.hpp"
+#include "date_picker_state.hpp"
 #include "dock_state.hpp"
+#include "hotkey_state.hpp"
+#include "menu_state.hpp"
+#include "modal_state.hpp"
+#include "nav_state.hpp"
+#include "popup_state.hpp"
+#include "toast_state.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,71 +33,6 @@ struct context::interaction {
     bool hovered{};
     bool held{};
     bool pressed{};
-};
-
-struct context::anim_slot {
-    id   key{};
-    u64  last_frame{};
-    f32  hover{};
-    f32  active{};
-    f32  toggle{};
-    f32  custom{};
-    bool custom_init{};
-};
-
-struct context::window_state {
-    id   key{};
-    vec2 pos{};
-    f32  width{};
-    f32  height{};      // 0: follows the content
-    f32  content_h{};
-    f32  scroll{};
-    f32  grab{};        // scrollbar: where in the thumb it was pressed
-    bool collapsed{};
-    bool resizable{};
-    bool size_set{};
-    bool overflow{};    // content taller than the body last frame (scrolling windows)
-    f32  capped_h{};    // auto-height window capped at the display: shown height, 0 = not capped
-    // docking
-    u32  dock{};        // 1 + index of the dock node the window sits in, 0 = floating
-    u32  dock_order{};  // position among the tabs of its node
-    vec2 float_size{};  // size to go back to when un-docked
-    bool docked_now{};  // drawn as a docked window this frame
-    f32  ghost{};       // 0..1: see-through while carried over a dock target
-    f32  title_h{};
-    u64  last_frame{};
-    id   dock_owner{};     // in a floating dock: that dock's window (they stack together)
-    bool menubar{};        // the main menu bar (no padding, above the other windows)
-    u32  modal_level{};    // 1 + index in the modal stack, 0 = not a modal
-    u8   title_len{};
-    std::array<char, 48> title{}; // visible part of the title, for dock tabs
-};
-
-struct context::layout_state {
-    vec2 origin{};
-    f32  width{};
-    f32  cursor_x{};
-    f32  line_top{};
-    f32  line_h{};
-    f32  line_h_seed{};  // expected height for the line about to start (e.g. a table row's known height),
-                          // so its first item centers against siblings that haven't been placed yet this frame
-    f32  bottom{};
-    f32  next_width{};
-    f32  bound_bottom{}; // bottom limit for fill-height children / strips (0 = none)
-    f32  right{};        // the furthest right edge of anything placed
-    f32  gutter{};       // taken off `width` by push_right_gutter (same_line_right adds it back)
-    bool same_line{};
-    bool first{true};
-};
-
-struct context::saved_color {
-    style_color which{};
-    color       previous{};
-};
-
-struct context::saved_var {
-    style_var which{};
-    f32       previous{};
 };
 
 // a run of draw commands and its owner: windows restack / popups lift by reordering runs
@@ -259,43 +209,6 @@ struct context::rich_line {
     f32 y{};
 };
 
-struct context::menu_level {
-    id   key{};
-    vec2 pos{};       // where the popup wants to open
-    rect anchor{};    // the opener: pressing it is not "outside"
-    vec2 size{};      // measured last frame
-    rect rect_cur{};
-    rect rect_prev{};
-    f32  age{};
-    bool seen{};      // built this frame
-    bool from_bar{};
-};
-
-struct context::menu_frame { // a popup being built
-    layout_state saved_layout{};
-    u32          prev_owner{};
-    f32          saved_spacing{};
-    f32          content_w{};
-    u32          level{};
-    bool         saved_overlay{};
-    bool         keys_ok{};   // the deepest open popup: letter keys activate mnemonics here
-};
-
-struct context::toast_entry {
-    std::string title;
-    std::string text;
-    toast_kind  kind{};
-    f32         duration{};
-    f32         age{};
-    f32         anim{};   // slide / fade in, 0..1
-    bool        dismissed{};
-    u64         seq{};
-    std::vector<std::string> actions;
-    f32         progress{-1.0f};
-    bool        sticky{};       // no timer until it completes / is closed
-    f32         busy_phase{};
-    bool        paused{};       // the pointer is on it: its timer stands still
-};
 
 struct context::press_anim { f32 hover{}; f32 active{}; };
 
@@ -320,40 +233,6 @@ struct context::chart_view {
     u64  last_frame{};
 };
 
-struct context::modal_frame {
-    bool alpha_pushed{};
-};
-
-   // field to focus when next drawn
-struct context::code_mode {
-    bool                                          on{};
-    code_flags                                    flags{};
-    int                                           tab_size{4};
-    std::span<const std::pair<u32, u32>>          marks{}; // find matches (start, length), sorted
-    int                                           mark_active{-1};
-    std::size_t                                   goto_offset{~std::size_t{0}};
-};
-
-struct context::code_state { // per code field, across frames
-    id          key{};
-    u64         last_frame{};
-    bool        find_open{};
-    bool        replace_open{};
-    bool        match_case{};
-    bool        open_request{}; // code_find(): give the find field the keyboard
-    int         active{-1};
-    int         want_line{};
-    std::string find;
-    std::string replace;
-};
-
-// ... and each id's label, for the report
-struct context::id_label_slot {
-    id                   key{};
-    std::array<char, 48> text{};
-    u8                   len{};
-};
-
 // label_size() cache: direct-mapped (font, string) -> size, cleared when the atlas changes. rich labels skip it.
 struct context::measure_slot {
     u64  key{};   // 0 = empty
@@ -362,23 +241,6 @@ struct context::measure_slot {
 
    // bulk open also applies to nodes revealed later
 
-// keyboard navigation (nav_begin / nav_end)
-struct context::nav_item {
-    id   key{};
-    rect bounds{};
-    u32  depth{};
-    bool node{};
-    bool open{};
-};
-
-struct context::nav_state {
-    id                    scope{};      // scope being built, 0 outside nav_begin / nav_end
-    id                    scope_key{};  // list owning the cursor (resets for another list)
-    id                    cursor{};     // the row the cursor is on, kept across frames
-    id                    activate_pending{}; // row Enter picked last frame, reported as a press
-    bool                  active{};     // the scope has the keyboard (no text field has it)
-    std::vector<nav_item> items;        // every row this frame, culled ones included
-};
 
 // edit sessions (track_edit): last widget's flags, the open session and whether it changed, engaged widgets this /
 // last frame
@@ -410,23 +272,12 @@ struct context::impl {
     f32  dt_{1.0f / 60.0f};       // animation step: the frame delta, at most 0.1 s
     f32  wall_dt_{1.0f / 60.0f};  // timers: the full frame delta
     f32  caret_blink_{0.53f};     // input_state::caret_blink_time
-    f32  wheel_lines_{3.0f};      // input_state::wheel_lines
     f64  double_click_{0.35};     // input_state::double_click_time
     f64  next_wake_{};            // see next_wake_seconds()
     vec2 display_{};
-    vec2 mouse_{};
-    vec2 mouse_delta_{};
-    f32  wheel_{};
-    f32  wheel_x_{};   // horizontal wheel this frame (see input_state::wheel_x)
-    bool mouse_down_{};
-    bool mouse_pressed_{};
-    bool mouse_released_{};
-    bool have_mouse_{};
 
-    std::array<key_event, max_key_events> keys_{};
-    u32                                   key_count_{};
-    std::array<char, max_typed_bytes>     typed_{};
-    u32                                   typed_len_{};
+    internal::input_frame input_;
+
     clipboard_hooks                       clipboard_{};
     diagnostics_hook                      diag_{};
     std::vector<u64>                      diag_seen_; // what was reported already (a few dozen at most)
@@ -435,32 +286,14 @@ struct context::impl {
     cursor_kind cursor_{};
     bool        wheel_consumed_{}; // an inner scroller used this frame's wheel
     bool        wheel_x_consumed_{};
-    id hovered_window_prev_{};
-    id hovered_window_cur_{};
-    u32 hovered_z_{no_z};
-    id  focused_window_{}; // topmost window of the previous frame
 
     window_state* cur_{};
     id            cur_window_{};
     layout_state  layout_{};
 
-    std::array<id, max_id_depth + 1> id_stack_{};
-    u32                              id_depth_{};
-
-    std::array<saved_color, max_overrides> color_stack_{};
-    std::array<saved_var, max_overrides>   var_stack_{};
-    u32                                    color_depth_{};
-    u32                                    var_depth_{};
-
-    std::array<font_id, max_font_depth + 1> font_stack_{};
-    u32                                     font_depth_{};
-
-    // back-to-front window stacking, persistent across frames
-    std::array<id, max_windows> z_order_{};
-    u32                         z_count_{};
-    // windows submitted this frame, in call order
-    std::array<window_state*, max_windows> frame_windows_{};
-    u32                                    frame_window_count_{};
+    internal::id_stack       ids_;
+    internal::style_stack    style_stack_;
+    internal::window_registry win_;
 
     // draw-command runs of this frame, in emission order
     std::array<cmd_run, max_runs> runs_{};
@@ -469,14 +302,6 @@ struct context::impl {
     u32                           run_start_{};
     bool                          runs_overflow_{};
 
-    // input extras
-    bool          mouse_right_down_{};
-    bool          mouse_right_pressed_{};
-    bool          mouse_middle_down_{};
-    bool          mouse_middle_pressed_{};
-    bool          mod_ctrl_{};
-    bool          mod_shift_{};
-    bool          mod_alt_{};
 
     // number widgets
     id            number_edit_{};       // the drag field being typed into
@@ -492,38 +317,17 @@ struct context::impl {
     color         ml_color_{0, 0, 0, 0}; // text colour for the next input_multiline_core (alpha 0: theme)
     std::vector<vec2> plot_scratch_;
     std::array<chart_view, 16> chart_views_{};
-    std::array<id, max_modals> modal_stack_{};
-    u32           modal_count_{};
-    u32           next_window_modal_level_{};
+    internal::modal_state modal_;
     bool          next_window_menubar_{};
-    std::array<modal_frame, max_modals> modal_frames_{};
-    u32           modal_depth_{};       // modals being built right now
-    id            modal_top_prev_{};    // modal with the input (as of last frame)
 
-    // menus
-    std::array<menu_level, max_menu_levels> menu_open_{};
-    std::array<menu_frame, max_menu_levels> menu_stack_{};
-    u32           menu_depth_{};
-    bool          menu_close_all_{};
-    bool          menu_hit_prev_{};     // pointer over an open menu (last frame's rects)
-    bool          in_menu_bar_{};
-    f32           menu_bar_h_{};
-    f32           menu_bar_saved_spacing_{};
+    internal::menu_state menu_;
 
-    // toasts
-    std::vector<toast_entry> toasts_;
-    screen_corner toast_corner_{screen_corner::bottom_right};
-    bool          toast_hover_cur_{};
-    bool          toast_hover_prev_{};
-    u64           toast_seq_{};
+    internal::toast_state toast_;
 
     // docking animation
     bool          dock_animation_{true};
     // smooth scrolling: wheel notches still to apply
     bool          scroll_smoothing_{true};
-    f32           wheel_pending_{};
-    f32           wheel_x_pending_{};
-    bool          wheel_moving_{};
 
     // text input
     edit_history  undo_;
@@ -553,10 +357,7 @@ struct context::impl {
     std::vector<text_span> edit_spans_;
     u64         edit_spans_hash_{};
 
-    // IME: composition (from input_state) and what the focused field reports to the host
-    std::array<char, 256> ime_text_{};
-    u32         ime_len_{};
-    u32         ime_cursor_{};
+    // IME: what the focused field reports to the host (composition itself is m_->input_.ime_*)
     bool        ime_want_{};
     vec2        ime_pos_{};
     f32         ime_line_h_{};
@@ -576,15 +377,12 @@ struct context::impl {
 
     // input masks and code fields: extra behaviour for the field being built
     std::string_view edit_mask_;         // input_masked: the mask (only while the call runs)
-    id               focus_request_{};
-    code_mode code_;
-    std::vector<code_state>                code_states_;
+    id               focus_request_{};   // field to focus when next drawn
+    internal::code_mode code_;
+    std::vector<internal::code_state>      code_states_;
     std::vector<std::pair<u32, u32>>       code_marks_;
 
-    // date picker: shown month and owning popup
-    id  cal_key_{};
-    i32 cal_year_{};
-    i32 cal_month_{};
+    internal::date_picker_state date_;
 
     // generic popups (open_popup): this frame's popup is only being measured (its size is kept per popup_level)
     bool gpopup_hidden_{};
@@ -604,106 +402,18 @@ struct context::impl {
     layout_state    dd_saved_layout_{};
     rect            last_item_rect_{};
 
-    // popups (open_popup, combo lists, pickers): a stack. one opened while another is being drawn goes on top of it
-    // as its child; one opened from outside every popup replaces the whole stack. levels 1.. draw in layers of their
-    // own above the overlay (popup_run), so a child covers the rest of its parent's content.
-    static constexpr u32 max_popup_levels = 4;
-    static constexpr u32 run_popup        = 0xfffffff8u; // + level (1..): the draw layer of a nested popup
-    static constexpr u32 no_popup         = 0xffffffffu;
-    struct popup_level {
-        id   key{};
-        bool open_cur{};     // drawn this frame
-        bool open_prev{};
-        rect rect_cur{};
-        rect rect_prev{};
-        rect anchor_cur{};   // the widget that owns it: a press there is left to that widget
-        rect anchor_prev{};
-        rect opener{};       // open_popup: the item it opens under
-        vec2 size{};         // open_popup: last frame's content size ...
-        id   measured{};     // ... and the popup it was measured for
-    };
-    // a popup being drawn: what its end restores
-    struct popup_frame {
-        u32          level{};
-        u32          prev_owner{run_base};
-        bool         saved_overlay{};
-        bool         outer_hidden{};  // begin_popup: gpopup_hidden_ of the popup around this one
-        layout_state saved_layout{};
-    };
-    std::array<popup_level, max_popup_levels> popups_{};
-    u32  popup_count_{};       // open levels
-    std::array<popup_frame, max_popup_levels> popup_frames_{};
-    u32  popup_depth_{};       // popups being drawn right now
-    bool popup_esc_used_{};    // Esc closed a level this frame: one level per press
+    internal::popup_stack popup_;
     bool in_overlay_{};
     bool swallow_press_{};     // this frame's press only closed a popup: ignore it
-    f32  popup_scroll_{};      // the open combo list (lists hold no widgets, so there is only ever one)
-    int  popup_hover_{-1};
 
-    [[nodiscard]] u32 popup_level_of(id key) const noexcept
-    {
-        for (u32 i = 0; key != 0 && i < popup_count_; ++i) {
-            if (popups_[i].key == key) { return i; }
-        }
-        return no_popup;
-    }
-    [[nodiscard]] bool popup_has(id key) const noexcept { return popup_level_of(key) != no_popup; }
-    [[nodiscard]] id   popup_top() const noexcept { return popup_count_ > 0 ? popups_[popup_count_ - 1].key : id{}; }
-    // the innermost popup being drawn (popup_depth_ > 0). a popup drawn inside itself (an id collision) would nest
-    // deeper than the levels: the slot is clamped so that stays in bounds
-    [[nodiscard]] popup_frame&       popup_frame_top() noexcept { return popup_frames_[std::min(popup_depth_, max_popup_levels) - 1]; }
-    [[nodiscard]] const popup_frame& popup_frame_top() const noexcept { return popup_frames_[std::min(popup_depth_, max_popup_levels) - 1]; }
-    // the level of the popup being drawn, no_popup outside every popup
-    [[nodiscard]] u32  popup_drawing() const noexcept { return popup_depth_ > 0 ? popup_frame_top().level : no_popup; }
-    [[nodiscard]] id   popup_drawing_key() const noexcept
-    {
-        const u32 l = popup_drawing();
-        return l < popup_count_ ? popups_[l].key : id{};
-    }
-    // closes `level` and everything above it
-    void popup_close_from(u32 level) noexcept
-    {
-        for (u32 i = level; i < popup_count_; ++i) { popups_[i] = {}; }
-        popup_count_ = std::min(popup_count_, level);
-    }
-    void popup_close(id key) noexcept
-    {
-        const u32 l = popup_level_of(key);
-        if (l != no_popup) { popup_close_from(l); }
-    }
-    [[nodiscard]] static u32 popup_run(u32 level) noexcept { return level == 0 ? run_overlay : run_popup + level; }
-    // where overlay drawing (tooltips, menus, drag previews) goes: the layer of the popup being drawn, if any
-    [[nodiscard]] u32 overlay_run() const noexcept
-    {
-        const u32 l = popup_drawing();
-        return l == no_popup ? run_overlay : popup_run(l);
-    }
-    // any level was drawn last frame
-    [[nodiscard]] bool popup_any_prev() const noexcept
-    {
-        for (u32 i = 0; i < popup_count_; ++i) {
-            if (popups_[i].open_prev) { return true; }
-        }
-        return false;
-    }
-    // `p` is over an open popup (last frame's rects) above what is being built: above the popup being drawn, or any
-    // level from outside the popups
-    [[nodiscard]] bool popup_covers(vec2 p) const noexcept
-    {
-        const u32 l = popup_drawing();
-        for (u32 i = l == no_popup ? 0u : l + 1; i < popup_count_; ++i) {
-            if (popups_[i].open_prev && popups_[i].rect_prev.contains(p)) { return true; }
-        }
-        return false;
-    }
     // widgets under the pointer that must not react: popup content is blocked by the levels above it and by an open
     // menu (unless it is that menu's own content); window content by every popup and menu. other overlay content
     // (tooltips, toasts, menus outside popups) is not blocked.
     [[nodiscard]] bool pointer_blocked() const noexcept
     {
-        const bool popup_content = popup_depth_ > 0;
+        const bool popup_content = popup_.popup_depth_ > 0;
         if (in_overlay_ && !popup_content) { return false; }
-        return popup_covers(mouse_) || (menu_hit_prev_ && menu_depth_ == 0);
+        return popup_.popup_covers(input_.mouse_) || (menu_.menu_hit_prev_ && menu_.menu_depth_ == 0);
     }
 
     // color picker (the one being edited)
@@ -764,11 +474,6 @@ struct context::impl {
     std::string rich_clicked_;
     std::string rich_hovered_;
     bool        rich_links_live_{}; // power of two
-    std::vector<id>       id_seen_;
-    id                    collision_id_{};
-    std::array<char, 64>  collision_label_{};
-    u32                   collision_label_len_{}; // power of two
-    std::vector<id_label_slot> id_labels_; // power of two
     std::vector<measure_slot> measure_cache_;
     u32                       measure_cache_gen_{};
 
@@ -785,7 +490,7 @@ struct context::impl {
     u8   tree_bulk_{};
     id   tree_bulk_seed_{};
     u32  tree_bulk_frames_{};
-    nav_state nav_{};
+    internal::nav_state nav_{};
     std::array<f32, max_gutter_depth> gutter_stack_{};
     u32                               gutter_depth_{};
     u32                                disabled_depth_{};
@@ -793,8 +498,6 @@ struct context::impl {
     std::array<bool, max_disabled_depth> disabled_stack_{};
     u32                                disabled_count_{};
 
-    // keys held this frame, from input_state
-    std::array<u8, 32> keys_held_{};
     // window owning the keyboard: the last one pressed in, docked included (focused_window_ is only the topmost)
     id   key_window_{};
 
@@ -817,11 +520,7 @@ struct context::impl {
     bool        confirm_pending_{};  // ask_confirm() ran; the next confirm() with this id opens
     bool        confirm_remember_{}; // "don't ask again" checkbox state while open
 
-    // combo_filtered: search text, filtered rows and the keyboard row
-    std::string      combo_filter_;
-    int              combo_filter_hover_{};
-    bool             combo_filter_focus_{};
-    std::vector<u32> combo_filter_hits_;
+    internal::combo_filter_state combo_;
 
     // tooltips: hover target
     id   last_item_key_{};
@@ -848,30 +547,11 @@ struct context::impl {
     u32                engaged_cur_count_{};
     u32                engaged_prev_count_{};
 
-    // hotkey binding. pressed_key_ / press_* = this frame's press and its modifiers (a queued press may be handled a
-    // frame late); unhandled presses wait in the queue
-    u32  pressed_key_{};
-    bool press_ctrl_{};
-    bool press_shift_{};
-    bool press_alt_{};
-    std::array<key_press, 64> press_queue_{};
-    u32  press_queued_{};
-    id   hotkey_capture_{};
-    bool hotkey_seen_{};
-    // hotkey_sequence(): steps captured so far by the capturing field (hotkey_capture_ keeps it to one)
-    std::array<key_chord, key_sequence::max_steps> seq_edit_capture_{};
-    u8   seq_edit_count_{};
-    f64  seq_edit_deadline_{};
-    // sequence_pressed(): prefix matched so far across the sequences asked about each frame. mutable so it can stay
-    // const like chord_pressed
-    mutable std::array<key_chord, key_sequence::max_steps - 1> seq_pending_{};
-    mutable u8   seq_pending_count_{};
-    mutable f64  seq_pending_time_{};
-    mutable bool seq_pending_touched_{}; // a call advanced / completed the prefix this frame (see begin_frame)
+    // hotkey binding: m_->input_.pressed_key_ / press_* is this frame's press and its modifiers (a queued
+    // press may be handled a frame late); unhandled presses wait in m_->input_.press_queue_
+    internal::hotkey_state hotkey_;
 
-    std::array<window_state, max_windows> windows_{};
-    std::vector<anim_slot>                anims_;     // open addressing, power-of-two size, grows on demand
-    u32                                   anim_used_{};
+    internal::animation                   anim_;
 };
 
 // a composite reports for its parts: they stay quiet while this lives

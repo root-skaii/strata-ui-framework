@@ -22,6 +22,8 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(strata_options)
+include(strata_openxr)
+include(strata_openvr)
 
 if(STRATA_BUILD_TESTS)
     enable_testing()

@@ -696,6 +696,14 @@ struct dock_guide;
 struct dock_space;
 } // namespace internal
 
+namespace internal { struct anim_slot; } // (src/core/animation.hpp)
+namespace internal { struct window_state; } // (src/core/window_registry.hpp)
+namespace internal { struct layout_state; } // (src/core/layout_state.hpp)
+namespace internal { class popup_stack; } // (src/popup_state.hpp)
+namespace internal { struct toast_entry; } // (src/toast_state.hpp)
+namespace internal { struct menu_level; struct menu_frame; } // (src/menu_state.hpp)
+namespace internal { struct code_mode; struct code_state; } // (src/code_state.hpp)
+
 // false when the window is collapsed; end_window always runs
 class window_scope {
 public:
@@ -1797,14 +1805,13 @@ public:
 private:
     struct interaction;
 
-    struct anim_slot;
+    using anim_slot = internal::anim_slot; // src/core/animation.hpp
 
-    struct window_state;
+    using window_state = internal::window_state; // src/core/window_registry.hpp
 
-    struct layout_state;
+    using layout_state = internal::layout_state; // src/core/layout_state.hpp
 
-    struct saved_color;
-    struct saved_var;
+    using popup_stack = internal::popup_stack; // src/popup_state.hpp
 
     // a run of draw commands and its owner: windows restack / popups lift by reordering runs
     struct cmd_run;
@@ -1844,9 +1851,9 @@ private:
 
     // open popup chain (0 = root context / bar menu, 1.. = submenus)
     static constexpr u32 max_menu_levels = 4;
-    struct menu_level;
-    struct menu_frame;
-    struct toast_entry; // (toast, button) pressed and not yet read
+    using menu_level = internal::menu_level; // src/menu_state.hpp
+    using menu_frame = internal::menu_frame; // src/menu_state.hpp
+    using toast_entry = internal::toast_entry; // src/toast_state.hpp -- (toast, button) pressed and not yet read
 
     static constexpr u32 max_children = 32;
     static constexpr u32 max_child_depth = 4;
@@ -1870,7 +1877,6 @@ private:
     void                   check_id(id key) noexcept;
     [[nodiscard]] anim_slot& anim_for(id key) noexcept;            // finds or creates (and keeps alive)
     [[nodiscard]] anim_slot* anim_find(id key) noexcept;           // finds only
-    void                     anim_rehash() noexcept;
     struct press_anim;
     // idle buttons own no animation state
     [[nodiscard]] press_anim button_anim(id key, const interaction& in) noexcept;
@@ -2040,8 +2046,7 @@ private:
 
     // modals
     static constexpr u32 max_modals = 4;
-    struct modal_frame;      // 1 / 2 / 3 = single / double / triple click
-    [[nodiscard]] u32 register_click() noexcept;
+    [[nodiscard]] u32 register_click() noexcept;      // 1 / 2 / 3 = single / double / triple click
     // caret blink phase (always on when blinking is disabled)
     [[nodiscard]] bool caret_visible() const noexcept;
     void ed_prepare_spans(std::size_t text_size, font_id base, f32& line_h, f32& ascent, bool ignore);
@@ -2051,24 +2056,14 @@ private:
     void draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f);
     void apply_pending_scroll(id key, f32& scroll_y, f32* scroll_x) noexcept;
     [[nodiscard]] static std::string table_layout_text(const table_state& t);   // field to focus when next drawn
-    struct code_mode;
-    struct code_state;
+    using code_mode = internal::code_mode; // src/code_state.hpp
+    using code_state = internal::code_state; // src/code_state.hpp
     [[nodiscard]] code_state& code_state_for(id key);
-
-    // debug-only duplicate-id detection: a direct-mapped table of this frame's ids (no allocation mid-frame).
-    // collisions across slots are missed; the common case (same label twice) always hits the same slot.
-    static constexpr u32 id_seen_size = 2048;
-    // ... and each id's label, for the report
-    struct id_label_slot;
-    static constexpr u32       id_label_size = 1024;
 
     // label_size() cache: direct-mapped (font, string) -> size, cleared when the atlas changes. rich labels skip it.
     struct measure_slot;
     static constexpr u32 measure_cache_size = 4096;   // bulk open also applies to nodes revealed later
 
-    // keyboard navigation (nav_begin / nav_end)
-    struct nav_item;
-    struct nav_state;
     // right gutter stack (push_right_gutter)
     static constexpr u32 max_gutter_depth = 8;
 

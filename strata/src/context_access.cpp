@@ -16,15 +16,15 @@ draw_data context::render_data() const noexcept
 
 bool context::want_capture_mouse() const noexcept
 {
-    return m_->hovered_window_prev_ != 0 || m_->active_ != 0 || m_->dock_chrome_prev_ || m_->toast_hover_prev_ || m_->modal_count_ != 0 ||
-           m_->menu_hit_prev_ || m_->popup_covers(m_->mouse_);
+    return m_->win_.hovered_window_prev_ != 0 || m_->active_ != 0 || m_->dock_chrome_prev_ || m_->toast_.toast_hover_prev_ || m_->modal_.modal_count_ != 0 ||
+           m_->menu_.menu_hit_prev_ || m_->popup_.popup_covers(m_->input_.mouse_);
 }
 
 bool context::want_text_input() const noexcept
-{ return m_->focus_id_ != 0 || m_->hotkey_capture_ != 0; }
+{ return m_->focus_id_ != 0 || m_->hotkey_.hotkey_capture_ != 0; }
 
 bool context::popup_open() const noexcept
-{ return m_->popup_any_prev(); }
+{ return m_->popup_.popup_any_prev(); }
 
 cursor_kind context::cursor() const noexcept
 { return m_->cursor_; }
@@ -84,10 +84,10 @@ f32 context::ime_line_height() const noexcept
 { return m_->ime_line_h_; }
 
 bool context::ime_composing() const noexcept
-{ return m_->ime_len_ != 0; }
+{ return m_->input_.ime_len_ != 0; }
 
 std::string_view context::ime_composition() const noexcept
-{ return {m_->ime_text_.data(), m_->ime_len_}; }
+{ return {m_->input_.ime_text_.data(), m_->input_.ime_len_}; }
 
 bool context::item_pressed() const noexcept
 { return m_->item_pressed_; }
@@ -157,16 +157,16 @@ bool context::item_claimed() const noexcept
 
 void context::close_popup() noexcept
 {
-    const u32 drawing = m_->popup_drawing();
-    if (drawing != impl::no_popup) {
-        m_->popup_close_from(drawing);
-    } else if (m_->popup_count_ > 0) {
-        m_->popup_close_from(m_->popup_count_ - 1);
+    const u32 drawing = m_->popup_.popup_drawing();
+    if (drawing != popup_stack::no_popup) {
+        m_->popup_.popup_close_from(drawing);
+    } else if (m_->popup_.popup_count_ > 0) {
+        m_->popup_.popup_close_from(m_->popup_.popup_count_ - 1);
     }
 }
 
 void context::close_all_popups() noexcept
-{ m_->popup_close_from(0); }
+{ m_->popup_.popup_close_from(0); }
 
 rect context::last_item_rect() const noexcept
 { return m_->last_item_rect_; }
@@ -184,25 +184,25 @@ void context::pop_selectable_text() noexcept
 { if (m_->selectable_depth_ > 0) { --m_->selectable_depth_; } }
 
 bool context::modal_open() const noexcept
-{ return m_->modal_count_ != 0; }
+{ return m_->modal_.modal_count_ != 0; }
 
 u64 context::confirm_data() const noexcept
 { return m_->confirm_data_; }
 
 f32 context::main_menu_bar_height() const noexcept
-{ return m_->menu_bar_h_; }
+{ return m_->menu_.menu_bar_h_; }
 
 bool context::menu_is_open() const noexcept
-{ return m_->menu_open_[0].key != 0; }
+{ return m_->menu_.menu_open_[0].key != 0; }
 
 void context::clear_toasts() noexcept
-{ m_->toasts_.clear(); }
+{ m_->toast_.toasts_.clear(); }
 
 void context::set_toast_corner(screen_corner corner) noexcept
-{ m_->toast_corner_ = corner; }
+{ m_->toast_.toast_corner_ = corner; }
 
 std::size_t context::toast_count() const noexcept
-{ return m_->toasts_.size(); }
+{ return m_->toast_.toasts_.size(); }
 
 void context::set_dock_animation(bool on) noexcept
 { m_->dock_animation_ = on; }
@@ -212,8 +212,8 @@ void context::set_scroll_smoothing(bool on) noexcept
 
 bool context::key_pressed(key k, bool ctrl, bool shift) const noexcept
 {
-    for (u32 i = 0; i < m_->key_count_; ++i) {
-        if (m_->keys_[i].k == k && m_->keys_[i].ctrl == ctrl && m_->keys_[i].shift == shift) { return true; }
+    for (u32 i = 0; i < m_->input_.key_count_; ++i) {
+        if (m_->input_.keys_[i].k == k && m_->input_.keys_[i].ctrl == ctrl && m_->input_.keys_[i].shift == shift) { return true; }
     }
     return false;
 }
@@ -233,13 +233,13 @@ bool context::field_focused(std::string_view label) const noexcept
 }
 
 bool context::ctrl_down() const noexcept
-{ return m_->mod_ctrl_; }
+{ return m_->input_.mod_ctrl_; }
 
 bool context::shift_down() const noexcept
-{ return m_->mod_shift_; }
+{ return m_->input_.mod_shift_; }
 
 bool context::alt_down() const noexcept
-{ return m_->mod_alt_; }
+{ return m_->input_.mod_alt_; }
 
 draw_list& context::draw() noexcept
 { return m_->dl_; }
@@ -263,11 +263,11 @@ f64 context::next_wake_seconds() const noexcept
 { return m_->next_wake_; }
 
 id context::id_collision() const noexcept
-{ return m_->collision_id_; }
+{ return m_->ids_.collision(); }
 
 std::string_view context::id_collision_label() const noexcept
 {
-    return {m_->collision_label_.data(), m_->collision_label_len_};
+    return m_->ids_.collision_label();
 }
 
 f32 context::content_width() const noexcept
@@ -283,13 +283,13 @@ f32 context::frame_height() const noexcept
 { return m_->font_.line_height(current_font()) + m_->style_.frame_padding.y * 2.0f; }
 
 vec2 context::mouse_pos() const noexcept
-{ return m_->mouse_; }
+{ return m_->input_.mouse_; }
 
 vec2 context::display_size() const noexcept
 { return m_->display_; }
 
 font_id context::current_font() const noexcept
-{ return m_->font_stack_[m_->font_depth_]; }
+{ return m_->style_stack_.current_font(); }
 
 bool context::item_enabled() const noexcept
 { return m_->disabled_depth_ == 0; }
@@ -313,7 +313,7 @@ void context::release_font_pixels() noexcept
 { m_->font_.discard_pixels(); }
 
 id context::current_seed() const noexcept
-{ return m_->id_stack_[m_->id_depth_]; }
+{ return m_->ids_.current(); }
 
 void context::note_row_anchor(id key, const rect& r) noexcept
 {

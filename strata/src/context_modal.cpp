@@ -11,26 +11,26 @@ namespace strata {
 
 void context::open_modal(std::string_view title)
 {
-    const id wid = hash_id(title, m_->id_stack_[0]);
-    for (u32 i = 0; i < m_->modal_count_; ++i) {
-        if (m_->modal_stack_[i] == wid) { return; } // already open
+    const id wid = hash_id(title, m_->ids_.root());
+    for (u32 i = 0; i < m_->modal_.modal_count_; ++i) {
+        if (m_->modal_.modal_stack_[i] == wid) { return; } // already open
     }
-    if (m_->modal_count_ >= max_modals) {
+    if (m_->modal_.modal_count_ >= max_modals) {
         report_limit("modals open at once (max_modals)", max_modals);
         return;
     }
-    m_->modal_stack_[m_->modal_count_++] = wid;
+    m_->modal_.modal_stack_[m_->modal_.modal_count_++] = wid;
     anim_for(hash_id("##modal", wid)).toggle = 0.0f; // fades in from nothing
     // whatever had the keyboard or a popup open gives way
     m_->focus_id_ = 0;
-    m_->popup_close_from(0);
+    m_->popup_.popup_close_from(0);
     menu_close_all();
 }
 
 void context::close_modal()
 {
-    if (m_->modal_count_ > 0) {
-        --m_->modal_count_;
+    if (m_->modal_.modal_count_ > 0) {
+        --m_->modal_.modal_count_;
     }
 }
 
@@ -39,15 +39,15 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     if (m_->cur_ != nullptr) {
         return false;
     }
-    const id wid = hash_id(title, m_->id_stack_[0]);
+    const id wid = hash_id(title, m_->ids_.root());
     u32 level = 0;
-    for (u32 i = 0; i < m_->modal_count_; ++i) {
-        if (m_->modal_stack_[i] == wid) { level = i + 1; }
+    for (u32 i = 0; i < m_->modal_.modal_count_; ++i) {
+        if (m_->modal_.modal_stack_[i] == wid) { level = i + 1; }
     }
     if (level == 0) {
         return false;
     }
-    const bool top = level == m_->modal_count_;
+    const bool top = level == m_->modal_.modal_count_;
 
     anim_slot& a = anim_for(hash_id("##modal", wid));
     a.toggle = approach(a.toggle, 1.0f, m_->style_.anim_speed * 0.9f);
@@ -56,17 +56,17 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     // Esc or a click on the dim closes it (unless something inside uses the key / click)
     const rect prev = window_rect(title);
     if (top) {
-        const bool busy = m_->focus_id_ != 0 || m_->hotkey_capture_ != 0 || m_->popup_count_ != 0 || m_->menu_open_[0].key != 0;
+        const bool busy = m_->focus_id_ != 0 || m_->hotkey_.hotkey_capture_ != 0 || m_->popup_.popup_count_ != 0 || m_->menu_.menu_open_[0].key != 0;
         if (has_flag(flags, modal_flags::esc_closes) && !busy) {
-            for (u32 i = 0; i < m_->key_count_; ++i) {
-                if (m_->keys_[i].k == key::escape) {
+            for (u32 i = 0; i < m_->input_.key_count_; ++i) {
+                if (m_->input_.keys_[i].k == key::escape) {
                     close_modal();
                     return false;
                 }
             }
         }
-        if (has_flag(flags, modal_flags::backdrop_closes) && m_->mouse_pressed_ && t > 0.6f && prev.width() > 0.0f &&
-            !prev.contains(m_->mouse_) && !m_->menu_hit_prev_ && !m_->popup_covers(m_->mouse_)) {
+        if (has_flag(flags, modal_flags::backdrop_closes) && m_->input_.mouse_pressed_ && t > 0.6f && prev.width() > 0.0f &&
+            !prev.contains(m_->input_.mouse_) && !m_->menu_.menu_hit_prev_ && !m_->popup_.popup_covers(m_->input_.mouse_)) {
             close_modal();
             return false;
         }
@@ -95,11 +95,11 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     if (has_flag(flags, modal_flags::resizable))    { wf = wf | window_flags::resizable; }
 
     m_->dl_.push_alpha(t);
-    m_->modal_frames_[m_->modal_depth_ < max_modals ? m_->modal_depth_ : max_modals - 1].alpha_pushed = true;
-    ++m_->modal_depth_;
-    m_->next_window_modal_level_ = level;
+    m_->modal_.modal_frames_[m_->modal_.modal_depth_ < max_modals ? m_->modal_.modal_depth_ : max_modals - 1].alpha_pushed = true;
+    ++m_->modal_.modal_depth_;
+    m_->modal_.next_window_modal_level_ = level;
     if (!begin_window(title, pos, size, wf)) {
-        --m_->modal_depth_;
+        --m_->modal_.modal_depth_;
         m_->dl_.pop_alpha();
         return false;
     }
@@ -108,19 +108,19 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
 
 void context::end_modal()
 {
-    if (m_->modal_depth_ == 0) {
+    if (m_->modal_.modal_depth_ == 0) {
         return;
     }
     end_window();
     m_->dl_.pop_alpha();
-    --m_->modal_depth_;
+    --m_->modal_.modal_depth_;
 }
 
 int context::dialog(std::string_view title, std::string_view message, std::initializer_list<std::string_view> buttons, modal_flags flags)
 {
-    const id wid = hash_id(title, m_->id_stack_[0]);
+    const id wid = hash_id(title, m_->ids_.root());
     bool open = false;
-    for (u32 i = 0; i < m_->modal_count_; ++i) { open = open || m_->modal_stack_[i] == wid; }
+    for (u32 i = 0; i < m_->modal_.modal_count_; ++i) { open = open || m_->modal_.modal_stack_[i] == wid; }
     if (!open) {
         return 0;
     }
@@ -200,9 +200,9 @@ int context::confirm(std::string_view id_label, std::initializer_list<std::strin
     }
 
     const std::string_view title = options.title.empty() ? std::string_view{"Confirm"} : options.title;
-    const id wid = hash_id(title, m_->id_stack_[0]);
+    const id wid = hash_id(title, m_->ids_.root());
     bool open = false;
-    for (u32 i = 0; i < m_->modal_count_; ++i) { open = open || m_->modal_stack_[i] == wid; }
+    for (u32 i = 0; i < m_->modal_.modal_count_; ++i) { open = open || m_->modal_.modal_stack_[i] == wid; }
     if (!open) {
         m_->confirm_open_ = 0;
         return 0;

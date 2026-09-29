@@ -241,10 +241,10 @@ void context::end_child()
         const f32 max_x = st.content_w - f.inner.width();
         // tilt wheel, or Shift + wheel (the Windows convention)
         const bool over = pointer_over(f.bounds);
-        if (m_->wheel_x_ != 0.0f && !m_->wheel_x_consumed_ && over) {
+        if (m_->input_.wheel_x_ != 0.0f && !m_->wheel_x_consumed_ && over) {
             st.scroll_x = std::clamp(st.scroll_x + wheel_scroll_x(m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
             m_->wheel_x_consumed_ = true;
-        } else if (m_->mod_shift_ && m_->wheel_ != 0.0f && !m_->wheel_consumed_ && over) {
+        } else if (m_->input_.mod_shift_ && m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && over) {
             st.scroll_x = std::clamp(st.scroll_x - wheel_scroll(m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
             m_->wheel_consumed_ = true;
         }
@@ -269,7 +269,7 @@ void context::end_child()
 
     if (st.overflow) {
         const f32 max_scroll = st.content_h - view_h;
-        if (m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(f.bounds)) {
+        if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(f.bounds)) {
             st.scroll = std::clamp(st.scroll - wheel_scroll(m_->font_.line_height(0), view_h), 0.0f, max_scroll);
             m_->wheel_consumed_ = true;
         }
@@ -500,15 +500,15 @@ void context::draw_tooltip(std::string_view text)
     const f32  pady  = 6.0f;
     const vec2 size{ts.x + 2.0f * padx, ts.y + 2.0f * pady};
 
-    vec2 pos = m_->mouse_ + vec2{14.0f, 20.0f};
+    vec2 pos = m_->input_.mouse_ + vec2{14.0f, 20.0f};
     if (pos.x + size.x > m_->display_.x - 4.0f) { pos.x = m_->display_.x - 4.0f - size.x; }
-    if (pos.y + size.y > m_->display_.y - 4.0f) { pos.y = m_->mouse_.y - size.y - 10.0f; }
+    if (pos.y + size.y > m_->display_.y - 4.0f) { pos.y = m_->input_.mouse_.y - size.y - 10.0f; }
     pos.x = std::max(pos.x, 4.0f);
     pos.y = std::max(pos.y, 4.0f);
 
     const f32 fade = std::clamp((m_->hover_time_ - 0.35f) / 0.12f, 0.0f, 1.0f);
     const u32 previous_owner = m_->run_owner_;
-    switch_run(m_->overlay_run());
+    switch_run(m_->popup_.overlay_run());
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
     m_->dl_.push_alpha(fade);
 
@@ -560,50 +560,50 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool capturing = m_->hotkey_capture_ == key;
+    bool capturing = m_->hotkey_.hotkey_capture_ == key;
     if (in.pressed) {
         capturing       = !capturing;
-        m_->hotkey_capture_ = capturing ? key : 0;
-        m_->seq_edit_count_ = 0;
-    } else if (capturing && m_->mouse_pressed_ && !box.contains(m_->mouse_)) {
+        m_->hotkey_.hotkey_capture_ = capturing ? key : 0;
+        m_->hotkey_.seq_edit_count_ = 0;
+    } else if (capturing && m_->input_.mouse_pressed_ && !box.contains(m_->input_.mouse_)) {
         capturing       = false;
-        m_->hotkey_capture_ = 0;
+        m_->hotkey_.hotkey_capture_ = 0;
     }
 
     // each step commits at once (no latency for single chords), but capture continues briefly so another key extends
     // it into a sequence, replacing the committed one
     bool changed = false;
-    if (capturing && m_->pressed_key_ != 0) {
-        const bool bare = !(m_->press_ctrl_ || m_->press_shift_ || m_->press_alt_);
-        if (m_->seq_edit_count_ == 0 && m_->pressed_key_ == 0x1b && bare) {                                   // Esc: leave it as it was
+    if (capturing && m_->input_.pressed_key_ != 0) {
+        const bool bare = !(m_->input_.press_ctrl_ || m_->input_.press_shift_ || m_->input_.press_alt_);
+        if (m_->hotkey_.seq_edit_count_ == 0 && m_->input_.pressed_key_ == 0x1b && bare) {                                   // Esc: leave it as it was
             capturing       = false;
-            m_->hotkey_capture_ = 0;
-        } else if (m_->seq_edit_count_ == 0 && (m_->pressed_key_ == 0x08 || m_->pressed_key_ == 0x2e) && bare) {  // Backspace / Delete: unbind
+            m_->hotkey_.hotkey_capture_ = 0;
+        } else if (m_->hotkey_.seq_edit_count_ == 0 && (m_->input_.pressed_key_ == 0x08 || m_->input_.pressed_key_ == 0x2e) && bare) {  // Backspace / Delete: unbind
             changed         = seq.bound();
             seq             = {};
             capturing       = false;
-            m_->hotkey_capture_ = 0;
+            m_->hotkey_.hotkey_capture_ = 0;
         } else {
-            m_->seq_edit_capture_[m_->seq_edit_count_++] = {m_->pressed_key_, m_->press_ctrl_, m_->press_shift_, m_->press_alt_};
-            m_->seq_edit_deadline_                   = m_->time_ + key_sequence_timeout;
+            m_->hotkey_.seq_edit_capture_[m_->hotkey_.seq_edit_count_++] = {m_->input_.pressed_key_, m_->input_.press_ctrl_, m_->input_.press_shift_, m_->input_.press_alt_};
+            m_->hotkey_.seq_edit_deadline_                   = m_->time_ + key_sequence_timeout;
             key_sequence next;
-            for (u8 i = 0; i < m_->seq_edit_count_; ++i) { next.steps[next.count++] = m_->seq_edit_capture_[i]; }
+            for (u8 i = 0; i < m_->hotkey_.seq_edit_count_; ++i) { next.steps[next.count++] = m_->hotkey_.seq_edit_capture_[i]; }
             changed = next != seq;
             seq     = next;
-            if (m_->seq_edit_count_ >= key_sequence::max_steps) { // no room for another step: definitely done
+            if (m_->hotkey_.seq_edit_count_ >= key_sequence::max_steps) { // no room for another step: definitely done
                 capturing       = false;
-                m_->hotkey_capture_ = 0;
+                m_->hotkey_.hotkey_capture_ = 0;
             }
         }
-        m_->pressed_key_ = 0; // the key is spent either way; do not also fire an accelerator
-        m_->key_count_   = 0;
-    } else if (capturing && m_->seq_edit_count_ > 0 && m_->time_ >= m_->seq_edit_deadline_) {
+        m_->input_.pressed_key_ = 0; // the key is spent either way; do not also fire an accelerator
+        m_->input_.key_count_   = 0;
+    } else if (capturing && m_->hotkey_.seq_edit_count_ > 0 && m_->time_ >= m_->hotkey_.seq_edit_deadline_) {
         // paused without a further key: what was captured already stands, just stop listening for more
         capturing       = false;
-        m_->hotkey_capture_ = 0;
+        m_->hotkey_.hotkey_capture_ = 0;
     }
     if (capturing) {
-        m_->hotkey_seen_ = true;
+        m_->hotkey_.hotkey_seen_ = true;
     }
 
     anim_slot& a = anim_for(key);
@@ -617,12 +617,12 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
     m_->dl_.shape(box, field);
 
     std::string shown_text;
-    if (capturing && m_->seq_edit_count_ > 0) {
+    if (capturing && m_->hotkey_.seq_edit_count_ > 0) {
         shown_text = sequence_to_string(seq) + ", ..."; // committed so far; a further key would extend it
     } else if (!capturing) {
         shown_text = sequence_to_string(seq);
     }
-    const std::string_view shown = capturing && m_->seq_edit_count_ == 0 ? std::string_view{"press a key..."}
+    const std::string_view shown = capturing && m_->hotkey_.seq_edit_count_ == 0 ? std::string_view{"press a key..."}
                                   : !capturing && shown_text.empty() ? std::string_view{"None"}
                                                                      : std::string_view{shown_text};
     color tc = !capturing && !seq.bound() ? m_->style_.text_dim : m_->style_.text;
@@ -632,7 +632,7 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
     }
     const vec2 tsize = m_->font_.measure(f, shown);
     m_->dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, tc, shown, f);
-    track_edit(key, changed, m_->hotkey_capture_ == key);
+    track_edit(key, changed, m_->hotkey_.hotkey_capture_ == key);
     return changed;
 }
 
@@ -649,36 +649,36 @@ bool context::hotkey_field(std::string_view label, u32& key_code, key_chord* cho
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool capturing = m_->hotkey_capture_ == key;
+    bool capturing = m_->hotkey_.hotkey_capture_ == key;
     if (in.pressed) {
         capturing       = !capturing;
-        m_->hotkey_capture_ = capturing ? key : 0;
-    } else if (capturing && m_->mouse_pressed_ && !box.contains(m_->mouse_)) {
+        m_->hotkey_.hotkey_capture_ = capturing ? key : 0;
+    } else if (capturing && m_->input_.mouse_pressed_ && !box.contains(m_->input_.mouse_)) {
         capturing       = false;
-        m_->hotkey_capture_ = 0;
+        m_->hotkey_.hotkey_capture_ = 0;
     }
 
     bool changed = false;
-    if (capturing && m_->pressed_key_ != 0) {
-        const bool bare = chord == nullptr || !(m_->press_ctrl_ || m_->press_shift_ || m_->press_alt_);
-        if (m_->pressed_key_ == 0x1b && bare) {                                     // Esc: leave it as it was
-        } else if ((m_->pressed_key_ == 0x08 || m_->pressed_key_ == 0x2e) && bare) {   // Backspace / Delete: unbind
+    if (capturing && m_->input_.pressed_key_ != 0) {
+        const bool bare = chord == nullptr || !(m_->input_.press_ctrl_ || m_->input_.press_shift_ || m_->input_.press_alt_);
+        if (m_->input_.pressed_key_ == 0x1b && bare) {                                     // Esc: leave it as it was
+        } else if ((m_->input_.pressed_key_ == 0x08 || m_->input_.pressed_key_ == 0x2e) && bare) {   // Backspace / Delete: unbind
             changed  = key_code != 0;
             key_code = 0;
             if (chord != nullptr) { *chord = {}; }
         } else {
-            const key_chord next{m_->pressed_key_, m_->press_ctrl_, m_->press_shift_, m_->press_alt_};
-            changed  = chord != nullptr ? *chord != next : key_code != m_->pressed_key_;
-            key_code = m_->pressed_key_;
+            const key_chord next{m_->input_.pressed_key_, m_->input_.press_ctrl_, m_->input_.press_shift_, m_->input_.press_alt_};
+            changed  = chord != nullptr ? *chord != next : key_code != m_->input_.pressed_key_;
+            key_code = m_->input_.pressed_key_;
             if (chord != nullptr) { *chord = next; }
         }
         capturing       = false;
-        m_->hotkey_capture_ = 0;
-        m_->pressed_key_    = 0;
-        m_->key_count_      = 0;
+        m_->hotkey_.hotkey_capture_ = 0;
+        m_->input_.pressed_key_    = 0;
+        m_->input_.key_count_      = 0;
     }
     if (capturing) {
-        m_->hotkey_seen_ = true;
+        m_->hotkey_.hotkey_seen_ = true;
     }
 
     anim_slot& a = anim_for(key);
@@ -703,7 +703,7 @@ bool context::hotkey_field(std::string_view label, u32& key_code, key_chord* cho
     }
     const vec2 tsize = m_->font_.measure(f, shown);
     m_->dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, tc, shown, f);
-    track_edit(key, changed, m_->hotkey_capture_ == key);
+    track_edit(key, changed, m_->hotkey_.hotkey_capture_ == key);
     return changed;
 }
 

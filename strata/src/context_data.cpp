@@ -118,8 +118,8 @@ tree_scope::~tree_scope()
 
 bool context::pointer_over(const rect& r) const noexcept
 {
-    const bool in_window = m_->in_overlay_ || (m_->cur_window_ != 0 && m_->hovered_window_prev_ == m_->cur_window_);
-    return in_window && !m_->pointer_blocked() && m_->dl_.clip().contains(m_->mouse_) && r.contains(m_->mouse_);
+    const bool in_window = m_->in_overlay_ || (m_->cur_window_ != 0 && m_->win_.hovered_window_prev_ == m_->cur_window_);
+    return in_window && !m_->pointer_blocked() && m_->dl_.clip().contains(m_->input_.mouse_) && r.contains(m_->input_.mouse_);
 }
 
 // generic popup ----------------------------------------------------------------------
@@ -127,16 +127,16 @@ bool context::pointer_over(const rect& r) const noexcept
 // draws the popup frame in its overlay layer and redirects layout into it until end_popup(). false while closed.
 bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
 {
-    const u32 level = m_->popup_level_of(key);
-    if (level == impl::no_popup) {
+    const u32 level = m_->popup_.popup_level_of(key);
+    if (level == popup_stack::no_popup) {
         return false;
     }
     // Esc closes the top level only, and not while a text field or a menu (opened from here) has the keyboard
-    if (level + 1 == m_->popup_count_ && m_->focus_id_ == 0 && m_->menu_open_[0].key == 0 && !m_->popup_esc_used_) {
-        for (u32 i = 0; i < m_->key_count_; ++i) {
-            if (m_->keys_[i].k == key::escape) {
-                m_->popup_close_from(level);
-                m_->popup_esc_used_ = true;
+    if (level + 1 == m_->popup_.popup_count_ && m_->focus_id_ == 0 && m_->menu_.menu_open_[0].key == 0 && !m_->popup_.popup_esc_used_) {
+        for (u32 i = 0; i < m_->input_.key_count_; ++i) {
+            if (m_->input_.keys_[i].k == key::escape) {
+                m_->popup_.popup_close_from(level);
+                m_->popup_.popup_esc_used_ = true;
                 return false;
             }
         }
@@ -228,8 +228,8 @@ bool context::picker_body(id key, color& c, color_flags flags)
         const rect r = layout_place({w, sv_h});
         const interaction in = interact(hash_id("##sv", seed), r);
         if (in.held) {
-            m_->pick_s_ = std::clamp((m_->mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f);
-            m_->pick_v_ = 1.0f - std::clamp((m_->mouse_.y - r.min.y) / r.height(), 0.0f, 1.0f);
+            m_->pick_s_ = std::clamp((m_->input_.mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f);
+            m_->pick_v_ = 1.0f - std::clamp((m_->input_.mouse_.y - r.min.y) / r.height(), 0.0f, 1.0f);
             changed = true;
         }
         const color hue = from_hsv({m_->pick_h_, 1.0f, 1.0f}, 255);
@@ -255,7 +255,7 @@ bool context::picker_body(id key, color& c, color_flags flags)
         const rect r = layout_place({w, bar_h});
         const interaction in = interact(hash_id("##hue", seed), r);
         if (in.held) {
-            m_->pick_h_ = std::clamp((m_->mouse_.x - r.min.x) / r.width(), 0.0f, 0.9999f);
+            m_->pick_h_ = std::clamp((m_->input_.mouse_.x - r.min.x) / r.width(), 0.0f, 0.9999f);
             changed = true;
         }
         static constexpr std::array<u32, 7> stops = {0xff0000ffu, 0xffff00ffu, 0x00ff00ffu, 0x00ffffffu,
@@ -287,7 +287,7 @@ bool context::picker_body(id key, color& c, color_flags flags)
         const rect r = layout_place({w, bar_h});
         const interaction in = interact(hash_id("##alpha", seed), r);
         if (in.held) {
-            alpha   = static_cast<u8>(std::clamp((m_->mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f) * 255.0f + 0.5f);
+            alpha   = static_cast<u8>(std::clamp((m_->input_.mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f) * 255.0f + 0.5f);
             changed = true;
         }
         draw_checker(r, 7.0f);
@@ -381,10 +381,10 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
     const rect         box = fl.control;
     const interaction  in  = interact(key, box);
 
-    bool open = m_->popup_has(key);
+    bool open = m_->popup_.popup_has(key);
     if (in.pressed) {
         if (open) {
-            m_->popup_close(key);
+            m_->popup_.popup_close(key);
             open = false;
         } else {
             open = popup_push(key);
@@ -428,7 +428,7 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
             end_popup_at();
         }
     }
-    track_edit(key, changed, m_->popup_has(key));
+    track_edit(key, changed, m_->popup_.popup_has(key));
     return changed;
 }
 
@@ -457,10 +457,7 @@ bool context::id_in_scope(id seed) const noexcept
     if (seed == 0) {
         return true;
     }
-    for (u32 i = 0; i <= m_->id_depth_; ++i) {
-        if (m_->id_stack_[i] == seed) { return true; }
-    }
-    return false;
+    return m_->ids_.contains(seed);
 }
 
 // the id scope a node was submitted in, 0 when it has no state
@@ -662,7 +659,7 @@ bool context::tree_node(std::string_view label, std::string_view id_extra, tree_
 
     const interaction in = interact(key, row);
 
-    const bool arrow_hit = m_->mouse_.x < row.min.x + h;
+    const bool arrow_hit = m_->input_.mouse_.x < row.min.x + h;
     const bool activated = in.pressed || nav_take(key);
     m_->item_pressed_    = activated;
     m_->last_item_arrow_ = in.pressed && arrow_hit;
@@ -670,7 +667,7 @@ bool context::tree_node(std::string_view label, std::string_view id_extra, tree_
     if (activated && (!has_flag(flags, tree_flags::arrow_only) || arrow_hit)) {
         open = !open;
         // Ctrl or Shift held while it is clicked applies the change to the whole subtree
-        if (in.pressed && (m_->mod_ctrl_ || m_->mod_shift_)) { tree_set_recursive(key, open); }
+        if (in.pressed && (m_->input_.mod_ctrl_ || m_->input_.mod_shift_)) { tree_set_recursive(key, open); }
     }
     const bool is_open = open;
     nav_record(key, row, m_->tree_depth_, true, is_open);
@@ -1016,8 +1013,8 @@ int context::table_headers_row(int sort_column, bool ascending)
 
     // right-click: a menu of the columns to show
     if (has_flag(m_->table_.flags, table_flags::hideable)) {
-        if (m_->mouse_right_pressed_ && pointer_over(header_area)) {
-            open_popup_menu("##columns", m_->mouse_);
+        if (m_->input_.mouse_right_pressed_ && pointer_over(header_area)) {
+            open_popup_menu("##columns", m_->input_.mouse_);
         }
         if (begin_popup_menu("##columns")) {
             for (u32 p = 0; p < m_->table_.ncols; ++p) {
@@ -1045,7 +1042,7 @@ int context::table_headers_row(int sort_column, bool ascending)
             const u32 b = m_->table_.vis[k + 1];
             const rect grip = {{m_->table_.col_x[k + 1] - 4.0f, y0}, {m_->table_.col_x[k + 1] + 4.0f, y0 + hh}};
             const interaction in = interact(hash_id("##grip", hash_id({reinterpret_cast<const char*>(&a), sizeof(a)}, current_seed())), grip);
-            if (in.held && m_->mouse_delta_.x != 0.0f) {
+            if (in.held && m_->input_.mouse_delta_.x != 0.0f) {
                 const f32 per_px   = m_->table_.frac_total / m_->table_.width; // what a pixel is worth in `frac` units
                 const f32 min_frac = 36.0f * per_px;
                 f32 lo = min_frac - st.frac[a];
@@ -1054,7 +1051,7 @@ int context::table_headers_row(int sort_column, bool ascending)
                     lo = -std::max(st.frac[a], 0.0f);
                     hi = std::max(st.frac[b], 0.0f);
                 }
-                const f32 dx = std::clamp(m_->mouse_delta_.x * per_px, lo, hi);
+                const f32 dx = std::clamp(m_->input_.mouse_delta_.x * per_px, lo, hi);
                 st.frac[a] += dx;
                 st.frac[b] -= dx;
                 table_recompute_x();
@@ -1070,7 +1067,7 @@ int context::table_headers_row(int sort_column, bool ascending)
     struct header_hit { id key{}; bool pressed{}; };
     std::array<header_hit, 16> hits{};
     const u8 was_dragging = st.drag_col1;
-    if (!m_->mouse_down_) { st.drag_col1 = 0; st.press_col1 = 0; }
+    if (!m_->input_.mouse_down_) { st.drag_col1 = 0; st.press_col1 = 0; }
     for (u32 k = 0; k < m_->table_.nvis; ++k) {
         const u32  c    = m_->table_.vis[k];
         const rect cell = {{m_->table_.col_x[k], y0}, {m_->table_.col_x[k + 1], y0 + hh}};
@@ -1084,21 +1081,21 @@ int context::table_headers_row(int sort_column, bool ascending)
             a->last_frame = (a->hover == 0.0f && !in.hovered) ? 0 : m_->frame_;
         }
         if (has_flag(m_->table_.flags, table_flags::reorderable) && !column_flag(c, table_column_flags::no_reorder)) {
-            if (m_->active_ == key && m_->mouse_pressed_) {
+            if (m_->active_ == key && m_->input_.mouse_pressed_) {
                 st.press_col1 = static_cast<u8>(c + 1);
-                st.press_x    = m_->mouse_.x;
+                st.press_x    = m_->input_.mouse_.x;
             }
-            if (st.drag_col1 == 0 && st.press_col1 == c + 1 && m_->active_ == key && m_->mouse_down_ && std::abs(m_->mouse_.x - st.press_x) > 5.0f) {
+            if (st.drag_col1 == 0 && st.press_col1 == c + 1 && m_->active_ == key && m_->input_.mouse_down_ && std::abs(m_->input_.mouse_.x - st.press_x) > 5.0f) {
                 st.drag_col1 = static_cast<u8>(c + 1);
             }
         }
     }
-    if (st.drag_col1 != 0 && m_->mouse_down_) { // the dragged column takes the place of the one its middle has passed
+    if (st.drag_col1 != 0 && m_->input_.mouse_down_) { // the dragged column takes the place of the one its middle has passed
         const u32 c = st.drag_col1 - 1u;
         u32 slot = 0, target = 0;
         for (u32 k = 0; k < m_->table_.nvis; ++k) {
             if (m_->table_.vis[k] == c) { slot = k; }
-            else if ((m_->table_.col_x[k] + m_->table_.col_x[k + 1]) * 0.5f < m_->mouse_.x) { ++target; }
+            else if ((m_->table_.col_x[k] + m_->table_.col_x[k + 1]) * 0.5f < m_->input_.mouse_.x) { ++target; }
         }
         if (target != slot) {
             const u32 d = m_->table_.vis[target];
@@ -1138,7 +1135,7 @@ int context::table_headers_row(int sort_column, bool ascending)
         if (hover > 0.01f) {
             m_->dl_.rect_filled(cell, m_->style_.widget_hover.scaled_alpha(0.5f * hover));
         }
-        if (st.drag_col1 == c + 1 && m_->mouse_down_) {
+        if (st.drag_col1 == c + 1 && m_->input_.mouse_down_) {
             m_->dl_.rect_filled(cell, m_->style_.accent.scaled_alpha(0.22f));
         }
 
@@ -1332,7 +1329,7 @@ void context::end_table()
 
         // the wheel goes to the innermost scroller under the pointer; nested tables already had their turn
         const rect region = {{m_->table_.origin.x, m_->table_.body_top}, {m_->table_.origin.x + m_->table_.width, m_->table_.body_top + m_->table_.body_h}};
-        if (m_->wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(region)) {
+        if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(region)) {
             st.scroll -= wheel_scroll(st.row_hint, m_->table_.body_h);
             st.scroll_wanted    = -1.0f; // the user's scrolling wins over a table_set_scroll_y() still waiting
             m_->wheel_consumed_ = true;
@@ -1480,7 +1477,7 @@ bool context::table_tree_node(std::string_view label, tree_flags flags)
     const interaction in = interact(key, hit);
 
     bool& open = tree_open_state(key, has_flag(flags, tree_flags::default_open));
-    const bool arrow_hit = m_->mouse_.x < row.min.x + 16.0f;
+    const bool arrow_hit = m_->input_.mouse_.x < row.min.x + 16.0f;
     m_->item_pressed_ = in.pressed;
     if (in.pressed && (!has_flag(flags, tree_flags::arrow_only) || arrow_hit)) {
         open = !open;
