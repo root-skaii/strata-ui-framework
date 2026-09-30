@@ -49,9 +49,8 @@ public:
     [[nodiscard]] clipboard_hooks clipboard() noexcept;
 
 private:
-    void push_key(key k, bool ctrl, bool shift, bool alt) noexcept;
-    // key / extra mouse button down: queued with current modifiers
-    void push_press(u32 key) noexcept;
+    // key / extra mouse button down: queued with the modifiers held now
+    void push_press(key k) noexcept;
     void push_text(char32_t cp) noexcept;
 
     void*               hwnd_{};
@@ -71,9 +70,6 @@ private:
     u32                                   typed_len_{};
     char16_t                              high_surrogate_{};
     cursor_kind                           cursor_{};
-    u32                                   pressed_key_{};
-    std::array<key_press, max_key_presses> presses_{};
-    u32                                   press_count_{};
     std::array<char, 256>                 ime_{};      // the composition in progress (utf-8) ...
     u32                                   ime_len_{};
     u32                                   ime_cursor_{}; // ... and the caret inside it

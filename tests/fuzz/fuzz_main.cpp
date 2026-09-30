@@ -163,7 +163,10 @@ void fuzz_editing(std::string_view ops)
                 break;
             case 1: // a key with modifiers
                 if (in.key_count < in.keys.size()) {
-                    in.keys[in.key_count++] = {static_cast<key>(arg % 19), (arg & 0x40) != 0, (arg & 0x80) != 0, (arg & 0x20) != 0};
+                    static constexpr key editing[] = {key::left, key::right, key::up, key::down, key::home, key::end, key::backspace,
+                                                      key::del, key::enter, key::escape, key::tab, key::page_up, key::page_down,
+                                                      key::a, key::c, key::v, key::x, key::z, key::y};
+                    in.keys[in.key_count++] = {editing[arg % std::size(editing)], (arg & 0x40) != 0, (arg & 0x80) != 0, (arg & 0x20) != 0};
                 }
                 ++i;
                 break;
@@ -175,7 +178,7 @@ void fuzz_editing(std::string_view ops)
                 down = !down;
                 break;
             case 4: // a shortcut press (hotkeys, accelerators)
-                if (in.press_count < in.presses.size()) { in.presses[in.press_count++] = {arg, (arg & 1) != 0, (arg & 2) != 0, (arg & 4) != 0}; }
+                in.press(static_cast<key>(arg), (arg & 1) != 0, (arg & 2) != 0, (arg & 4) != 0);
                 ++i;
                 break;
             default: // end the frame here

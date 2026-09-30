@@ -11,6 +11,7 @@
 #include "core/layout_state.hpp"
 
 #include <array>
+#include <vector>
 
 namespace strata::internal {
 
@@ -48,10 +49,10 @@ struct card_frame {
 };
 
 struct child_card_state {
-    std::array<child_state, 32> children_{};    // (context::max_children is the same)
+    std::vector<child_state> children_; // context_config::capacity.children slots, sized once
     std::array<child_frame, 4>  child_stack_{};  // (context::max_child_depth is the same)
     u32 child_depth_{};
-    std::array<card_state, 48>  cards_{};        // (context::max_cards is the same)
+    std::vector<card_state>  cards_;    // context_config::capacity.cards slots, sized once
     std::array<card_frame, 4>   card_stack_{};   // (context::max_card_depth is the same)
     u32 card_depth_{};
 };

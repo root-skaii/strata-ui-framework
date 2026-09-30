@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 
 #include <algorithm>
@@ -20,7 +21,7 @@ void context::open_modal(std::string_view title)
         return;
     }
     m_->modal_.modal_stack_[m_->modal_.modal_count_++] = wid;
-    anim_for(hash_id("##modal", wid)).toggle = 0.0f; // fades in from nothing
+    anim_for(part_id(part::modal_fade, wid)).toggle = 0.0f; // fades in from nothing
     // whatever had the keyboard or a popup open gives way
     m_->focus_id_ = 0;
     m_->popup_.popup_close_from(0);
@@ -49,7 +50,7 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     }
     const bool top = level == m_->modal_.modal_count_;
 
-    anim_slot& a = anim_for(hash_id("##modal", wid));
+    anim_slot& a = anim_for(part_id(part::modal_fade, wid));
     a.toggle = approach(a.toggle, 1.0f, m_->style_.anim_speed * 0.9f);
     const f32 t = std::clamp(a.toggle, 0.0f, 1.0f);
 
@@ -192,14 +193,14 @@ int context::confirm(std::string_view id_label, std::initializer_list<std::strin
         if (options.remember != nullptr && *options.remember) {
             return options.remembered; // the user asked not to be asked
         }
-        open_modal(options.title.empty() ? std::string_view{"Confirm"} : options.title);
+        open_modal(options.title.empty() ? m_->strings_.confirm : options.title);
         m_->confirm_.confirm_open_ = key;
     }
     if (m_->confirm_.confirm_open_ != key) {
         return 0;
     }
 
-    const std::string_view title = options.title.empty() ? std::string_view{"Confirm"} : options.title;
+    const std::string_view title = options.title.empty() ? m_->strings_.confirm : options.title;
     const id wid = hash_id(title, m_->ids_.root());
     bool open = false;
     for (u32 i = 0; i < m_->modal_.modal_count_; ++i) { open = open || m_->modal_.modal_stack_[i] == wid; }

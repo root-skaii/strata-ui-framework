@@ -60,10 +60,11 @@ void test_window_recycling()
     std::fprintf(stderr, "[windows: slots of windows not shown any more are given back]\n");
     diag_log log;
     context_config cfg;
-    cfg.diagnostics = {&diag_collect, &log};
+    cfg.diagnostics      = {&diag_collect, &log};
+    cfg.capacity.windows = 32;
     harness h{cfg};
 
-    // 100 windows over time, 5 at a time: once all 32 slots were used, the least recently shown make room. every
+    // 100 windows over time, 5 at a time: once all 32 slots (capacity.windows) were used, the least recently shown make room. every
     // window still opens
     int opened = 0;
     for (int round = 0; round < 20; ++round) {
@@ -92,7 +93,18 @@ void test_window_recycling()
     CHECK(h.ui.stats().limits_hit > 0);
     const auto limits = std::ranges::count_if(log.lines, [](const auto& l) { return l.first == diagnostic_kind::limit; });
     CHECK(limits == 1);
-    CHECK(!log.lines.empty() && log.lines[0].second.find("max_windows") != std::string::npos);
+    CHECK(!log.lines.empty() && log.lines[0].second.find("capacity.windows") != std::string::npos);
+
+    // ... unless the context was made with room for them
+    context_config roomy;
+    roomy.capacity.windows = 64;
+    harness big{roomy};
+    big.frames([&] {
+        for (int k = 0; k < 40; ++k) {
+            if (auto w = big.ui.window(std::format("crowd {}", k), {0, 0}, 100.0f)) { big.ui.text("x"); }
+        }
+    }, 3);
+    CHECK(big.ui.stats().limits_hit == 0 && big.ui.window_rect("crowd 39").width() > 0.0f);
 }
 
 void test_diagnostics_collisions()
@@ -123,22 +135,22 @@ void test_input_not_dropped()
         if (auto w = h.ui.window("keys", {0, 0}, 200.0f)) { h.ui.text("x"); }
         saves += h.ui.accelerator("Ctrl+S") ? 1 : 0;
         finds += h.ui.accelerator("Ctrl+F") ? 1 : 0;
-        f5    += h.ui.key_pressed(VK_F5) ? 1 : 0;
+        f5    += h.ui.key_pressed(strata::key::f5) ? 1 : 0;
     };
     h.frames(shortcuts, 2);
     // three presses between two frames; Ctrl is no longer held by the time the frame runs
-    h.press('S', true);
-    h.press('F', true);
-    h.press(VK_F5);
+    h.press(strata::key::s, true);
+    h.press(strata::key::f, true);
+    h.press(strata::key::f5);
     h.frame(shortcuts);
     CHECK(saves == 1 && finds == 0 && f5 == 0); // one per frame, oldest first
     h.frames(shortcuts, 3);
     CHECK(saves == 1);
     CHECK(finds == 1); // with the Ctrl it was pressed with
     CHECK(f5 == 1);
-    // a host that only fills pressed_key still works
+    // a press made with the modifiers the host reports for the frame
     h.in.ctrl = true;
-    h.in.pressed_key = 'S';
+    h.press_now(strata::key::s);
     h.frame(shortcuts);
     h.in.ctrl = false;
     CHECK(saves == 2);
@@ -345,8 +357,8 @@ void test_edit_events()
 
     // a combo entry picked: the change and the end of the edit come together
     h.click(combo_r.center(), build); // opens
-    h.frame(build);                   // (popup_open() reports the frame before)
-    CHECK(h.ui.popup_open());
+    h.frame(build);                   // (any_popup_open() reports the frame before)
+    CHECK(h.ui.any_popup_open());
     const int after_before = co.after;
     h.click(combo_r.center(), build); // (with the list open, the last item is its last row: "c")
     h.frames(build, 2);
@@ -656,7 +668,7 @@ void nest_popups(context& ui, int level, int& deepest, std::array<rect, 8>& butt
 {
     deepest = std::max(deepest, level);
     if (ui.button("deeper")) { ui.toggle_popup("next"); }
-    buttons[static_cast<std::size_t>(level)] = ui.last_item_rect();
+    buttons[static_cast<std::size_t>(level)] = ui.item_rect();
     if (auto p = ui.popup("next", 160.0f)) { nest_popups(ui, level + 1, deepest, buttons); }
 }
 
@@ -681,7 +693,7 @@ void test_nested_popups()
         settings_open = mode_open = pick_open = tint_open = inner_open = other_open = false;
         if (auto w = h.ui.window("host", {100, 100}, {300, 0}, plain_window)) {
             if (h.ui.button("settings")) { h.ui.toggle_popup("settings"); }
-            settings_btn = h.ui.last_item_rect();
+            settings_btn = h.ui.item_rect();
             if (want_other) { h.ui.open_popup("other"); want_other = false; }
             if (auto p = h.ui.popup("settings", 260.0f)) {
                 (void)h.ui.checkbox("wrap", wrap);
@@ -691,43 +703,43 @@ void test_nested_popups()
                     reset_r = h.ui.item_rect();
                 }
                 (void)h.ui.combo("mode", mode, {"a", "b", "c", "d"});
-                mode_open = h.ui.popup_is_open("mode");
+                mode_open = h.ui.popup_open("mode");
                 if (!mode_open) { mode_r = h.ui.item_rect(); } // (open, the last item is the list's last row)
                 mode_after += h.ui.item_deactivated_after_edit() ? 1 : 0;
-                (void)h.ui.combo_filtered("pick", pick, fruits.data(), fruits.size());
-                pick_open = h.ui.popup_is_open("pick");
+                (void)h.ui.combo_filtered("pick", pick, fruits);
+                pick_open = h.ui.popup_open("pick");
                 if (!pick_open) { pick_r = h.ui.item_rect(); }
                 (void)h.ui.color_edit("tint", tint);
-                tint_open = h.ui.popup_is_open("tint");
+                tint_open = h.ui.popup_open("tint");
                 if (!tint_open) { tint_r = h.ui.item_rect(); }
                 if (h.ui.button("more")) { h.ui.toggle_popup("inner"); }
-                more_r = h.ui.last_item_rect();
+                more_r = h.ui.item_rect();
                 if (auto q = h.ui.popup("inner", 200.0f)) {
                     (void)h.ui.checkbox("deep", deep);
                     deep_r = h.ui.item_rect();
                     (void)h.ui.combo("level", level_pick, {"one", "two", "three"});
-                    if (!h.ui.popup_is_open("level")) { level_r = h.ui.item_rect(); }
+                    if (!h.ui.popup_open("level")) { level_r = h.ui.item_rect(); }
                     if (h.ui.button("close all")) { h.ui.close_all_popups(); }
                     all_r = h.ui.item_rect();
                 }
-                inner_open = h.ui.popup_is_open("inner");
+                inner_open = h.ui.popup_open("inner");
             }
-            settings_open = h.ui.popup_is_open("settings");
+            settings_open = h.ui.popup_open("settings");
             if (auto p = h.ui.popup("other")) { h.ui.text("other"); }
-            other_open = h.ui.popup_is_open("other");
+            other_open = h.ui.popup_open("other");
         }
         if (open_modal) { h.ui.open_modal("dialog"); open_modal = false; }
         modal_drawn = false;
         if (h.ui.begin_modal("dialog", {300.0f, 0.0f})) {
             modal_drawn = true;
             if (h.ui.button("modal options")) { h.ui.toggle_popup("in modal"); }
-            modal_btn = h.ui.last_item_rect();
+            modal_btn = h.ui.item_rect();
             if (auto p = h.ui.popup("in modal", 220.0f)) {
                 (void)h.ui.checkbox("x", modal_check);
                 modal_box = h.ui.item_rect();
                 (void)h.ui.combo("modal mode", modal_mode, {"p", "q"});
             }
-            modal_popup_open = h.ui.popup_is_open("in modal");
+            modal_popup_open = h.ui.popup_open("in modal");
             h.ui.end_modal();
         }
     };
@@ -740,7 +752,7 @@ void test_nested_popups()
 
     // a combo inside a popup: opening it keeps the popup, a row picks, and the list covers the parent's rows
     open_settings();
-    CHECK(settings_open && h.ui.popup_open());
+    CHECK(settings_open && h.ui.any_popup_open());
     h.click(mode_r.center(), build);
     CHECK(mode_open && settings_open);
     const vec2 row_b{mode_r.center().x, mode_r.max.y + 4.0f + 4.0f + item_h * 1.5f};
@@ -767,7 +779,7 @@ void test_nested_popups()
     CHECK(!mode_open && settings_open);
     h.key(key::escape);
     h.frames(build, 2);
-    CHECK(!settings_open && !h.ui.popup_open());
+    CHECK(!settings_open && !h.ui.any_popup_open());
 
     // a press outside everything closes the whole stack
     open_settings();
@@ -777,7 +789,7 @@ void test_nested_popups()
     h.frames(build, 2);
     CHECK(h.ui.want_capture_mouse());
     h.click({700.0f, 550.0f}, build);
-    CHECK(!mode_open && !settings_open && !h.ui.popup_open());
+    CHECK(!mode_open && !settings_open && !h.ui.any_popup_open());
 
     // keys reach the nested list
     open_settings();
@@ -854,7 +866,7 @@ void test_nested_popups()
     h.click(more_r.center(), build);
     h.frames(build, 2);
     h.click(all_r.center(), build);
-    CHECK(!inner_open && !settings_open && !h.ui.popup_open());
+    CHECK(!inner_open && !settings_open && !h.ui.any_popup_open());
 
     // a context menu inside a popup: its item works and the popup stays; Esc closes the menu first
     open_settings();
@@ -935,8 +947,77 @@ void test_nested_popups()
 
 } // namespace
 
+void test_nested_windows()
+{
+    std::fprintf(stderr, "[windows: a window begun inside another's code, the parent carries on after it]\n");
+    harness h;
+    int  a_clicks = 0, b_clicks = 0, c_clicks = 0;
+    rect a_r{}, b_r{}, c_r{};
+    const auto build = [&] {
+        if (auto p = h.ui.window("P", {20, 20}, {300, 0}, plain_window)) {
+            if (h.ui.button("a")) { ++a_clicks; }
+            a_r = h.ui.item_rect();
+            if (auto n = h.ui.window("N", {400, 300}, {200, 0}, plain_window)) {
+                if (h.ui.button("b")) { ++b_clicks; }
+                b_r = h.ui.item_rect();
+            }
+            if (h.ui.button("c")) { ++c_clicks; }
+            c_r = h.ui.item_rect();
+        }
+        if (auto q = h.ui.window("Q", {700, 20}, {120, 0})) { h.ui.text("q"); } // (size without flags, as the README shows)
+    };
+    h.frames(build, 3);
+    const rect p = h.ui.window_rect("P");
+    const rect n = h.ui.window_rect("N");
+    CHECK(near_eq(n.min.x, 400.0f, 0.5f) && near_eq(n.min.y, 300.0f, 0.5f));
+    CHECK(n.contains(b_r.center()) && p.contains(c_r.center()));
+    CHECK(c_r.min.y >= a_r.max.y && near_eq(c_r.min.x, a_r.min.x, 0.5f)); // the parent's layout resumed below "a"
+    h.click(c_r.center(), build);
+    h.click(b_r.center(), build);
+    CHECK(a_clicks == 0 && b_clicks == 1 && c_clicks == 1);
+}
+
+void test_unbalanced_scopes()
+{
+    std::fprintf(stderr, "[misuse: missing end_* / pop_* are reported and repaired by end_frame]\n");
+    diag_log log;
+    context_config cfg;
+    cfg.diagnostics = {&diag_collect, &log};
+    harness h{cfg};
+    bool opened = false;
+    for (int i = 0; i < 24; ++i) { // more frames than max_tree_depth: the tree stack must not carry over
+        h.frame([&] {
+            (void)h.ui.begin_window("leaky", {20, 20}, {300, 0}, plain_window); // no end_window
+            h.ui.set_next_item_open(true);
+            opened = h.ui.tree_node("node");                                      // no tree_pop
+            h.ui.push_id("scope");                                                 // no pop_id
+        });
+    }
+    CHECK(opened);
+    int misuse = 0, limits = 0;
+    for (const auto& [kind, text] : log.lines) {
+        misuse += kind == diagnostic_kind::misuse;
+        limits += kind == diagnostic_kind::limit;
+    }
+    CHECK(misuse == 3 && limits == 0); // end_window, tree_pop, pop_id: each once
+    // a well-formed window afterwards works as usual
+    bool clicked = false;
+    rect r{};
+    const auto build = [&] {
+        if (auto w = h.ui.window("ok", {400, 20}, {200, 0}, plain_window)) {
+            clicked = h.ui.button("go") || clicked;
+            r = h.ui.item_rect();
+        }
+    };
+    h.frames(build, 2);
+    h.click(r.center(), build);
+    CHECK(clicked);
+}
+
 void run_robust_tests()
 {
+    test_nested_windows();
+    test_unbalanced_scopes();
     test_nested_popups();
     test_scroll_speed();
     test_fast_math_nan();

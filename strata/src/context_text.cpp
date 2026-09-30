@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 #include "strata/bidi.hpp"
 #include "text_util.hpp"
@@ -380,7 +381,7 @@ void context::ml_layout(std::string_view t, f32 width, font_id f, bool wrap)
     }
 }
 
-void context::text_selectable(std::string_view id_label, std::string_view text)
+void context::text_selectable(std::string_view text, std::string_view id_label)
 {
     if (m_->cur_ == nullptr || text.empty()) {
         return;
@@ -452,7 +453,9 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     }
     const rect box = fl.control;
 
-    child_state* st = internal::state_for(m_->children_cards_.children_, key, m_->frame_); // vertical scroll and content height of this field
+    bool full = false; // vertical scroll and content height of this field:
+    child_state* st = internal::state_for(std::span{m_->children_cards_.children_}, key, m_->frame_, full);
+    if (full) { report_limit("child regions with state (context_config::capacity.children)", static_cast<u32>(m_->children_cards_.children_.size())); }
     constexpr f32 bar_w = 10.0f;
 
     // the scrollbar column is its own control, so it comes before the field claims the press
@@ -478,7 +481,7 @@ bool context::input_multiline_core(std::string_view label, std::string_view curr
     if (st->overflow && st->content_h > view_h) {
         const f32 max_scroll = st->content_h - view_h;
         const f32 thumb_h    = std::max(20.0f, track.height() * view_h / st->content_h);
-        const interaction sb = interact(hash_id("##mlscroll", key), track);
+        const interaction sb = interact(part_id(part::text_scrollbar, key), track);
         if (sb.held) {
             const f32 t = std::clamp((m_->input_.mouse_.y - track.min.y - thumb_h * 0.5f) / std::max(track.height() - thumb_h, 1.0f), 0.0f, 1.0f);
             st->scroll  = t * max_scroll;

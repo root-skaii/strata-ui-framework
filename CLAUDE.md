@@ -32,10 +32,10 @@ a code comment near the thing it explains instead of expanding the README sectio
 
 ## Test
 
-- `ctest --test-dir build/x64-release` — 59 tests: `strata_sandbox --selftest` (~850 checks, headless; add
-  `--log out.txt` to see output), 44 golden screenshot comparisons (dx11+dx12), `strata_render_test` (real D3D11
-  device offscreen: hostile GS, output encodings, text contrast, device recovery), `strata_app_test`, overlay host
-  tests (incl. `--fp16`).
+- `ctest --test-dir build/x64-release` — 60 tests: `strata_sandbox --selftest` (~1350 checks, headless; add
+  `--log out.txt` to see output), 52 golden screenshot comparisons (dx11+dx12), `strata_render_test` (real D3D11
+  device offscreen: hostile GS, output encodings, text contrast, device recovery, registered textures),
+  `strata_app_test`, `strata_overlay_modules` (headless), overlay host tests (incl. `--fp16`).
 - Goldens are gitignored and machine-specific (system fonts: Segoe UI, Consolas). Regenerate with
   `cmake --build ... --target strata_update_goldens` (or `strata_update_golden_<name>_<dx11|dx12>` for one) and
   **review the diff** before trusting it — failed comparisons leave `<name>.diff.png` in
@@ -45,7 +45,7 @@ a code comment near the thing it explains instead of expanding the README sectio
   config palette tabs dnd lists editor dockdrag. `--scale F`, `--theme NAME`, `--rescale F`. `--shot` defaults to
   1280x720 but golden scenes pass their own `--height` (see `sandbox/CMakeLists.txt` `strata_shot(...)`); popups
   flip above/below depending on the room there, so match the golden's size when finding click coordinates.
-- New selftests go in `tests/selftest_{text,dock,widgets,windows,misc,robust}.cpp` (+ `selftest_common.hpp` for
+- New selftests go in `tests/selftest_{text,dock,widgets,windows,misc,robust,app,rows}.cpp` (+ `selftest_common.hpp` for
   `CHECK`/harness, `selftest.cpp` for the runner) — add the function to that file's `run_<area>_tests()` too.
   The harness turns dock animation and scroll smoothing off. `CHECK(...)` is variadic; braced initialisers are fine.
 
@@ -59,6 +59,15 @@ a code comment near the thing it explains instead of expanding the README sectio
 - Multi-key chords (`key_sequence`, e.g. `Ctrl+K, Ctrl+S`): `keybinds::action::chord` is a `key_sequence`
   (a `key_chord` converts implicitly). Matching state is deferred one frame (cleared in `begin_frame`) so two
   sequences sharing a prefix both get a look at the next key — don't collapse that to an immediate clear.
+- Keys: one `strata::key` enum, numbered like Win32 virtual keys (win32_platform casts). `input_state::keys` is the
+  only press list; `begin_frame` feeds both the one-press-per-frame shortcut queue and the editing-key list text
+  fields read from it.
+- Sub-widget ids (a window's resize edge, a tab's close box) use `part_id(part::x, owner)` (`src/core/part_id.hpp`),
+  not `hash_id("##salt", ...)`. `##` literals that remain are real hidden labels, or persisted (`##dockspace`).
+- Widget code lives one family per file: `context_window.cpp`, `context_input.cpp` (single-line fields),
+  `context_text.cpp` (editing engine, multi-line), `context_table.cpp`, `context_tree.cpp`, `context_color.cpp`,
+  `context_child.cpp`, `context_hotkey.cpp`, ... `context.cpp` keeps the frame lifecycle, ids, layout, basic widgets.
+- Words a widget draws itself come from `ui_strings` (`m_->strings_`), never a literal.
 
 ## Overlay
 

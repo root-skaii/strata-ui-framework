@@ -76,6 +76,7 @@ struct state {
     resize1_fn    orig_resize1{};
     colorspace_fn orig_colorspace{};
     bool          patched_present{}, patched_present1{}, patched_resize{}, patched_resize1{}, patched_colorspace{};
+    bool          stay_loaded{}; // uninstall left a hook of ours in someone else's chain (or a wndproc): never unload
 
     // colour space the game declared (SetColorSpace1), and whether the output encoding needs re-deriving (a resize
     // can change the format, games can toggle hdr)
@@ -168,7 +169,7 @@ void on_present(IDXGISwapChain* sc); // called from the Present hooks
 // hooks.cpp: the vtable patches
 enum class hook_result { ok, no_vtable, patch_failed };
 [[nodiscard]] hook_result install_hooks();
-void remove_hooks();
+[[nodiscard]] bool remove_hooks(); // false: another hook sits over one of ours, so the dll must stay loaded
 [[nodiscard]] ComPtr<ID3D12CommandQueue> game_queue12(ID3D12Device* device);
 
 } // namespace strata::overlay::detail

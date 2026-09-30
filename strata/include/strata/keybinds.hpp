@@ -90,7 +90,7 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id = "keybind
 class command_palette {
 public:
     // opening chord (empty: only open())
-    key_chord shortcut{'P', true, true, false};
+    key_chord shortcut{key::p, true, true, false};
     // visible result count
     int       max_rows = 9;
 

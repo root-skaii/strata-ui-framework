@@ -44,7 +44,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         apply_cursor_state(g.visible.load());
         return 0;
     }
-    if (g.opt.toggle_key != 0 && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP) && wparam == g.opt.toggle_key) {
+    if (g.opt.toggle_key != key::none && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP) && wparam == static_cast<WPARAM>(g.opt.toggle_key)) {
         if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && (lparam & (1 << 30)) == 0) { toggle_visible(); }
         return 0;
     }

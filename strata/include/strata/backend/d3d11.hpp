@@ -9,6 +9,7 @@
 
 struct ID3D11Device;
 struct ID3D11DeviceContext;
+struct ID3D11ShaderResourceView;
 
 namespace strata {
 
@@ -54,6 +55,9 @@ public:
     // updates a rectangle of an `updatable` texture (its format, tightly packed) and its mips; false if not updatable
     // or out of bounds
     [[nodiscard]] bool update_texture(texture_id id, u32 x, u32 y, u32 width, u32 height, std::span<const u8> pixels);
+    // shows a texture the host already has (a render target, a video frame ...) through ui.image(), sampled like
+    // create_texture's straight-alpha rgba. keeps its own reference until destroy_texture() or destroy()
+    [[nodiscard]] texture_id register_texture(ID3D11ShaderResourceView* srv);
     void destroy_texture(texture_id id) noexcept;
 
     [[nodiscard]] bool valid() const noexcept { return impl_ != nullptr; }

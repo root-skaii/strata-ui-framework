@@ -2,14 +2,16 @@
 
 Immediate-mode UI framework for Direct3D 11 and 12. C++ latest (`/std:c++latest`), CMake 4.3+, Windows x64, MSVC.
 
-**This project is in progress and not made to expect your expectations. I do not recommend use it until I would finish at least better core design.**
+**This project is a work in progress and not ready for general use: I don't recommend using it until the core design settles.**
 
 ![Docked windows with a tree, nested tables, images and rich text](docs/screenshots/features.png)
 
 ```
 strata/    the library  (strata::strata, static)
 sandbox/   test application, same UI on d3d11 or d3d12
+overlay/   in-game overlay for d3d11 / d3d12 programs (hook, demo dll, test host, injector)
 cmake/     options, compile flags, hlsl embedding, package config
+tests/     self-test sources, golden screenshots, fuzz targets
 ```
 
 ## Screenshots
@@ -136,6 +138,7 @@ ui.input_multiline("notes", notes, {0, 160});                          // severa
 
 int mode = 0;
 ui.combo("mode", mode, {"fast", "balanced", "quality"});               // returns true on change
+ui.combo("font", font, font_names);                                    // any range of strings; or (units, &unit::name)
 
 int tab = 0;
 ui.tab_bar("tabs", {{"General", icons::settings}, "Advanced", "About"}, tab, icon_font);
@@ -194,6 +197,7 @@ strata::texture_id tex = renderer.create_texture(w, h, pixels);        // d3d11_
 ui.image(tex, {96, 96});                                               // size.x == 0: layout width, size.y == 0: square
 ui.image(tex, {96, 96}, {0.25f, 0.25f}, {0.75f, 0.75f}, tint, /*rounding*/ 12.0f);   // crop, tint, round corners
 if (ui.image_button("open", tex, {64, 64})) { /* clicked */ }
+strata::texture_id view = renderer.register_texture(scene_srv);        // an existing texture (viewport, video)
 renderer.destroy_texture(tex);                                         // d3d12: after the gpu is done with it
 
 // docking: regions that windows can be dropped into (every frame, before the windows)
@@ -213,7 +217,7 @@ ui.dock_load_layout(layout);                     // ... and bring it back (befor
 - **Images:** the renderer owns the texture. Formats: `rgba8`, `bgra8`, `r8`, `a8`, `rgba16f`. Mip maps and partial
   `update_texture` are supported; `strata::texture_image` (`strata/texture.hpp`) is the cpu side for custom renderers.
 - **Docking:** drag a `window_flags::dockable` window over a dock area -- its centre adds a tab, its edges split the
-  pane. `dock_window` / `undock_window` / `is_docked` do it from code. Drag splitters to resize, drag a tab to float it.
+  pane. `dock_window` / `undock_window` / `window_docked` do it from code. Drag splitters to resize, drag a tab to float it.
 - **Saving a layout:** `dock_save_layout()` / `dock_load_layout()` round-trip the whole arrangement (splits, ratios,
   tabs, window positions) as text, matching windows by name.
 
@@ -308,8 +312,8 @@ ui.badge("3", toast_kind::warning);   ui.badge("beta", color{178, 120, 255, 255}
 auto r = ui.chip("filter", {.closable = true, .selected = &on});    // r.clicked / r.closed
 ```
 
-- **Tabs:** `tab_bar` reports `changed` / `closed` / `moved_from` / `moved_to` / `add`; `apply_tab_events` updates
-  your list for you.
+- **Tabs:** `tab_bar` reports `changed` / `closed` / `moved_from` / `moved_to` / `add`; `apply_tab_events` applies
+  them to the list.
 - **Popups:** `open_popup` / `toggle_popup` / `popup` / `close_popup`; they stack up to 4 levels (a popup opened from
   inside a popup opens on top of it).
 - **Status widgets:** `spinner`, `badge`, `chip`.
@@ -385,7 +389,7 @@ if (ui.item_clicked(strata::mouse_button::right)) { ui.open_popup("row menu"); }
 - **`allow_item_overlap()`** lets a later widget -- a trailing button, say -- take the press over the row beneath it;
   `item_claimed()` reports whether it did.
 - **Row accessories** (`set_next_item_gutter` + `row_accessory_button` / `_checkbox` / `_toggle`) do the common
-  "row with trailing controls" case for you:
+  "row with trailing controls" case:
 
 ```cpp
 ui.set_next_item_gutter(56.0f);
@@ -404,9 +408,9 @@ ui.row_accessory_checkbox("vis", object.visible);
 ```cpp
 // a shortcut that only fires while the user is looking at this panel, and never while a name is being typed
 if (ui.window_focused()) {
-    if (ui.key_pressed(VK_DELETE))      { ui.ask_confirm("destroy", "Destroy the selection?", sel.size()); }
-    if (ui.key_pressed(VK_F2))          { ui.request_text_focus("name"); }
-    if (ui.key_pressed('D', true))      { duplicate(); }        // Ctrl+D
+    if (ui.key_pressed(strata::key::del))    { ui.ask_confirm("destroy", "Destroy the selection?", sel.size()); }
+    if (ui.key_pressed(strata::key::f2))     { ui.request_text_focus("name"); }
+    if (ui.key_pressed(strata::key::d, true)) { duplicate(); }       // Ctrl+D
 }
 {   auto d = ui.disabled_if(sel.empty());                        // greyed, dead, still explains itself
     if (ui.button("Destroy selected")) { ... }
@@ -416,8 +420,9 @@ if (ui.selectable(rows[i].name, id, sel.contains(i))) { ui.selection_click(sel, 
 switch (ui.confirm("destroy", {"Destroy", "Cancel"}, {.remember = &never_ask, .danger = 1})) { case 1: ...; }
 ```
 
-- **Keys and mouse:** `key_pressed` / `key_down` over virtual-key codes, `mouse_clicked` / `mouse_down` /
-  `item_clicked(mouse_button)`; all quiet while a text or hotkey field has the keyboard.
+- **Keys and mouse:** `key_pressed` / `key_down` take a `strata::key` (every key, plus side mouse buttons);
+  `mouse_clicked` / `mouse_down` / `item_clicked` a `mouse_button`. A focused text field keeps the keys it types and
+  edits with; Enter, Esc, Tab, Up / Down and F-keys still arrive.
 - **Disabled items:** `begin_disabled(cond)` / `ui.disabled_if(cond)` fades and disables a scope while
   `item_hovered()` still works, so an explanatory tooltip can still show.
 - **Selections:** `selection_state` + `ui.selection_click(sel, index)` gives click/Ctrl/Shift selection for free.
@@ -533,7 +538,7 @@ if (auto w = ui.window("settings", {260, 90}, {740, 480}, flags)) {
   deep.
 - **Cards:** `ui.card("Title", icon, icon_font)` -- a titled group box.
 - **Tab strip:** `ui.tab_strip(...)` -- a vertical sidebar; `tab_strip_flags::icons_only` makes an icon rail.
-- **Hotkeys:** `ui.hotkey("Label", key_code)` captures a key or side mouse button by clicking then pressing it.
+- **Hotkeys:** `ui.hotkey("Label", key)` captures a key or side mouse button by clicking then pressing it.
 - **Transitions:** `ui.page_transition(key, page)` fades and slides content in when `page` changes.
 
 ## Rich text
@@ -612,6 +617,9 @@ Windows drag, collapse and stack; pressing one raises it. Input goes to the topm
   docked; the pointer goes to whatever is below and it doesn't count toward `want_capture_mouse()`.
 - **Layers:** `{ auto fg = ui.layer(strata::layer::foreground); ui.draw().rect_filled(...); }` draws above every window
   and popup from anywhere (`layer::background` goes behind them all); drawing only, no input.
+- **Nesting:** a window begun inside another window's code is its own window; the outer one carries on after it.
+- **How many:** `context_config::capacity` sets how many windows, tables, child regions and cards keep state (64
+  windows by default, at most 255), allocated once at `create()`.
 
 ## Idling
 
@@ -643,6 +651,7 @@ ui.debug_draw_list_window(show_commands); // the live commands: clip, index coun
 
 `ui.stats()` gives the same numbers as a struct, plus overflow counters for fixed-size tables (`draw_overflow`,
 `clip_overflows`, `alpha_overflows`) and, in debug builds, `id_collisions` when two widgets hash to the same id.
+A `begin_*` without its `end_*` is reported as `diagnostic_kind::misuse` and closed by `end_frame()`.
 
 ## Footprint
 
@@ -653,8 +662,9 @@ code, the rest mostly `std::format` float tables); each D3D backend adds ~35 KiB
 A typical UI (a couple of windows, a table) holds well under 1 MiB of committed memory and emits a few thousand
 vertices/indices per frame (~0.1 ms CPU); steady state allocates nothing.
 
-No disk, registry, thread or hook use -- everything is statically linked, and each backend delay-loads only its own
-D3D DLL. Typed text (including passwords, via `secure_string`) is zeroed on focus loss and context destruction.
+No registry, thread or hook use; files are touched only by the font, config and theme load / save calls.
+Everything is statically linked, and each backend delay-loads only its own D3D DLL. Typed text (including passwords,
+via `secure_string`) is zeroed on focus loss and context destruction.
 
 ## Fonts, Unicode, kerning
 
@@ -677,6 +687,8 @@ auto ui = strata::context::create(cfg).value();
   Indic / Southeast Asian shaping (see TODO).
 - **Icon fonts:** `strata/icons.hpp` names the code points shared by Segoe MDL2 Assets and Segoe Fluent Icons;
   `--scene icons` shows what a loaded font actually has.
+- **Translation:** the words widgets draw on their own (date picker, find bar, hotkey fields, log view ...) come from
+  `ui_strings` (`context_config::strings`, `ui.set_strings()`); English by default.
 
 ## UI scale at runtime
 
@@ -705,7 +717,7 @@ strata::overlay::install(opt);       // from a thread of your own, not from DllM
 ```
 
 - **The hook:** a dummy swap chain yields `IDXGISwapChain`'s shared vtable, so `Present` / `Present1` /
-  `ResizeBuffers` can be replaced on the game's own swap chain with no code patched (`uninstall()` restores them).
+  `ResizeBuffers` can be replaced on the game's own swap chain with no code patched (`uninstall()` restores them, and says whether the dll may unload).
 - **Input:** the game window is subclassed and feeds `win32_platform`; while open the game can optionally get no
   keyboard / mouse (`options.block_game_input`).
 - **Hud:** `options.hud` runs on every frame, menu open or not, with no input and the game keeping its mouse and keyboard: for
@@ -775,7 +787,7 @@ Would fit, not promised.
 - A splitter widget: a draggable divider between two regions inside one window (docking has its own)
 - Typing into the date field, week numbers, date ranges, a setting for the first day of the week
 - Tabs that tear off into windows or move between two tab bars
-- Multi-select with Shift / Ctrl in lists, trees and tables; rows that can be dragged to reorder in a table
+- Rows that can be dragged to reorder in a table
 
 **Editor**
 - Multiple carets, code folding, a minimap, an autocomplete popup (the popup API is there for it), comment toggling per language

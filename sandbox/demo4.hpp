@@ -48,7 +48,6 @@ struct demo4_state {
     std::vector<std::string> objects;
     strata::selection_state  sel;
     std::vector<std::string> types;      // a long list, for combo_filtered
-    std::vector<std::string_view> type_views; // views of them, which is what the combo takes
     int                      type_index = 0;
     std::vector<char>        visible;    // one flag per object (vector<bool> has no usable reference)
     bool                     never_ask = false;

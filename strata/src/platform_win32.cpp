@@ -174,19 +174,11 @@ clipboard_hooks win32_platform::clipboard() noexcept
     return {&clipboard_set, &clipboard_get, hwnd_};
 }
 
-void win32_platform::push_key(key k, bool ctrl, bool shift, bool alt) noexcept
+void win32_platform::push_press(key k) noexcept
 {
     if (key_count_ < keys_.size()) {
-        keys_[key_count_++] = {k, ctrl, shift, alt};
-    }
-}
-
-void win32_platform::push_press(u32 key) noexcept
-{
-    pressed_key_ = key;
-    if (press_count_ < presses_.size()) {
-        presses_[press_count_++] = {key, (::GetKeyState(VK_CONTROL) & 0x8000) != 0, (::GetKeyState(VK_SHIFT) & 0x8000) != 0,
-                                    (::GetKeyState(VK_MENU) & 0x8000) != 0};
+        keys_[key_count_++] = {k, (::GetKeyState(VK_CONTROL) & 0x8000) != 0, (::GetKeyState(VK_SHIFT) & 0x8000) != 0,
+                               (::GetKeyState(VK_MENU) & 0x8000) != 0};
     }
 }
 
@@ -252,12 +244,12 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         return true;
     case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: press(0); return true;
     case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK: press(1); return true;
-    case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: press(2); push_press(4); return true;
+    case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: press(2); push_press(key::mouse_middle); return true;
     case WM_LBUTTONUP: release(0); return true;
     case WM_RBUTTONUP: release(1); return true;
     case WM_MBUTTONUP: release(2); return true;
     case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK:
-        push_press(GET_XBUTTON_WPARAM(wparam) == XBUTTON1 ? 5u : 6u);
+        push_press(GET_XBUTTON_WPARAM(wparam) == XBUTTON1 ? key::mouse_x1 : key::mouse_x2);
         return true;
     case WM_MOUSEWHEEL:
         wheel_ += static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / static_cast<f32>(WHEEL_DELTA);
@@ -357,7 +349,7 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         return true;
     }
 
-    case WM_SYSCHAR: // Alt + letter is a mnemonic (the press is in pressed_key); no system beep
+    case WM_SYSCHAR: // Alt + letter is a mnemonic (the press is in keys); no system beep
         if ((wparam >= 'a' && wparam <= 'z') || (wparam >= 'A' && wparam <= 'Z') || (wparam >= '0' && wparam <= '9')) {
             return true;
         }
@@ -365,35 +357,10 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
-        // remember the key for hotkey binding unless it is a modifier
+        // every key but the modifiers themselves (they arrive as flags on the others)
         if (wparam != VK_SHIFT && wparam != VK_CONTROL && wparam != VK_MENU && (wparam < VK_LSHIFT || wparam > VK_RMENU) &&
             wparam != VK_LWIN && wparam != VK_RWIN) {
-            push_press(static_cast<u32>(wparam));
-        }
-        const bool ctrl  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
-        const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
-        const bool alt   = (::GetKeyState(VK_MENU) & 0x8000) != 0;
-        switch (wparam) {
-        case VK_LEFT:   push_key(key::left, ctrl, shift, alt); break;
-        case VK_RIGHT:  push_key(key::right, ctrl, shift, alt); break;
-        case VK_UP:     push_key(key::up, ctrl, shift, alt); break;
-        case VK_DOWN:   push_key(key::down, ctrl, shift, alt); break;
-        case VK_HOME:   push_key(key::home, ctrl, shift, alt); break;
-        case VK_END:    push_key(key::end, ctrl, shift, alt); break;
-        case VK_BACK:   push_key(key::backspace, ctrl, shift, alt); break;
-        case VK_DELETE: push_key(key::del, ctrl, shift, alt); break;
-        case VK_RETURN: push_key(key::enter, ctrl, shift, alt); break;
-        case VK_ESCAPE: push_key(key::escape, ctrl, shift, alt); break;
-        case VK_TAB:    push_key(key::tab, ctrl, shift, alt); break;
-        case VK_PRIOR:  push_key(key::page_up, ctrl, shift, alt); break;
-        case VK_NEXT:   push_key(key::page_down, ctrl, shift, alt); break;
-        case 'A': if (ctrl) { push_key(key::a, ctrl, shift, alt); } break;
-        case 'C': if (ctrl) { push_key(key::c, ctrl, shift, alt); } break;
-        case 'V': if (ctrl) { push_key(key::v, ctrl, shift, alt); } break;
-        case 'X': if (ctrl) { push_key(key::x, ctrl, shift, alt); } break;
-        case 'Z': if (ctrl) { push_key(key::z, ctrl, shift, alt); } break;
-        case 'Y': if (ctrl) { push_key(key::y, ctrl, shift, alt); } break;
-        default: break;
+            push_press(static_cast<key>(wparam)); // (strata::key is numbered like virtual-key codes)
         }
         return true;
     }
@@ -458,9 +425,6 @@ input_state win32_platform::new_frame() noexcept
     in.typed     = typed_;
     in.typed_len = std::exchange(typed_len_, 0);
     detail::secure_wipe(typed_.data(), typed_.size()); // the copy in `in` is the only one left
-    in.pressed_key = std::exchange(pressed_key_, 0);
-    in.presses     = presses_;
-    in.press_count = std::exchange(press_count_, 0);
     in.ctrl  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
     in.shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
     in.alt   = (::GetKeyState(VK_MENU) & 0x8000) != 0;
@@ -470,7 +434,7 @@ input_state win32_platform::new_frame() noexcept
     std::array<BYTE, 256> vk{};
     if (::GetKeyboardState(vk.data())) {
         for (std::size_t i = 0; i < vk.size(); ++i) {
-            in.set_held(static_cast<u32>(i), (vk[i] & 0x80) != 0);
+            in.set_held(static_cast<key>(i), (vk[i] & 0x80) != 0);
         }
     }
 

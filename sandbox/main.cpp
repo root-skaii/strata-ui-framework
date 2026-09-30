@@ -409,9 +409,9 @@ struct demo_state {
     int  m_threads   = 8;
     float m_scale    = 1.0f;
     float m_bright   = 0.55f;
-    strata::u32 key_menu  = 0x2d; // Insert
-    strata::u32 key_shot  = 0x77; // F8
-    strata::u32 key_quick = 0;
+    strata::key key_menu  = strata::key::insert;
+    strata::key key_shot  = strata::key::f8;
+    strata::key key_quick = strata::key::none;
     std::string m_profile = "default";
     strata::color m_highlight = strata::color::from_hex(0xffb454c8);
 };
@@ -508,14 +508,14 @@ void inspector(strata::context& ui, demo_state& s)
 
     if (s.tab == 0) {
         const auto theme_names = themes::names();
-        if (ui.combo("theme", s.theme_combo, theme_names.data(), theme_names.size())) {
+        if (ui.combo("theme", s.theme_combo, theme_names)) {
             s.pending_theme = s.theme_combo;
         }
 
         static constexpr std::string_view long_list[] = {
             "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
             "India", "Juliett", "Kilo", "Lima", "Mike", "November"};
-        if (ui.combo("long list (scrolls)", s.long_combo, long_list, std::size(long_list))) {
+        if (ui.combo("long list (scrolls)", s.long_combo, long_list)) {
             s.last_action = std::string{"combo -> "} + std::string{long_list[s.long_combo]};
         }
         ui.spacing();
@@ -841,7 +841,7 @@ void feature_windows(strata::context& ui, demo_state& s)
             (void)ui.toggle("<c=ffb454>amber</c> toggle", s.rich_flag2);
             const std::array<std::string, 3> items = {"<c=ff6b8a>rose</c>", "<c=19c2b4>teal</c>", std::format("<f={0}>mono</f>", mono)};
             const std::array<std::string_view, 3> views = {items[0], items[1], items[2]};
-            (void)ui.combo("<c=8a91a6>colour</c> choice", s.rich_combo, views.data(), views.size());
+            (void)ui.combo("<c=8a91a6>colour</c> choice", s.rich_combo, views);
             (void)ui.tab_bar("rich_tabs", {"<c=ff6b8a>one</c>", "<c=19c2b4>two</c>", "three"}, s.rich_tab);
             ui.spacing();
             if (auto t = ui.tree("<c=ffb454>colored</c> tree", tree_flags::default_open)) {
@@ -1017,7 +1017,7 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
         {
             static constexpr std::string_view scale_names[] = {"100%", "125%", "150%", "200%"};
             static constexpr float scale_values[] = {1.0f, 1.25f, 1.5f, 2.0f};
-            if (ui.combo("ui scale", s.x.scale_combo, scale_names, std::size(scale_names))) {
+            if (ui.combo("ui scale", s.x.scale_combo, scale_names)) {
                 s.x.pending_scale = scale_values[s.x.scale_combo];
             }
         }
@@ -1597,8 +1597,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             input.mouse_down = {sim.down[0], sim.down[1], sim.down[2]};
             input.key_count  = 0;
             input.typed_len  = 0;
-            input.press_count = 0;
-            input.pressed_key = 0;
             input.wheel      = 0.0f;
             input.caret_blink_time  = strata::input_state{}.caret_blink_time; // (not the user's system settings)
             input.double_click_time = strata::input_state{}.double_click_time;
@@ -1616,7 +1614,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             worst_collision_label.assign(ui.id_collision_label());
         }
         demo2_textures_update(*host, state.x); // (before the frame that shows it is rendered)
-        self.wants_text = ui.want_text_input() || ui.popup_open();
+        self.wants_text = ui.want_text_input() || ui.any_popup_open();
         self.platform.set_ime(ui.ime_wanted(), ui.ime_position(), ui.ime_line_height());
         self.platform.set_cursor(ui.cursor());
         const double ui_ms = (seconds_now() - ui_start) * 1000.0;

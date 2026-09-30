@@ -859,7 +859,7 @@ void demo2_update(context& ui, demo2_state& s, float dt)
     demo3_update(ui, s.d3);
     config_actions(ui, s);
     if (s.scene == "config" && s.frame == 1) { // a customised binding: the reset button and the conflict mark show up
-        (void)s.binds.bind("greet", key_chord{0x75, false, false, false});
+        (void)s.binds.bind("greet", key_chord{strata::key::f6, false, false, false});
         s.ctx_editor = true;
     }
     if (s.scene == "palette" && s.frame == 4) { s.palette.open(); }

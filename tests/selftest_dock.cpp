@@ -20,12 +20,12 @@ void test_docking()
     };
     h.frames(build, 3);
     const f32 tab_h = h.ui.font().line_height(0) + 10.0f;
-    CHECK(!h.ui.is_docked("A"));
+    CHECK(!h.ui.window_docked("A"));
 
     // programmatic docking: A fills the area, B splits it on the right
     CHECK(h.ui.dock_window("A", dock_zone::center));
     h.frames(build, 2);
-    CHECK(h.ui.is_docked("A"));
+    CHECK(h.ui.window_docked("A"));
     rect a = h.ui.window_rect("A");
     CHECK(near_eq(a.min.x, 0) && near_eq(a.max.x, 800) && near_eq(a.min.y, tab_h) && near_eq(a.max.y, 600));
 
@@ -61,11 +61,11 @@ void test_docking()
     // drag C's tab out: it becomes a floating window that follows the pointer
     h.down();
     h.frame(build);
-    CHECK(h.ui.is_docked("C"));
+    CHECK(h.ui.window_docked("C"));
     h.move({tab_c.x + 30.0f, tab_c.y + 80.0f});
     h.frame(build);
     h.frame(build);
-    CHECK(!h.ui.is_docked("C"));
+    CHECK(!h.ui.window_docked("C"));
     h.move({tab_c.x + 60.0f, tab_c.y + 120.0f});
     h.frames(build, 2);
     c = h.ui.window_rect("C");
@@ -76,7 +76,7 @@ void test_docking()
     h.frames(build, 3);
     h.up();
     h.frames(build, 3);
-    CHECK(h.ui.is_docked("C"));
+    CHECK(h.ui.window_docked("C"));
     c = h.ui.window_rect("C");
     a = h.ui.window_rect("A");
     b = h.ui.window_rect("B");
@@ -103,15 +103,15 @@ void test_docking()
     // a window that stops being submitted leaves the dock and its space goes to the others
     show_b = false;
     h.frames(build, 3);
-    CHECK(!h.ui.is_docked("B"));
+    CHECK(!h.ui.window_docked("B"));
     a = h.ui.window_rect("A");
     CHECK(near_eq(a.max.x, 800.0f));
     show_b = true;
     h.frames(build, 2);
-    CHECK(!h.ui.is_docked("B")); // it comes back floating
+    CHECK(!h.ui.window_docked("B")); // it comes back floating
 
     h.ui.undock_window("A");
-    CHECK(!h.ui.is_docked("A"));
+    CHECK(!h.ui.window_docked("A"));
 }
 
 void test_dock_spaces()
@@ -156,7 +156,7 @@ void test_dock_spaces()
         h.frames(build, 3);
         rect c = h.ui.window_rect("C");
         CHECK(near_eq(c.min.x, 254.0f, 1.0f) && near_eq(c.max.x, 800.0f) && near_eq(c.max.y, 446.0f));
-        CHECK(h.ui.is_docked("A") && h.ui.is_docked("B") && h.ui.is_docked("C"));
+        CHECK(h.ui.window_docked("A") && h.ui.window_docked("B") && h.ui.window_docked("C"));
 
         // the handle of an edge dock resizes it
         const vec2 grab{252.0f, 200.0f};
@@ -194,12 +194,12 @@ void test_dock_spaces()
         const rect d2 = h.ui.window_rect("D");
         CHECK(near_eq(moved.min.x, tools.min.x + 80.0f, 2.0f) && near_eq(moved.min.y, tools.min.y + 40.0f, 2.0f));
         CHECK(near_eq(d2.min.x, d.min.x + 80.0f, 2.0f) && near_eq(d2.min.y, d.min.y + 40.0f, 2.0f));
-        CHECK(h.ui.is_docked("D"));
+        CHECK(h.ui.window_docked("D"));
 
         // a window no longer submitted leaves its space; an emptied edge dock gives its room back
         h.ui.undock_window("A");
         h.frames(build, 4);
-        CHECK(!h.ui.is_docked("A"));
+        CHECK(!h.ui.window_docked("A"));
         CHECK(near_eq(main_rect.min.x, 0.0f, 1.0f));
     }
     {
@@ -228,7 +228,7 @@ void test_dock_spaces()
         h.frames(build, 3);
         h.up();
         h.frames(build, 3);
-        CHECK(h.ui.is_docked("E"));
+        CHECK(h.ui.window_docked("E"));
         const rect e = h.ui.window_rect("E");
         CHECK(near_eq(e.min.x, 0.0f) && near_eq(e.max.x, 250.0f));
         CHECK(near_eq(main_rect.min.x, 254.0f, 1.0f));
@@ -272,13 +272,13 @@ void test_dock_layout()
     // take it apart ...
     for (const char* n : names) { h.ui.undock_window(n); }
     h.frames(build, 4);
-    for (const char* n : names) { CHECK(!h.ui.is_docked(n)); }
+    for (const char* n : names) { CHECK(!h.ui.window_docked(n)); }
 
     // ... and get it back
     CHECK(h.ui.dock_load_layout(text));
     h.frames(build, 4);
     for (std::size_t i = 0; i < names.size(); ++i) {
-        CHECK(h.ui.is_docked(names[i]));
+        CHECK(h.ui.window_docked(names[i]));
         const rect r = h.ui.window_rect(names[i]);
         CHECK(near_eq(r.min.x, before[i].min.x, 1.0f) && near_eq(r.max.x, before[i].max.x, 1.0f));
         CHECK(near_eq(r.min.y, before[i].min.y, 1.0f) && near_eq(r.max.y, before[i].max.y, 1.0f));
@@ -292,7 +292,7 @@ void test_dock_layout()
         CHECK(g.ui.dock_load_layout(text));
         g.frames(build_g, 4);
         for (std::size_t i = 0; i < names.size(); ++i) {
-            CHECK(g.ui.is_docked(names[i]));
+            CHECK(g.ui.window_docked(names[i]));
             const rect r = g.ui.window_rect(names[i]);
             CHECK(near_eq(r.min.x, before[i].min.x, 1.0f) && near_eq(r.max.y, before[i].max.y, 1.0f));
         }
@@ -305,7 +305,7 @@ void test_dock_layout()
     CHECK(!h.ui.dock_load_layout("strata-dock 2\nspace 1 0\nS h 0.5\nL 0 0\n")); // a split needs two children
     CHECK(!h.ui.dock_load_layout(text.substr(0, text.find("\nL ") + 5)));         // cut off inside a pane
     h.frames(build, 2);
-    for (const char* n : names) { CHECK(h.ui.is_docked(n)); }
+    for (const char* n : names) { CHECK(h.ui.window_docked(n)); }
 
     // a window that is not in the text keeps floating; one that is not shown any more is skipped
     std::string partial = text;
@@ -380,11 +380,11 @@ void test_dock_comfort()
     h.frame(build);
     h.move({w_alpha * 0.25f, tab_h * 0.5f + 4.0f}); // (a little off the bar's line does not tear it off)
     h.frames(build, 3);
-    CHECK(h.ui.is_docked("Beta"));
+    CHECK(h.ui.window_docked("Beta"));
     CHECK(before("Beta", "Alpha"));
     h.up();
     h.frames(build, 2);
-    CHECK(h.ui.is_docked("Beta") && h.ui.is_docked("Alpha"));
+    CHECK(h.ui.window_docked("Beta") && h.ui.window_docked("Alpha"));
 
     // ... and back again
     const vec2 beta_now{w_beta * 0.5f, tab_h * 0.5f};
@@ -402,7 +402,7 @@ void test_dock_comfort()
     rect alpha = h.ui.window_rect("Alpha");
     grab_title("Delta", {24.0f, tab_h * 0.5f}, false, false);
     release();
-    CHECK(h.ui.is_docked("Delta"));
+    CHECK(h.ui.window_docked("Delta"));
     rect delta = h.ui.window_rect("Delta");
     CHECK(near_eq(delta.min.x, alpha.min.x) && near_eq(delta.max.x, alpha.max.x) && near_eq(delta.min.y, alpha.min.y));
     CHECK(before("Delta", "Alpha") && before("Alpha", "Beta"));
@@ -419,23 +419,23 @@ void test_dock_comfort()
         h.frame(build);
     }
     h.frames(build, 2);
-    CHECK(!h.ui.is_docked("Delta"));
-    CHECK(h.ui.is_docked("Alpha") && h.ui.is_docked("Beta"));
+    CHECK(!h.ui.window_docked("Delta"));
+    CHECK(h.ui.window_docked("Alpha") && h.ui.window_docked("Beta"));
 
     // Shift while dragging: no docking (nothing to preview, nothing dropped) ...
     alpha = h.ui.window_rect("Alpha");
     const vec2 middle{alpha.center().x, alpha.center().y};
     grab_title("Delta", middle, true, false);
     release();
-    CHECK(!h.ui.is_docked("Delta"));
+    CHECK(!h.ui.window_docked("Delta"));
     // ... and Esc cancels the drop of that drag
     grab_title("Delta", middle, false, true);
     release();
-    CHECK(!h.ui.is_docked("Delta"));
+    CHECK(!h.ui.window_docked("Delta"));
     // the next drag docks again
     grab_title("Delta", middle, false, false);
     release();
-    CHECK(h.ui.is_docked("Delta"));
+    CHECK(h.ui.window_docked("Delta"));
     h.ui.undock_window("Delta");
     h.frames(build, 2);
 
@@ -445,7 +445,7 @@ void test_dock_comfort()
     const f32 step = 28.0f + 4.0f;
     grab_title("Delta", {c.x - step, c.y}, false, false);
     release();
-    CHECK(h.ui.is_docked("Delta"));
+    CHECK(h.ui.window_docked("Delta"));
     delta = h.ui.window_rect("Delta");
     alpha = h.ui.window_rect("Alpha");
     CHECK(near_eq(delta.min.x, 0.0f) && delta.max.x < alpha.min.x);
@@ -455,7 +455,7 @@ void test_dock_comfort()
     // the guide at the border of the space splits the whole tree
     grab_title("Delta", {400.0f, 600.0f - 20.0f}, false, false); // (bottom guide: 8 + 12 from the border)
     release();
-    CHECK(h.ui.is_docked("Delta"));
+    CHECK(h.ui.window_docked("Delta"));
     delta = h.ui.window_rect("Delta");
     CHECK(near_eq(delta.min.x, 0.0f) && near_eq(delta.max.x, 800.0f) && near_eq(delta.max.y, 600.0f));
     CHECK(delta.min.y > 400.0f);
@@ -553,7 +553,7 @@ void test_dock_comfort()
         g.frames(build_g, 3);
         g.up();
         g.frames(build_g, 4);
-        CHECK(g.ui.is_docked("Small"));
+        CHECK(g.ui.window_docked("Small"));
         const rect docked = g.ui.window_rect("Small");
         CHECK(docked.width() > 130.0f && docked.width() < 190.0f); // 150 wide window, 800 wide pane: the smallest share (20%) or a bit less
         CHECK(near_eq(docked.min.x, 0.0f));
@@ -603,7 +603,7 @@ void test_dock_group_drag()
         const f32 wa = h.ui.font().measure(0, "A").x + 26.0f;
         const f32 wb = h.ui.font().measure(0, "B").x + 26.0f;
         drag(h, build, {wa + wb + 40.0f, tab_h * 0.5f}, {c0.center().x, c0.center().y});
-        for (const char* n : {"A", "B", "C"}) { CHECK(h.ui.is_docked(n)); }
+        for (const char* n : {"A", "B", "C"}) { CHECK(h.ui.window_docked(n)); }
         const rect a = h.ui.window_rect("A");
         const rect b = h.ui.window_rect("B");
         const rect c = h.ui.window_rect("C");
@@ -628,7 +628,7 @@ void test_dock_group_drag()
         const rect a = h.ui.window_rect("A");
         const rect b = h.ui.window_rect("B");
         const rect c = h.ui.window_rect("C");
-        for (const char* n : {"A", "B", "C"}) { CHECK(h.ui.is_docked(n)); }
+        for (const char* n : {"A", "B", "C"}) { CHECK(h.ui.window_docked(n)); }
         CHECK(near_eq(a.min.x, b.min.x) && near_eq(a.max.y, b.max.y));
         CHECK(a.min.y > c.max.y - 2.0f);
         CHECK(near_eq(c.min.x, 0.0f) && near_eq(c.max.x, 800.0f)); // both panes now span the whole width
@@ -646,7 +646,7 @@ void test_dock_group_drag()
         const f32 wa = h.ui.font().measure(0, "A").x + 26.0f;
         const f32 wb = h.ui.font().measure(0, "B").x + 26.0f;
         drag(h, build, {wa + wb + 40.0f, tab_h * 0.5f}, {400.0f, 450.0f});
-        CHECK(!h.ui.is_docked("A") && !h.ui.is_docked("B"));
+        CHECK(!h.ui.window_docked("A") && !h.ui.window_docked("B"));
         const rect a = h.ui.window_rect("A");
         const rect b = h.ui.window_rect("B");
         CHECK(a.min.y > 300.0f && b.min.y > a.min.y);
@@ -732,12 +732,12 @@ void test_dock_animation_and_combo_multi()
         const f32 fh = h.ui.frame_height();
         h.click({100.0f, 12.0f + fh * 0.5f}, build); // open
         h.frames(build, 2);
-        CHECK(h.ui.popup_open());
+        CHECK(h.ui.any_popup_open());
         const f32 item_h = fh - 4.0f;
         const auto row = [&](int i) { return vec2{120.0f, 12.0f + fh + 4.0f + 4.0f + item_h * (static_cast<f32>(i) + 0.5f)}; };
         h.click(row(0), build);
         CHECK(sel[0] && sel[1] && changed_seen);
-        CHECK(h.ui.popup_open()); // the list stays open
+        CHECK(h.ui.any_popup_open()); // the list stays open
         h.click(row(2), build);
         CHECK(sel[2]);
         h.click(row(1), build); // toggles off
@@ -745,7 +745,7 @@ void test_dock_animation_and_combo_multi()
         // the toolbar ("select all / clear") shows for longer lists; Esc closes
         h.key(key::escape);
         h.frames(build, 3);
-        CHECK(!h.ui.popup_open());
+        CHECK(!h.ui.any_popup_open());
         // keyboard: open, Down, Enter toggles the highlighted row
         sel[0] = sel[1] = sel[2] = sel[3] = false;
         h.click({100.0f, 12.0f + fh * 0.5f}, build);

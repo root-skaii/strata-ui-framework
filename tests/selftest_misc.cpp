@@ -46,7 +46,7 @@ void test_acrylic_extras()
         const f32 bar_h = h.ui.main_menu_bar_height();
         h.click({6.0f + (h.ui.font().measure(0, "File").x + 22.0f) * 0.5f, bar_h * 0.5f}, build);
         h.frames(build, 12);
-        CHECK(h.ui.menu_is_open());
+        CHECK(h.ui.menu_open());
         CHECK(blur_commands(h) == (glass ? 1 : 0));
     }
 
@@ -172,21 +172,21 @@ void test_chords()
 
     // text round trip
     key_chord c;
-    CHECK((chord_from_string("ctrl + shift + s", c) && c == key_chord{'S', true, true, false}));
+    CHECK((chord_from_string("ctrl + shift + s", c) && c == key_chord{strata::key::s, true, true, false}));
     CHECK(chord_to_string(c) == "Ctrl+Shift+S");
-    CHECK(chord_from_string("Alt+F4", c) && c.key == 0x73 && c.alt && !c.ctrl && !c.shift);
-    CHECK(chord_from_string("Ctrl+Num +", c) && c.key == 0x6b && c.ctrl); // a key whose name contains '+'
-    CHECK(chord_from_string("Page Up", c) && c.key == 0x21 && !c.ctrl);
-    CHECK(chord_from_string("Mouse 4", c) && c.key == 0x05);
-    CHECK(chord_from_string(";", c) && c.key == 0xba);
+    CHECK(chord_from_string("Alt+F4", c) && c.key == strata::key::f4 && c.alt && !c.ctrl && !c.shift);
+    CHECK(chord_from_string("Ctrl+Num +", c) && c.key == strata::key::num_add && c.ctrl); // a key whose name contains '+'
+    CHECK(chord_from_string("Page Up", c) && c.key == strata::key::page_up && !c.ctrl);
+    CHECK(chord_from_string("Mouse 4", c) && c.key == strata::key::mouse_x1);
+    CHECK(chord_from_string(";", c) && c.key == strata::key::semicolon);
     CHECK(chord_from_string("", c) && !c.bound() && chord_to_string(c).empty());
-    key_chord keep{'A', true, false, false};
-    CHECK(!chord_from_string("Ctrl+Nonsense", keep) && keep.key == 'A' && keep.ctrl); // untouched on failure
+    key_chord keep{strata::key::a, true, false, false};
+    CHECK(!chord_from_string("Ctrl+Nonsense", keep) && keep.key == strata::key::a && keep.ctrl); // untouched on failure
     CHECK(!chord_from_string("Ctrl+", keep) && !chord_from_string("+", keep));
     bool every_key = true;
     for (u32 vk = 1; vk < 0xff; ++vk) {
-        if (key_name(vk) == "Key ?") { continue; }
-        const key_chord in{vk, true, true, true};
+        if (key_name(static_cast<strata::key>(vk)) == "Key ?") { continue; }
+        const key_chord in{static_cast<strata::key>(vk), true, true, true};
         key_chord back;
         every_key = every_key && chord_from_string(chord_to_string(in), back) && back == in;
     }
@@ -195,14 +195,14 @@ void test_chords()
     // chord_pressed needs the exact modifiers
     {
         harness h;
-        const key_chord save{'S', true, false, false};
+        const key_chord save{strata::key::s, true, false, false};
         int hits = 0;
         const auto build = [&] { if (h.ui.chord_pressed(save)) { ++hits; } };
-        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build); h.in.ctrl = false;
+        h.in.ctrl = true; h.press_now(strata::key::s); h.frame(build); h.in.ctrl = false;
         CHECK(hits == 1);
-        h.in.pressed_key = 'S'; h.frame(build);
+        h.press_now(strata::key::s); h.frame(build);
         CHECK(hits == 1);
-        h.in.ctrl = true; h.in.alt = true; h.in.pressed_key = 'S'; h.frame(build); h.in.ctrl = h.in.alt = false;
+        h.in.ctrl = true; h.in.alt = true; h.press_now(strata::key::s); h.frame(build); h.in.ctrl = h.in.alt = false;
         CHECK(hits == 1);
         CHECK(!h.ui.chord_pressed({}));
     }
@@ -210,7 +210,7 @@ void test_chords()
     // hotkey_chord: click the field, then press the chord
     {
         harness h;
-        key_chord chord{'A', false, false, false};
+        key_chord chord{strata::key::a, false, false, false};
         bool changed = false;
         const auto build = [&] {
             if (auto w = h.ui.window("k", {100, 100}, {300, 0}, plain_window)) { changed = h.ui.hotkey_chord("##k", chord) || changed; }
@@ -220,31 +220,31 @@ void test_chords()
         CHECK(!h.ui.want_text_input());
         h.click(field, build);
         CHECK(h.ui.want_text_input()); // waiting for a key
-        h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'K'; h.frame(build); h.in.ctrl = h.in.shift = false;
-        CHECK((changed && chord == key_chord{'K', true, true, false}));
+        h.in.ctrl = true; h.in.shift = true; h.press_now(strata::key::k); h.frame(build); h.in.ctrl = h.in.shift = false;
+        CHECK((changed && chord == key_chord{strata::key::k, true, true, false}));
         CHECK(!h.ui.want_text_input());
 
         // a bare Esc leaves it as it was
         changed = false;
         h.click(field, build);
-        h.in.pressed_key = 0x1b; h.frame(build);
-        CHECK((!changed && chord == key_chord{'K', true, true, false}));
+        h.press_now(strata::key::escape); h.frame(build);
+        CHECK((!changed && chord == key_chord{strata::key::k, true, true, false}));
 
         // Ctrl + Delete is a chord of its own, a bare Delete unbinds
         h.click(field, build);
-        h.in.ctrl = true; h.in.pressed_key = 0x2e; h.frame(build); h.in.ctrl = false;
-        CHECK((changed && chord == key_chord{0x2e, true, false, false}));
+        h.in.ctrl = true; h.press_now(strata::key::del); h.frame(build); h.in.ctrl = false;
+        CHECK((changed && chord == key_chord{strata::key::del, true, false, false}));
         changed = false;
         h.click(field, build);
-        h.in.pressed_key = 0x2e; h.frame(build);
+        h.press_now(strata::key::del); h.frame(build);
         CHECK(changed && !chord.bound());
 
         // nothing fires while the field waits for a key
         h.click(field, build);
         int fired = 0;
         const auto build_fire = [&] { build(); if (h.ui.accelerator("Ctrl+P")) { ++fired; } };
-        h.in.ctrl = true; h.in.pressed_key = 'P'; h.frame(build_fire); h.in.ctrl = false;
-        CHECK((fired == 0 && chord == key_chord{'P', true, false, false}));
+        h.in.ctrl = true; h.press_now(strata::key::p); h.frame(build_fire); h.in.ctrl = false;
+        CHECK((fired == 0 && chord == key_chord{strata::key::p, true, false, false}));
     }
 }
 
@@ -255,9 +255,9 @@ void test_key_sequences()
     // text round trip
     key_sequence seq;
     CHECK((sequence_from_string("Ctrl+K, Ctrl+S", seq) && seq.count == 2));
-    CHECK((seq.steps[0] == key_chord{'K', true, false, false} && seq.steps[1] == key_chord{'S', true, false, false}));
+    CHECK((seq.steps[0] == key_chord{strata::key::k, true, false, false} && seq.steps[1] == key_chord{strata::key::s, true, false, false}));
     CHECK(sequence_to_string(seq) == "Ctrl+K, Ctrl+S");
-    CHECK((sequence_from_string("F5", seq) && seq.count == 1 && seq.steps[0] == key_chord{0x74, false, false, false}));
+    CHECK((sequence_from_string("F5", seq) && seq.count == 1 && seq.steps[0] == key_chord{strata::key::f5, false, false, false}));
     CHECK(sequence_to_string(seq) == "F5");
     CHECK((sequence_from_string("", seq) && !seq.bound() && sequence_to_string(seq).empty()));
     CHECK(sequence_from_string("Ctrl+K,   Ctrl+O  ,Alt+F4", seq) && seq.count == 3); // extra spaces around the commas
@@ -266,7 +266,7 @@ void test_key_sequences()
     CHECK(!sequence_from_string("Ctrl+K, Nonsense", seq) && seq == keep);              // a bad step: untouched
     CHECK(!sequence_from_string("Ctrl+K, ", seq));                                     // a trailing comma with nothing after it
     // a plain key_chord is a one-step sequence
-    const key_chord single{'A', true, false, false};
+    const key_chord single{strata::key::a, true, false, false};
     CHECK((key_sequence{single}.count == 1 && key_sequence{single}.steps[0] == single));
     CHECK(key_sequence{}.count == 0 && !key_sequence{}.bound());
 
@@ -278,29 +278,29 @@ void test_key_sequences()
         int hits = 0;
         const auto build = [&] { if (h.ui.sequence_pressed(save)) { ++hits; } };
 
-        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build); // step 1
+        h.in.ctrl = true; h.press_now(strata::key::k); h.frame(build); // step 1
         CHECK(hits == 0);
-        h.in.pressed_key = 'S'; h.frame(build); // step 2, right away
+        h.press_now(strata::key::s); h.frame(build); // step 2, right away
         h.in.ctrl = false;
         CHECK(hits == 1);
 
         // a wrong second key breaks the chord: the correct one right after does not fire on its own
-        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
-        h.in.pressed_key = 'X'; h.frame(build); // not Ctrl+S: breaks it
-        h.in.pressed_key = 'S'; h.frame(build);
+        h.in.ctrl = true; h.press_now(strata::key::k); h.frame(build);
+        h.press_now(strata::key::x); h.frame(build); // not Ctrl+S: breaks it
+        h.press_now(strata::key::s); h.frame(build);
         h.in.ctrl = false;
         CHECK(hits == 1);
         // ... but starts a fresh attempt that does complete
-        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
-        h.in.pressed_key = 'S'; h.frame(build);
+        h.in.ctrl = true; h.press_now(strata::key::k); h.frame(build);
+        h.press_now(strata::key::s); h.frame(build);
         h.in.ctrl = false;
         CHECK(hits == 2);
 
         // waiting too long between the steps also breaks it
-        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
+        h.in.ctrl = true; h.press_now(strata::key::k); h.frame(build);
         h.in.ctrl = false;
         h.frames(build, 16, 0.1f); // 1.6 s of nothing: past key_sequence_timeout
-        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build);
+        h.in.ctrl = true; h.press_now(strata::key::s); h.frame(build);
         h.in.ctrl = false;
         CHECK(hits == 2);
 
@@ -312,16 +312,16 @@ void test_key_sequences()
             if (h.ui.sequence_pressed(save)) { ++hits; }
             if (h.ui.sequence_pressed(open)) { ++open_hits; }
         };
-        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build2);
-        h.in.pressed_key = 'O'; h.frame(build2);
+        h.in.ctrl = true; h.press_now(strata::key::k); h.frame(build2);
+        h.press_now(strata::key::o); h.frame(build2);
         h.in.ctrl = false;
         CHECK(hits == 2 && open_hits == 1);
 
         // a one-step sequence behaves exactly like chord_pressed
-        key_sequence one{key_chord{'Q', true, false, false}};
+        key_sequence one{key_chord{strata::key::q, true, false, false}};
         int q = 0;
         const auto build3 = [&] { if (h.ui.sequence_pressed(one)) { ++q; } };
-        h.in.ctrl = true; h.in.pressed_key = 'Q'; h.frame(build3); h.in.ctrl = false;
+        h.in.ctrl = true; h.press_now(strata::key::q); h.frame(build3); h.in.ctrl = false;
         CHECK(q == 1);
         CHECK(!h.ui.sequence_pressed({})); // unbound
     }
@@ -340,11 +340,11 @@ void test_key_sequences()
         h.click(field, build);
         CHECK(h.ui.want_text_input());
 
-        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build); h.in.ctrl = false;
-        CHECK((changed && chord == key_sequence{key_chord{'K', true, false, false}} && h.ui.want_text_input()));
+        h.in.ctrl = true; h.press_now(strata::key::k); h.frame(build); h.in.ctrl = false;
+        CHECK((changed && chord == key_sequence{key_chord{strata::key::k, true, false, false}} && h.ui.want_text_input()));
 
         changed = false;
-        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build); h.in.ctrl = false;
+        h.in.ctrl = true; h.press_now(strata::key::s); h.frame(build); h.in.ctrl = false;
         key_sequence expect;
         CHECK(sequence_from_string("Ctrl+K, Ctrl+S", expect));
         CHECK((changed && chord == expect && h.ui.want_text_input())); // still listening: room for a third step
@@ -356,22 +356,22 @@ void test_key_sequences()
         // a bare Esc as the very first key leaves it as it was
         changed = false;
         h.click(field, build);
-        h.in.pressed_key = 0x1b; h.frame(build);
+        h.press_now(strata::key::escape); h.frame(build);
         CHECK((!changed && chord == expect && !h.ui.want_text_input()));
 
         // a bare Backspace / Delete as the very first key unbinds
         changed = false;
         h.click(field, build);
-        h.in.pressed_key = 0x08; h.frame(build);
+        h.press_now(strata::key::backspace); h.frame(build);
         CHECK((changed && !chord.bound() && !h.ui.want_text_input()));
 
         // reaching key_sequence::max_steps commits right away and stops listening, no pause needed
         changed = false;
         h.click(field, build);
         h.in.ctrl = true;
-        h.in.pressed_key = 'A'; h.frame(build);
-        h.in.pressed_key = 'B'; h.frame(build);
-        h.in.pressed_key = 'C'; h.frame(build); // the third step: max_steps reached
+        h.press_now(strata::key::a); h.frame(build);
+        h.press_now(strata::key::b); h.frame(build);
+        h.press_now(strata::key::c); h.frame(build); // the third step: max_steps reached
         h.in.ctrl = false;
         CHECK((changed && !h.ui.want_text_input() && chord.count == key_sequence::max_steps));
     }
@@ -384,12 +384,12 @@ void test_keybinds()
     CHECK(binds.add("save", "Ctrl+S", "write the document") == 0);
     CHECK(binds.add("open", "Ctrl+O") == 1);
     CHECK(binds.add("save", "F1") == 0); // registered already: left as it is
-    CHECK((binds.actions().size() == 2 && binds.find("save")->chord == key_chord{'S', true, false, false}));
+    CHECK((binds.actions().size() == 2 && binds.find("save")->chord == key_chord{strata::key::s, true, false, false}));
     CHECK(binds.add("broken", "Ctrl+Nonsense") == 2 && !binds.find("broken")->chord.bound());
     CHECK(binds.text("open") == "Ctrl+O" && binds.text("nope").empty() && binds.text("broken").empty());
     CHECK(binds.conflict("save") == nullptr && binds.conflict("broken") == nullptr);
 
-    CHECK(binds.bind("open", key_chord{'S', true, false, false}));
+    CHECK(binds.bind("open", key_chord{strata::key::s, true, false, false}));
     CHECK(!binds.bind("nope", {}));
     CHECK(binds.conflict("save") != nullptr && binds.conflict("save")->name == "open");
     CHECK(binds.reset("open") && binds.conflict("save") == nullptr && !binds.reset("nope"));
@@ -403,18 +403,18 @@ void test_keybinds()
             if (binds.pressed(h.ui, "open")) { ++opens; }
             if (binds.pressed(h.ui, "nope") || binds.pressed(h.ui, "broken")) { saves += 100; }
         };
-        h.in.ctrl = true; h.in.pressed_key = 'S'; h.frame(build);
-        h.in.pressed_key = 'O'; h.frame(build);
+        h.in.ctrl = true; h.press_now(strata::key::s); h.frame(build);
+        h.press_now(strata::key::o); h.frame(build);
         CHECK(saves == 1 && opens == 1);
-        CHECK(binds.bind("save", key_chord{0x74, false, false, false})); // F5 now
-        h.in.pressed_key = 'S'; h.frame(build);
-        h.in.ctrl = false; h.in.pressed_key = 0x74; h.frame(build);
+        CHECK(binds.bind("save", key_chord{strata::key::f5, false, false, false})); // F5 now
+        h.press_now(strata::key::s); h.frame(build);
+        h.in.ctrl = false; h.press_now(strata::key::f5); h.frame(build);
         CHECK(saves == 2 && opens == 1);
     }
 
     // config round trip: an unbound action is written as an empty value and stays unbound
     binds.reset_all();
-    CHECK(binds.bind("open", key_chord{0x74, false, false, true}) && binds.bind("save", {})); // Alt+F5, unbound
+    CHECK(binds.bind("open", key_chord{strata::key::f5, false, false, true}) && binds.bind("save", {})); // Alt+F5, unbound
     config cfg;
     binds.store(cfg);
     CHECK(cfg.get("keybinds", "open") == "Alt+F5" && cfg.has("keybinds", "save") && cfg.get("keybinds", "save").empty());
@@ -424,13 +424,13 @@ void test_keybinds()
     other.add("open", "Ctrl+O");
     other.add("extra", "F9"); // not in the file: keeps its default
     CHECK(other.load(cfg) == 2);
-    CHECK((!other.find("save")->chord.bound() && other.find("open")->chord == key_chord{0x74, false, false, true}));
-    CHECK(other.find("extra")->chord.steps[0].key == 0x78);
+    CHECK((!other.find("save")->chord.bound() && other.find("open")->chord == key_chord{strata::key::f5, false, false, true}));
+    CHECK(other.find("extra")->chord.steps[0].key == strata::key::f9);
 
     cfg.set("keybinds", "open", "Ctrl+Nonsense"); // an unreadable value is skipped
     CHECK(other.load(cfg) == 0 && other.find("open")->chord.steps[0].alt);
     other.reset_all();
-    CHECK((other.find("open")->chord == key_chord{'O', true, false, false}));
+    CHECK((other.find("open")->chord == key_chord{strata::key::o, true, false, false}));
 
     // a multi-key default chord fires and round-trips through pressed() and a config file like a single-key one
     {
@@ -442,8 +442,8 @@ void test_keybinds()
         harness h;
         int hits = 0;
         const auto build = [&] { if (seq_binds.pressed(h.ui, "quick_open")) { ++hits; } };
-        h.in.ctrl = true; h.in.pressed_key = 'K'; h.frame(build);
-        h.in.pressed_key = 'O'; h.frame(build);
+        h.in.ctrl = true; h.press_now(strata::key::k); h.frame(build);
+        h.press_now(strata::key::o); h.frame(build);
         h.in.ctrl = false;
         CHECK(hits == 1);
 
@@ -460,7 +460,7 @@ void test_keybinds()
     {
         harness h;
         binds.reset_all();
-        CHECK(binds.bind("open", key_chord{'S', true, false, false})); // a conflict, so the warning mark shows too
+        CHECK(binds.bind("open", key_chord{strata::key::s, true, false, false})); // a conflict, so the warning mark shows too
         bool changed = false;
         const auto build = [&] {
             if (auto w = h.ui.window("keys", {20, 20}, {420, 0}, plain_window)) { changed = keybind_editor(h.ui, binds); }
@@ -575,7 +575,7 @@ void test_contexts_palette_and_config_file()
             if (binds.pressed(h.ui, "play")) { ++play; }
         };
         const auto press = [&](u32 vk, bool ctrl, bool shift) {
-            h.in.ctrl = ctrl; h.in.shift = shift; h.in.pressed_key = vk;
+            h.in.ctrl = ctrl; h.in.shift = shift; h.press_now(static_cast<strata::key>(vk));
             h.frame(build);
             h.in.ctrl = h.in.shift = false;
         };
@@ -613,7 +613,7 @@ void test_contexts_palette_and_config_file()
         };
         h.frames(build, 3);
         CHECK(!palette.is_open());
-        h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'P';
+        h.in.ctrl = true; h.in.shift = true; h.press_now(strata::key::p);
         h.frame(build);
         h.in.ctrl = h.in.shift = false;
         h.frames(build, 3);
@@ -656,7 +656,7 @@ void test_contexts_palette_and_config_file()
         h.frames(build, 3);
         CHECK(!palette.is_open() && chosen.empty());
         palette.shortcut = {};
-        h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'P';
+        h.in.ctrl = true; h.in.shift = true; h.press_now(strata::key::p);
         h.frame(build);
         h.in.ctrl = h.in.shift = false;
         h.frames(build, 2);

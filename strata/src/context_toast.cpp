@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,12 +22,12 @@ color kind_color(toast_kind k, const style& st) noexcept
 
 namespace {
 
-[[nodiscard]] std::string_view kind_name(toast_kind k) noexcept
+[[nodiscard]] std::string_view kind_name(toast_kind k, const ui_strings& s) noexcept
 {
     switch (k) {
-    case toast_kind::success: return "done";
-    case toast_kind::warning: return "warning";
-    case toast_kind::error:   return "error";
+    case toast_kind::success: return s.toast_success;
+    case toast_kind::warning: return s.toast_warning;
+    case toast_kind::error:   return s.toast_error;
     default:                  return {};
     }
 }
@@ -56,7 +57,7 @@ toast_handle context::toast(const toast_options& o)
     for (const std::string_view a : o.actions) {
         if (t.actions.size() < 3) { t.actions.emplace_back(a); }
     }
-    if (t.title.empty()) { t.title = std::string{kind_name(o.kind)}; }
+    if (t.title.empty()) { t.title = std::string{kind_name(o.kind, m_->strings_)}; }
     const toast_handle h = t.seq;
     m_->toast_.toasts_.push_back(std::move(t));
     constexpr std::size_t max_toasts = 8;
@@ -156,13 +157,13 @@ void context::toast_end_frame()
         const rect r = rect::from_size({x, y}, {width, height});
 
         m_->dl_.push_alpha(alpha);
-        const id key = hash_id("##toast", static_cast<id>(t.seq));
+        const id key = part_id(part::toast, static_cast<id>(t.seq));
 
         // the controls first: they claim a press before the body can
         const rect close_r = rect::from_size({r.max.x - 26.0f, r.min.y + 6.0f}, {20.0f, 20.0f});
         const bool over_body = r.contains(m_->input_.mouse_);
         interaction close_in{};
-        if (!plain && !t.dismissed) { close_in = interact(hash_id("##toastx", static_cast<id>(t.seq)), close_r); }
+        if (!plain && !t.dismissed) { close_in = interact(part_id(part::toast_close, static_cast<id>(t.seq)), close_r); }
         std::array<rect, 3> btn{};
         std::array<interaction, 3> btn_in{};
         if (has_acts) {
@@ -172,7 +173,7 @@ void context::toast_end_frame()
                 const f32 bw = m_->font_.measure(f, t.actions[i]).x + 22.0f;
                 btn[i] = rect::from_size({bx, by}, {bw, btn_h});
                 bx += bw + 6.0f;
-                if (!t.dismissed) { btn_in[i] = interact(hash_id("##toastb", static_cast<id>(t.seq * 4 + i)), btn[i]); }
+                if (!t.dismissed) { btn_in[i] = interact(part_id(part::toast_button, static_cast<id>(t.seq * 4 + i)), btn[i]); }
             }
         }
         const interaction in = interact(key, r);

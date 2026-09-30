@@ -10,6 +10,7 @@
 #include "strata/context.hpp"
 
 #include <array>
+#include <vector>
 
 namespace strata::internal {
 
@@ -43,18 +44,20 @@ struct window_state {
 };
 
 struct window_registry {
-    static constexpr u32 max_windows = 32;           // (context::max_windows is the same)
+    // hard cap on context_config::capacity.windows: dock layouts index windows with a u8 (context::max_windows)
+    static constexpr u32 max_windows = 255;
     static constexpr u32 no_z        = 0xffffffffu;  // (context::no_z is the same)
 
-    std::array<window_state, max_windows> windows_{};
+    // all three hold capacity.windows entries, sized once at create
+    std::vector<window_state> windows_;
 
     // back-to-front window stacking, persistent across frames
-    std::array<id, max_windows> z_order_{};
-    u32                         z_count_{};
+    std::vector<id> z_order_;
+    u32             z_count_{};
 
     // windows submitted this frame, in call order
-    std::array<window_state*, max_windows> frame_windows_{};
-    u32                                    frame_window_count_{};
+    std::vector<window_state*> frame_windows_;
+    u32                        frame_window_count_{};
 
     id  hovered_window_prev_{};
     id  hovered_window_cur_{};

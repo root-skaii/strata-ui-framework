@@ -63,17 +63,14 @@ struct harness {
         ui.begin_frame(in);
         build();
         ui.end_frame();
-        in.key_count   = 0;
-        in.typed_len   = 0;
-        in.wheel       = 0.0f;
-        in.pressed_key = 0;
-        in.press_count = 0;
+        in.key_count = 0;
+        in.typed_len = 0;
+        in.wheel     = 0.0f;
     }
-    // a key press queued the way win32_platform does it: with the modifiers held for it
-    void press(u32 vk, bool ctrl = false, bool shift = false, bool alt = false)
-    {
-        if (in.press_count < in.presses.size()) { in.presses[in.press_count++] = {vk, ctrl, shift, alt}; }
-    }
+    // a key press the way win32_platform reports it: with the modifiers held for it
+    void press(strata::key k, bool ctrl = false, bool shift = false, bool alt = false) { in.press(k, ctrl, shift, alt); }
+    // ... with the modifiers currently set in `in`
+    void press_now(strata::key k) { in.press(k, in.ctrl, in.shift, in.alt); }
     template <class F>
     void frames(F&& build, int n, f32 dt = 1.0f / 60.0f)
     {
@@ -95,10 +92,7 @@ struct harness {
         in.shift = shift;
         in.alt = alt;
     }
-    void key(strata::key k, bool ctrl = false, bool shift = false)
-    {
-        if (in.key_count < in.keys.size()) { in.keys[in.key_count++] = {k, ctrl, shift}; }
-    }
+    void key(strata::key k, bool ctrl = false, bool shift = false) { in.press(k, ctrl, shift); }
     void type(std::string_view s)
     {
         for (const char c : s) {

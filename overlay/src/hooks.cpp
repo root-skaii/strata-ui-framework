@@ -87,15 +87,19 @@ bool patch_slot(void** vt, int index, void* hook, void** original)
     return true;
 }
 
-void unpatch_slot(void** vt, int index, void* hook, void* original)
+// clears `patched` once the slot holds `original` again. false while another hook sits in the slot (and calls ours):
+// the chain is kept intact and ours passes through, so the dll must stay loaded
+bool unpatch_slot(void** vt, int index, void* hook, void* original, bool& patched)
 {
-    if (vt[index] != hook) { return; } // (someone hooked over us: keep the chain intact and pass through from now on)
+    if (!patched) { return true; }
+    if (vt[index] != hook) { return false; }
     DWORD old = 0;
-    if (::VirtualProtect(&vt[index], sizeof(void*), PAGE_READWRITE, &old)) {
-        vt[index] = original;
-        DWORD ignored = 0;
-        ::VirtualProtect(&vt[index], sizeof(void*), old, &ignored);
-    }
+    if (!::VirtualProtect(&vt[index], sizeof(void*), PAGE_READWRITE, &old)) { return false; }
+    vt[index] = original;
+    DWORD ignored = 0;
+    ::VirtualProtect(&vt[index], sizeof(void*), old, &ignored);
+    patched = false;
+    return true;
 }
 
 // the swap chain vtable belongs to dxgi and is shared across apis, so one probe finds it. probe with the api the
@@ -232,18 +236,20 @@ hook_result install_hooks()
     return hook_result::ok;
 }
 
-void remove_hooks()
+bool remove_hooks()
 {
+    bool all = true;
     if (g.vtable != nullptr) {
-        if (g.patched_present)  { unpatch_slot(g.vtable, vt_present, reinterpret_cast<void*>(&hook_present), reinterpret_cast<void*>(g.orig_present)); }
-        if (g.patched_present1) { unpatch_slot(g.vtable, vt_present1, reinterpret_cast<void*>(&hook_present1), reinterpret_cast<void*>(g.orig_present1)); }
-        if (g.patched_resize)   { unpatch_slot(g.vtable, vt_resize_buffers, reinterpret_cast<void*>(&hook_resize), reinterpret_cast<void*>(g.orig_resize)); }
-        if (g.patched_resize1)  { unpatch_slot(g.vtable, vt_resize_buffers1, reinterpret_cast<void*>(&hook_resize1), reinterpret_cast<void*>(g.orig_resize1)); }
-        if (g.patched_colorspace) { unpatch_slot(g.vtable, vt_set_colorspace1, reinterpret_cast<void*>(&hook_colorspace), reinterpret_cast<void*>(g.orig_colorspace)); }
+        all &= unpatch_slot(g.vtable, vt_present, reinterpret_cast<void*>(&hook_present), reinterpret_cast<void*>(g.orig_present), g.patched_present);
+        all &= unpatch_slot(g.vtable, vt_present1, reinterpret_cast<void*>(&hook_present1), reinterpret_cast<void*>(g.orig_present1), g.patched_present1);
+        all &= unpatch_slot(g.vtable, vt_resize_buffers, reinterpret_cast<void*>(&hook_resize), reinterpret_cast<void*>(g.orig_resize), g.patched_resize);
+        all &= unpatch_slot(g.vtable, vt_resize_buffers1, reinterpret_cast<void*>(&hook_resize1), reinterpret_cast<void*>(g.orig_resize1), g.patched_resize1);
+        all &= unpatch_slot(g.vtable, vt_set_colorspace1, reinterpret_cast<void*>(&hook_colorspace), reinterpret_cast<void*>(g.orig_colorspace), g.patched_colorspace);
     }
-    if (g.queue_vtable != nullptr && g.patched_execute) {
-        unpatch_slot(g.queue_vtable, vt_queue_execute, reinterpret_cast<void*>(&hook_execute), reinterpret_cast<void*>(g.orig_execute));
+    if (g.queue_vtable != nullptr) {
+        all &= unpatch_slot(g.queue_vtable, vt_queue_execute, reinterpret_cast<void*>(&hook_execute), reinterpret_cast<void*>(g.orig_execute), g.patched_execute);
     }
+    return all;
 }
 
 } // namespace strata::overlay::detail

@@ -866,6 +866,7 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
             pen.x = origin_x;
             pen.y += lh;
             prev = 0;
+            if (pen.y > clip.max.y) { break; } // every later line is below the clip too
             continue;
         }
 
@@ -908,6 +909,13 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
             }
         }
         pen.x += g.advance;
+        // the rest of this line lies right of the clip (a line height of slack covers bearings, slant and bold):
+        // jump to the next line instead of decoding and kerning glyphs nobody sees
+        if (pen.x - lh > clip.max.x) {
+            const std::size_t nl = s.find('\n');
+            if (nl == std::string_view::npos) { break; }
+            s.remove_prefix(nl);
+        }
     }
     close_line(origin_x, pen.x + smear, pen.y + asc);
     if (cap_v != 0) { close_chunk(); }

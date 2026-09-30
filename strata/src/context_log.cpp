@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 #include <algorithm>
 #include <array>
@@ -68,31 +69,30 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
     // toolbar -------------------------------------------------------------------------------------------
     if (!has_flag(flags, log_view_flags::no_toolbar)) {
         set_next_item_width(std::max(m_->layout_.width * 0.22f, 90.0f));
-        (void)input_text("##filter", v.filter, "filter...");
+        (void)input_text("##filter", v.filter, m_->strings_.log_filter);
         same_line();
-        static constexpr std::array<std::string_view, 5> level_names = {"trace", "debug", "info", "warn", "error"};
         int level = static_cast<int>(v.min_level);
         set_next_item_width(86.0f);
-        if (combo("##level", level, level_names.data(), level_names.size())) {
+        if (combo("##level", level, m_->strings_.log_levels)) {
             v.min_level = static_cast<log_level>(level);
         }
         same_line();
-        (void)checkbox("follow", v.follow);
+        (void)checkbox(m_->strings_.follow, v.follow);
         same_line();
-        (void)checkbox("time", v.show_time);
-        tooltip(v.clock ? "the time of day when the line was added" : "seconds of ui time when the line was added");
+        (void)checkbox(m_->strings_.time, v.show_time);
+        tooltip(v.clock ? m_->strings_.time_tip_clock : m_->strings_.time_tip_ui);
         if (v.show_time) {
             same_line();
-            (void)checkbox("clock", v.clock);
-            tooltip("time of day instead of ui seconds");
+            (void)checkbox(m_->strings_.clock, v.clock);
+            tooltip(m_->strings_.clock_tip);
         }
         same_line();
-        (void)checkbox("wrap", v.wrap);
-        tooltip("long lines take several rows");
+        (void)checkbox(m_->strings_.wrap, v.wrap);
+        tooltip(m_->strings_.wrap_tip);
         same_line();
-        const bool copy_clicked = button("copy");
+        const bool copy_clicked = button(m_->strings_.copy, "##copy");
         same_line();
-        if (button("clear")) {
+        if (button(m_->strings_.clear, "##clear")) {
             log.clear();
             v.follow = true;
         }
@@ -184,7 +184,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
 
         const bool overflowing = total > view_h;
         const rect hit = {cf.bounds.min, {cf.bounds.max.x - (overflowing ? 12.0f : 0.0f), cf.bounds.max.y}};
-        const interaction in = interact(widget_id("##rows"), hit);
+        const interaction in = interact(part_id(part::log_rows, current_seed()), hit);
         if (in.held && count > 0) {
             const std::size_t idx = row_at(m_->input_.mouse_.y - m_->layout_.origin.y);
             const u64 seq = log.lines_[log.visible_[idx]].seq;

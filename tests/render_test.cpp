@@ -318,6 +318,47 @@ void test_device_recovery()
 
 } // namespace
 
+void test_registered_texture(gpu& g)
+{
+    std::fprintf(stderr, "[d3d11: a texture the host made itself is drawn through register_texture]\n");
+    context        ui = context::create().value();
+    d3d11_renderer renderer;
+    CHECK(renderer.create(g.device.Get(), g.ctx.Get(), ui.font()));
+
+    // the host's own 4 x 4 green texture and view
+    std::vector<u32> green(16, 0xff00ff00u); // (rgba8, little-endian: r = 0, g = 255, b = 0, a = 255)
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = td.Height = 4;
+    td.MipLevels = td.ArraySize = 1;
+    td.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA init{green.data(), 16, 0};
+    ComPtr<ID3D11Texture2D>          tex;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    CHECK(SUCCEEDED(g.device->CreateTexture2D(&td, &init, &tex)) && SUCCEEDED(g.device->CreateShaderResourceView(tex.Get(), nullptr, &srv)));
+    const texture_id id = renderer.register_texture(srv.Get());
+    CHECK(id != 0);
+    srv.Reset(); // the renderer holds its own reference
+    tex.Reset();
+
+    input_state in;
+    in.display_size = {static_cast<f32>(g.w), static_cast<f32>(g.h)};
+    ui.begin_frame(in);
+    {
+        auto fg = ui.layer(layer::foreground);
+        ui.draw().image({{100, 100}, {140, 140}}, id);
+    }
+    ui.end_frame();
+    const float black[4] = {0, 0, 0, 1};
+    g.clear(black);
+    renderer.render(ui.render_data());
+    const std::vector<u8> px = g.read();
+    const u8* p = px.data() + (static_cast<std::size_t>(120) * g.w + 120) * 4;
+    CHECK(px.size() == static_cast<std::size_t>(g.w) * g.h * 4 && p[0] < 8 && p[1] > 247 && p[2] < 8);
+    renderer.destroy_texture(id);
+}
+
 int main()
 {
     gpu g;
@@ -328,6 +369,7 @@ int main()
     test_hostile_state(g);
     test_output_spaces(g);
     test_text_contrast(g);
+    test_registered_texture(g);
     test_device_recovery();
     std::fprintf(stderr, "render test: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -24,10 +24,10 @@ bool install(const options& opt)
     return false;
 }
 
-void uninstall()
+uninstall_result uninstall()
 {
     log_line("uninstall");
-    if (!g.installed.load()) { return; }
+    if (!g.installed.load()) { return g.stay_loaded ? uninstall_result::pinned : uninstall_result::done; }
     // hidden first: the cursor comes back to the game on its own thread
     if (g.hwnd != nullptr && g.subclassed && ::IsWindow(g.hwnd)) {
         g.visible.store(false);
@@ -35,18 +35,28 @@ void uninstall()
         ::SendMessageTimeoutW(g.hwnd, wm_show_changed, 0, 0, SMTO_ABORTIFHUNG, 500, &ignored);
     }
     g.shutting_down.store(true);
-    remove_hooks();
+    const bool hooks_restored = remove_hooks();
+    bool proc_restored = true;
     if (g.subclassed && ::IsWindow(g.hwnd)) {
         if (reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(g.hwnd, GWLP_WNDPROC)) == &wnd_proc) {
             ::SetWindowLongPtrW(g.hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g.orig_proc));
+            g.subclassed = false; // (a retry after a timeout below must not see its own restore as someone else's)
         } else {
-            set_error("the window was subclassed on top of the overlay: it stays as a pass-through, do not unload the dll");
-            return; // (the state has to outlive the window procedure)
+            proc_restored = false;
         }
     }
-    log_line("uninstall: hooks and window procedure restored");
+    log_line(hooks_restored ? "uninstall: hooks restored" : "uninstall: a hook was chained over ours; it passes through");
     for (int i = 0; i < 100 && g.in_hook.load() > 0; ++i) { ::Sleep(20); } // (a Present on another thread may still be inside a hook)
-    ::Sleep(50);
+    if (g.in_hook.load() > 0) { // freeing now would pull the device objects and ui out from under that call
+        set_error("a hooked call is still running after 2 s: nothing was freed; call uninstall() again later");
+        return uninstall_result::busy;
+    }
+    ::Sleep(50); // (a call that read the vtable just before it was restored has not counted itself in yet)
+    if (!proc_restored) {
+        set_error("the window was subclassed on top of the overlay: it stays as a pass-through, do not unload the dll");
+        g.stay_loaded = true;
+        return uninstall_result::pinned; // (the state has to outlive the window procedure)
+    }
     release_device_objects();
     g.last_queue.store(nullptr);
     g.ui.reset();
@@ -54,7 +64,12 @@ void uninstall()
     g.hwnd       = nullptr;
     g.subclassed = false;
     g.installed.store(false);
+    g.stay_loaded = !hooks_restored;
+    if (!hooks_restored) {
+        set_error("another hook was installed over the overlay's: it stays as a pass-through, do not unload the dll");
+    }
     log_line("uninstall: done");
+    return hooks_restored ? uninstall_result::done : uninstall_result::pinned;
 }
 
 void show(bool v)

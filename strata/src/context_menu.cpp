@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 
 #include <algorithm>
@@ -68,19 +69,19 @@ struct mnemonic_label {
     return s;
 }
 
-// the virtual-key code a name of the accelerator syntax stands for; 0 if unknown
-[[nodiscard]] u32 key_from_name(std::string_view t) noexcept
+// the key a name of the accelerator syntax stands for; key::none if unknown
+[[nodiscard]] key key_from_name(std::string_view t) noexcept
 {
     if (t.size() == 1) {
         const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(t[0])));
-        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) { return static_cast<u32>(c); }
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) { return static_cast<key>(c); }
     }
     std::string lower;
     for (const char c : t) { lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
     if (lower.size() >= 2 && lower[0] == 'f') {
         u32 n = 0;
         const auto r = std::from_chars(lower.data() + 1, lower.data() + lower.size(), n);
-        if (r.ec == std::errc{} && r.ptr == lower.data() + lower.size() && n >= 1 && n <= 24) { return 0x70u + n - 1; }
+        if (r.ec == std::errc{} && r.ptr == lower.data() + lower.size() && n >= 1 && n <= 24) { return static_cast<key>(0x70u + n - 1); }
     }
     struct named { std::string_view name; u32 vk; };
     static constexpr named names[] = {
@@ -90,13 +91,13 @@ struct mnemonic_label {
         {"left", 0x25}, {"up", 0x26}, {"right", 0x27}, {"down", 0x28},
     };
     for (const named& n : names) {
-        if (n.name == lower) { return n.vk; }
+        if (n.name == lower) { return static_cast<key>(n.vk); }
     }
     for (u32 vk = 1; vk < 0xff; ++vk) { // whatever key_name() prints: "Page Up", "Num +", "Mouse 4", ";" ...
-        const std::string_view name = key_name(vk);
-        if (name != "Key ?" && iequals(name, t)) { return vk; }
+        const std::string_view name = key_name(static_cast<key>(vk));
+        if (name != "Key ?" && iequals(name, t)) { return static_cast<key>(vk); }
     }
-    return 0;
+    return key::none;
 }
 
 } // namespace
@@ -133,7 +134,7 @@ bool chord_from_string(std::string_view text, key_chord& out) noexcept
         rest = trim_spaces(rest.substr(plus + 1));
     }
     c.key = key_from_name(rest);
-    if (c.key == 0) { return false; }
+    if (c.key == key::none) { return false; }
     out = c;
     return true;
 }
@@ -178,21 +179,7 @@ bool context::accelerator(std::string_view combo) const
 
 bool context::chord_pressed(const key_chord& c) const
 {
-    const u32  vk    = c.key;
-    const bool ctrl  = c.ctrl;
-    const bool shift = c.shift;
-    const bool alt   = c.alt;
-    if (vk == 0 || m_->input_.pressed_key_ != vk || m_->hotkey_.hotkey_capture_ != 0) {
-        return false;
-    }
-    if (m_->input_.press_ctrl_ != ctrl || m_->input_.press_shift_ != shift || m_->input_.press_alt_ != alt) {
-        return false;
-    }
-    if (want_text_input()) { // the text field owns plain keys and its own editing shortcuts
-        if (!ctrl && !alt) { return false; }
-        if (ctrl && !alt && !shift && (vk == 'A' || vk == 'C' || vk == 'V' || vk == 'X' || vk == 'Z' || vk == 'Y')) { return false; }
-    }
-    return true;
+    return key_pressed(c.key, c.ctrl, c.shift, c.alt);
 }
 
 bool context::sequence_pressed(const key_sequence& seq) const
@@ -242,14 +229,6 @@ void context::menu_close_from(u32 level) noexcept
     for (u32 i = level; i < max_menu_levels; ++i) {
         m_->menu_.menu_open_[i] = {};
     }
-}
-
-bool context::over_open_menu(vec2 p) const noexcept
-{
-    for (const menu_level& m : m_->menu_.menu_open_) {
-        if (m.key != 0 && m.rect_prev.contains(p)) { return true; }
-    }
-    return false;
 }
 
 void context::menu_open_root(id key, vec2 pos, const rect& anchor, bool from_bar)
@@ -547,7 +526,7 @@ bool context::begin_menu(std::string_view label, bool enabled)
     const interaction in = enabled ? interact(key, r) : interaction{};
     bool open = m_->menu_.menu_open_[0].key == key;
     const bool bar_active = m_->menu_.menu_open_[0].key != 0 && m_->menu_.menu_open_[0].from_bar;
-    const bool by_alt = enabled && m.key != 0 && m_->input_.press_alt_ && m_->input_.pressed_key_ == static_cast<u32>(std::toupper(static_cast<unsigned char>(m.key)));
+    const bool by_alt = enabled && m.key != 0 && m_->input_.press_alt_ && m_->input_.pressed_key_ == static_cast<strata::key>(std::toupper(static_cast<unsigned char>(m.key)));
     if (in.pressed || by_alt) {
         if (open) { menu_close_all(); } else { menu_open_root(key, {r.min.x, r.max.y}, r, true); }
         open = m_->menu_.menu_open_[0].key == key;
@@ -584,13 +563,13 @@ void context::end_menu()
 
 void context::open_popup_menu(std::string_view id_label, vec2 pos)
 {
-    const id key = hash_id("##popupmenu", widget_id(id_label));
+    const id key = part_id(part::popup_menu, widget_id(id_label));
     menu_open_root(key, pos, {}, false);
 }
 
 bool context::begin_popup_menu(std::string_view id_label)
 {
-    const id key = hash_id("##popupmenu", widget_id(id_label));
+    const id key = part_id(part::popup_menu, widget_id(id_label));
     if (m_->menu_.menu_open_[0].key != key || !menu_begin_level(0, key)) {
         return false;
     }

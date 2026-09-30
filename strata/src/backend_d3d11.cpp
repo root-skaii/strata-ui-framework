@@ -158,6 +158,18 @@ struct d3d11_renderer::impl {
     };
     std::vector<texture_slot> textures; // texture_id - 1
 
+    texture_id add_texture(texture_slot&& slot)
+    {
+        for (std::size_t i = 0; i < textures.size(); ++i) {
+            if (textures[i].srv == nullptr) {
+                textures[i] = std::move(slot);
+                return static_cast<texture_id>(i + 1);
+            }
+        }
+        textures.push_back(std::move(slot));
+        return static_cast<texture_id>(textures.size());
+    }
+
     // backdrop blur: frame copied to snap_tex, boxed down into blur_tex[0], blurred back and forth
     ComPtr<ID3D11VertexShader>       vs_fullscreen;
     ComPtr<ID3D11PixelShader>        ps_backdrop;
@@ -633,15 +645,17 @@ texture_id d3d11_renderer::create_texture(const texture_desc& desc, std::span<co
         image.wipe(); // the gpu has its copy
     }
 
-    auto& slots = impl_->textures;
-    for (std::size_t i = 0; i < slots.size(); ++i) {
-        if (slots[i].srv == nullptr) {
-            slots[i] = std::move(slot);
-            return static_cast<texture_id>(i + 1);
-        }
+    return impl_->add_texture(std::move(slot));
+}
+
+texture_id d3d11_renderer::register_texture(ID3D11ShaderResourceView* srv)
+{
+    if (impl_ == nullptr || srv == nullptr) {
+        return 0;
     }
-    slots.push_back(std::move(slot));
-    return static_cast<texture_id>(slots.size());
+    impl::texture_slot slot;
+    slot.srv = srv; // (takes its own reference)
+    return impl_->add_texture(std::move(slot));
 }
 
 bool d3d11_renderer::update_texture(texture_id id, u32 x, u32 y, u32 width, u32 height, std::span<const u8> pixels)

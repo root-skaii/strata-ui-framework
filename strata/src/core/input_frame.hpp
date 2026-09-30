@@ -23,8 +23,10 @@ struct input_frame {
     bool mouse_released_{};
     bool mouse_right_down_{};
     bool mouse_right_pressed_{};
+    bool mouse_right_released_{};
     bool mouse_middle_down_{};
     bool mouse_middle_pressed_{};
+    bool mouse_middle_released_{};
     bool mod_ctrl_{};
     bool mod_shift_{};
     bool mod_alt_{};
@@ -43,11 +45,11 @@ struct input_frame {
     std::array<u8, 32>                    keys_held_{}; // bitset: key_down() / hotkeys
 
     // the queued press this frame is handling now, and modifiers; more presses wait in the queue
-    u32                        pressed_key_{};
+    key                        pressed_key_{};
     bool                       press_ctrl_{};
     bool                       press_shift_{};
     bool                       press_alt_{};
-    std::array<key_press, 64> press_queue_{};
+    std::array<key_event, 64> press_queue_{};
     u32                       press_queued_{};
 
     // IME composition, as reported by the host

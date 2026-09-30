@@ -292,12 +292,12 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
             fresh_search    = true;
             cs.active       = -1;
         }
-        if (find_shortcut && chord_pressed({'F', true, false, false})) {
+        if (find_shortcut && chord_pressed({key::f, true, false, false})) {
             cs.find_open    = true;
             cs.replace_open = false;
             m_->focus_request_  = find_key;
         }
-        if (find_shortcut && chord_pressed({'H', true, false, false})) {
+        if (find_shortcut && chord_pressed({key::h, true, false, false})) {
             cs.find_open    = true;
             cs.replace_open = true;
             m_->focus_request_  = find_key;
@@ -313,7 +313,7 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
             };
 
             set_next_item_width(std::max(w - 130.0f, 80.0f));
-            const bool find_changed = input_text("##find", cs.find, "Find", input_flags::none, 256);
+            const bool find_changed = input_text("##find", cs.find, m_->strings_.find, input_flags::none, 256);
             find_all(value, cs.find, cs.match_case, m_->code_marks_);
             if (find_changed || (fresh_search && !cs.find.empty())) { // the first match at or after the caret
                 cs.active = -1;
@@ -334,19 +334,19 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
 
             const int n = static_cast<int>(m_->code_marks_.size());
             if (cs.active >= n) { cs.active = n - 1; }
-            if (cs.find.empty())    { text_dim("type to search"); }
-            else if (n == 0)        { text_dim("no matches"); }
+            if (cs.find.empty())    { text_dim(m_->strings_.type_to_search); }
+            else if (n == 0)        { text_dim(m_->strings_.no_matches); }
             else                    { text_dim(std::format("{} of {}", cs.active + 1, n)); }
             same_line();
-            if (checkbox("match case", cs.match_case)) { find_all(value, cs.find, cs.match_case, m_->code_marks_); cs.active = -1; }
+            if (checkbox(m_->strings_.match_case, cs.match_case)) { find_all(value, cs.find, cs.match_case, m_->code_marks_); cs.active = -1; }
             same_line();
-            (void)checkbox("replace", cs.replace_open);
+            (void)checkbox(m_->strings_.show_replace, cs.replace_open);
 
             if (cs.replace_open) {
                 set_next_item_width(std::max(w - 150.0f, 80.0f));
-                (void)input_text("##replace", cs.replace, "Replace with", input_flags::none, 1024);
+                (void)input_text("##replace", cs.replace, m_->strings_.replace_with, input_flags::none, 1024);
                 same_line();
-                if (button("Replace") && !m_->code_marks_.empty()) {
+                if (button(m_->strings_.replace, "##replace_one") && !m_->code_marks_.empty()) {
                     const auto m = m_->code_marks_[static_cast<std::size_t>(std::max(cs.active, 0))];
                     value.replace(m.first, m.second, cs.replace);
                     changed = true;
@@ -354,7 +354,7 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
                     if (!m_->code_marks_.empty()) { go(std::min<int>(std::max(cs.active, 0), static_cast<int>(m_->code_marks_.size()) - 1)); }
                 }
                 same_line();
-                if (button("All") && !m_->code_marks_.empty()) {
+                if (button(m_->strings_.replace_all, "##replace_all") && !m_->code_marks_.empty()) {
                     for (std::size_t i = m_->code_marks_.size(); i-- > 0;) { value.replace(m_->code_marks_[i].first, m_->code_marks_[i].second, cs.replace); }
                     changed = true;
                     find_all(value, cs.find, cs.match_case, m_->code_marks_);

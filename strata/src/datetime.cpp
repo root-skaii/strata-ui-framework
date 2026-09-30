@@ -1,4 +1,5 @@
 #include "strata/datetime.hpp"
+#include "strata/context.hpp" // (ui_strings: the english names)
 
 #include <windows.h>
 
@@ -116,15 +117,14 @@ bool parse_time(std::string_view text, time_of_day& out) noexcept
 
 std::string_view month_name(i32 month) noexcept
 {
-    static constexpr std::array<std::string_view, 12> names = {"January", "February", "March", "April", "May", "June", "July",
-                                                                "August", "September", "October", "November", "December"};
-    return month >= 1 && month <= 12 ? names[static_cast<std::size_t>(month - 1)] : std::string_view{"?"};
+    static constexpr ui_strings english{};
+    return month >= 1 && month <= 12 ? english.months[static_cast<std::size_t>(month - 1)] : std::string_view{"?"};
 }
 
 std::string_view weekday_short(i32 weekday) noexcept
 {
-    static constexpr std::array<std::string_view, 7> names = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
-    return weekday >= 0 && weekday < 7 ? names[static_cast<std::size_t>(weekday)] : std::string_view{"?"};
+    static constexpr ui_strings english{};
+    return weekday >= 0 && weekday < 7 ? english.weekdays[static_cast<std::size_t>(weekday)] : std::string_view{"?"};
 }
 
 } // namespace strata

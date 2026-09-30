@@ -87,11 +87,16 @@ bool host::install(const options& base)
     return true;
 }
 
-void host::uninstall()
+overlay::uninstall_result host::uninstall()
 {
-    if (!installed_.exchange(false)) { return; }
-    overlay::uninstall(); // waits for frames in flight, so no module is running past this point
+    if (!installed_.exchange(false)) { return overlay::uninstall_result::done; }
+    const overlay::uninstall_result r = overlay::uninstall(); // waits for frames in flight
+    if (r == overlay::uninstall_result::busy) { // a frame may still be inside a module: keep them, retry later
+        installed_.store(true);
+        return r;
+    }
     detach_all();
+    return r;
 }
 
 void host::detach_all()

@@ -104,9 +104,9 @@ void draw_frame(IDXGISwapChain* sc)
             const float next = std::clamp(g.ui->scale() + 0.1f * static_cast<float>(direction), 0.5f, 4.0f);
             g.want_scale.store(next);
         };
-        if (g.ui->key_pressed(VK_OEM_PLUS, true) || g.ui->key_pressed(VK_ADD, true))        { stepped(1); }
-        else if (g.ui->key_pressed(VK_OEM_MINUS, true) || g.ui->key_pressed(VK_SUBTRACT, true)) { stepped(-1); }
-        else if (g.ui->key_pressed('0', true) || g.ui->key_pressed(VK_NUMPAD0, true))       { g.want_scale.store(g.base_scale); }
+        if (g.ui->key_pressed(strata::key::equals, true) || g.ui->key_pressed(strata::key::num_add, true))        { stepped(1); }
+        else if (g.ui->key_pressed(strata::key::minus, true) || g.ui->key_pressed(strata::key::num_subtract, true)) { stepped(-1); }
+        else if (g.ui->key_pressed(strata::key::d0, true) || g.ui->key_pressed(strata::key::num0, true))       { g.want_scale.store(g.base_scale); }
     }
     if (g.opt.hud) { g.opt.hud(*g.ui); }
     if (open && g.opt.ui) { g.opt.ui(*g.ui); }

@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -100,7 +101,7 @@ bool context::calendar_body(date& value, bool close_on_pick)
     const std::array<step, 4> steps = {{{bar.min.x, -12}, {bar.min.x + head, -1}, {bar.max.x - 2.0f * head, 1}, {bar.max.x - head, 12}}};
     for (std::size_t i = 0; i < steps.size(); ++i) {
         const rect r = rect::from_size({steps[i].x, bar.min.y}, {head, head});
-        if (pick_cell(hash_id("##ym", static_cast<id>(i)), r, {}, false, false, false)) {
+        if (pick_cell(part_id(part::year_month, static_cast<id>(i)), r, {}, false, false, false)) {
             const date moved = add_months({m_->date_.cal_year_, m_->date_.cal_month_, 1}, steps[i].months);
             m_->date_.cal_year_  = moved.year;
             m_->date_.cal_month_ = moved.month;
@@ -116,7 +117,7 @@ bool context::calendar_body(date& value, bool close_on_pick)
             m_->dl_.line({c.x + ox + d * k * 0.5f, c.y}, {c.x + ox - d * k * 0.5f, c.y + k}, m_->style_.text, 1.4f);
         }
     }
-    const std::string title = std::format("{} {}", month_name(m_->date_.cal_month_), m_->date_.cal_year_);
+    const std::string title = std::format("{} {}", m_->strings_.months[static_cast<std::size_t>(std::clamp(m_->date_.cal_month_, 1, 12) - 1)], m_->date_.cal_year_);
     const vec2 tsz = label_size(f, title);
     label_draw({bar.center().x - tsz.x * 0.5f, bar.min.y + (head - tsz.y) * 0.5f}, m_->style_.text, title, f);
 
@@ -125,7 +126,7 @@ bool context::calendar_body(date& value, bool close_on_pick)
     const f32  lh   = m_->font_.line_height(f);
     const rect days = layout_place({w, lh + 4.0f});
     for (i32 i = 0; i < 7; ++i) {
-        const std::string_view name = weekday_short(i);
+        const std::string_view name = m_->strings_.weekdays[static_cast<std::size_t>(i)];
         const vec2 ns = label_size(f, name);
         label_draw({days.min.x + cw * (static_cast<f32>(i) + 0.5f) - ns.x * 0.5f, days.min.y + 2.0f},
                    i >= 5 ? m_->style_.text_dim.scaled_alpha(0.7f) : m_->style_.text_dim, name, f);
@@ -142,7 +143,7 @@ bool context::calendar_body(date& value, bool close_on_pick)
             const date d = add_days(start, row * 7 + col);
             const rect r = rect::from_size({line.min.x + cw * static_cast<f32>(col), line.min.y}, {cw, ch});
             const std::string num = std::to_string(d.day);
-            const id key = hash_id("##day", static_cast<id>(row * 7 + col));
+            const id key = part_id(part::calendar_day, static_cast<id>(row * 7 + col));
             if (pick_cell(key, r.expanded(-1.0f), num, d == value, d.month != m_->date_.cal_month_, d == now_d)) {
                 value   = d;
                 changed = true;
@@ -217,20 +218,20 @@ bool context::date_picker(std::string_view label, date& value)
     const interaction  in  = interact(key, fl.control);
     push_id(label);
     if (in.pressed) { m_->date_.cal_key_ = 0; toggle_popup("##calendar"); }
-    picker_field(key, fl.control, in, popup_is_open("##calendar"), to_string(value), static_cast<int>(picker_icon::calendar));
+    picker_field(key, fl.control, in, popup_open("##calendar"), to_string(value), static_cast<int>(picker_icon::calendar));
 
     bool changed = false;
     if (auto p = popup("##calendar", std::max(fl.control.width(), 260.0f))) {
         changed = calendar_body(value, true);
         spacing(2.0f);
-        if (button("Today")) {
+        if (button(m_->strings_.today)) {
             value   = today();
             m_->date_.cal_key_ = 0;
             changed = true;
             close_popup();
         }
     }
-    const bool engaged = popup_is_open("##calendar"); // (in the widget's id scope: before pop_id)
+    const bool engaged = popup_open("##calendar"); // (in the widget's id scope: before pop_id)
     pop_id();
     track_edit(key, changed, engaged);
     return changed;
@@ -247,20 +248,20 @@ bool context::time_picker(std::string_view label, time_of_day& value, bool secon
     const interaction  in  = interact(key, fl.control);
     push_id(label);
     if (in.pressed) { toggle_popup("##clock"); }
-    picker_field(key, fl.control, in, popup_is_open("##clock"), to_string(value, seconds), static_cast<int>(picker_icon::clock));
+    picker_field(key, fl.control, in, popup_open("##clock"), to_string(value, seconds), static_cast<int>(picker_icon::clock));
 
     bool changed = false;
     if (auto p = popup("##clock", std::max(fl.control.width(), 240.0f))) {
         changed = time_body(value, seconds);
         spacing(2.0f);
-        if (button("Now")) {
+        if (button(m_->strings_.now)) {
             value   = now();
             changed = true;
         }
         same_line();
-        if (button("Done")) { close_popup(); }
+        if (button(m_->strings_.done)) { close_popup(); }
     }
-    const bool engaged = popup_is_open("##clock"); // (in the widget's id scope: before pop_id)
+    const bool engaged = popup_open("##clock"); // (in the widget's id scope: before pop_id)
     pop_id();
     track_edit(key, changed, engaged);
     return changed;
@@ -278,7 +279,7 @@ bool context::datetime_picker(std::string_view label, date& d, time_of_day& t, b
     const interaction  in  = interact(key, fl.control);
     push_id(label);
     if (in.pressed) { m_->date_.cal_key_ = 0; toggle_popup("##datetime"); }
-    picker_field(key, fl.control, in, popup_is_open("##datetime"), to_string(d) + " " + to_string(t, seconds),
+    picker_field(key, fl.control, in, popup_open("##datetime"), to_string(d) + " " + to_string(t, seconds),
                  static_cast<int>(picker_icon::calendar));
 
     bool changed = false;
@@ -287,16 +288,16 @@ bool context::datetime_picker(std::string_view label, date& d, time_of_day& t, b
         separator();
         changed = time_body(t, seconds) || changed;
         spacing(2.0f);
-        if (button("Now")) {
+        if (button(m_->strings_.now)) {
             d       = today();
             t       = now();
             m_->date_.cal_key_ = 0;
             changed = true;
         }
         same_line();
-        if (button("Done")) { close_popup(); }
+        if (button(m_->strings_.done)) { close_popup(); }
     }
-    const bool engaged = popup_is_open("##datetime"); // (in the widget's id scope: before pop_id)
+    const bool engaged = popup_open("##datetime"); // (in the widget's id scope: before pop_id)
     pop_id();
     track_edit(key, changed, engaged);
     return changed;

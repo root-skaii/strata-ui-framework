@@ -39,8 +39,8 @@ struct options {
     // draw (and count) frames while hidden, for things shown over the game all the time. implied by `hud`;
     // set_draw_hidden() changes it later. prefer overlay::host / module (module.hpp) over hud and ui.
     bool draw_hidden = false;
-    // virtual-key that toggles the overlay (default F1); 0: none (use show())
-    unsigned toggle_key = 0x70;
+    // the key that toggles the overlay (default F1); key::none: none (use show())
+    key      toggle_key = key::f1;
     bool     start_visible = false;
     // while visible the game gets no keyboard / mouse (false: the ui takes only what it is over, and keys while typing)
     bool     block_game_input = true;
@@ -65,8 +65,14 @@ struct options {
 
 // installs the hook and returns (false: see last_error()). call once.
 bool install(const options& opt);
-// removes the hook and frees everything; the dll may then be unloaded. waits briefly for hooked calls in flight.
-void uninstall();
+// what uninstall() managed; last_error() explains anything but `done`
+enum class uninstall_result {
+    done,   // hooks removed, everything freed: the dll may be unloaded
+    busy,   // a hooked call was still running after ~2 s: nothing was freed, call uninstall() again later
+    pinned, // another hook / window procedure was chained over ours, which now passes through: never unload the dll
+};
+// removes the hook and frees everything. waits briefly for hooked calls in flight.
+uninstall_result uninstall();
 
 void show(bool visible);
 // draw frames while hidden (see options::draw_hidden)

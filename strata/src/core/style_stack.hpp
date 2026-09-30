@@ -33,6 +33,7 @@ public:
     [[nodiscard]] bool push_font(font_id f) noexcept;
     void pop_font() noexcept { if (font_depth_ > 0) { --font_depth_; } }
     [[nodiscard]] font_id current_font() const noexcept { return font_stack_[font_depth_]; }
+    [[nodiscard]] u32 font_depth() const noexcept { return font_depth_; }
 
     // font selection does not carry across frames (color/var overrides are unwound by pop, not reset here)
     void reset_font() noexcept { font_depth_ = 0; }

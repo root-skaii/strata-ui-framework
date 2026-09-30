@@ -1063,7 +1063,7 @@ void test_password_masks_and_code()
             if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) {
                 if (goto_line > 0) { h.ui.code_goto_line("##code", goto_line); goto_line = 0; } // (the id scope of the field)
                 (void)h.ui.input_code("##code", src, {0.0f, 150.0f});
-                box = h.ui.last_item_rect();
+                box = h.ui.item_rect();
             }
         };
         h.frames(build, 3);
@@ -1155,14 +1155,14 @@ void test_password_masks_and_code()
         const auto build = [&] {
             if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) {
                 (void)h.ui.input_code("##code", src, {0.0f, 150.0f});
-                box = h.ui.last_item_rect();
+                box = h.ui.item_rect();
             }
         };
         h.frames(build, 3);
         const f32 top0 = box.min.y;
         h.click({500.0f, box.min.y + 5.0f + 9.0f}, build);
         h.frames(build, 2);
-        h.in.ctrl = true; h.in.pressed_key = 'H';
+        h.in.ctrl = true; h.press_now(strata::key::h);
         h.frame(build);
         h.in.ctrl = false;
         h.frames(build, 2);
@@ -1211,7 +1211,7 @@ void test_clock_and_code_find()
             const auto build = [&] {
                 if (auto w = h.ui.window("p", {100, 100}, {320, 0}, plain_window)) {
                     (void)h.ui.date_picker("day", d);
-                    if (!boxed) { box = h.ui.last_item_rect(); }
+                    if (!boxed) { box = h.ui.item_rect(); }
                 }
             };
             mark ? override_clock({2030, 2, 20}, {0, 0, 0}) : override_clock({2031, 6, 1}, {0, 0, 0});
@@ -1234,7 +1234,7 @@ void test_clock_and_code_find()
         if (auto w = h.ui.window("c", {100, 100}, {480, 0}, plain_window)) {
             if (find_request == 1) { h.ui.code_find("##code", "one"); find_request = 0; }
             (void)h.ui.input_code("##code", src, {0.0f, 120.0f});
-            box = h.ui.last_item_rect();
+            box = h.ui.item_rect();
         }
     };
     h.frames(build, 3);

@@ -4,6 +4,8 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "widget_util.hpp"
+#include "core/part_id.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -56,7 +58,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     const f32  max_scroll = overflow ? std::max(0.0f, content_w - view_w) : 0.0f;
 
     // scroll: `active` = target, `toggle` = shown, `custom` = last tab in view
-    anim_slot& sc = anim_for(widget_id("##tscroll"));
+    anim_slot& sc = anim_for(part_id(part::tab_scroll, current_seed()));
     if (!sc.custom_init) {
         sc.custom_init = true;
         sc.custom      = -1.0f;
@@ -94,9 +96,9 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
 
         if (closable) {
             const rect x_r = rect::from_size({cells[i].max.x - 18.0f, cells[i].center().y - 7.0f}, {14.0f, 14.0f});
-            const interaction xin = interact(hash_id("##x", key), x_r.expanded(1.0f));
+            const interaction xin = interact(part_id(part::tab_close, key), x_r.expanded(1.0f));
             if (xin.pressed) { ev.closed = static_cast<int>(i); }
-            anim_slot& xa = anim_for(hash_id("##x", key));
+            anim_slot& xa = anim_for(part_id(part::tab_close, key));
             xa.hover = approach(xa.hover, xin.hovered ? 1.0f : 0.0f);
         }
 
@@ -188,7 +190,7 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
 
         if (closable) {
             const id       key = hash_id(tabs[i].key(), current_seed());
-            const f32      h   = anim_for(hash_id("##x", key)).hover;
+            const f32      h   = anim_for(part_id(part::tab_close, key)).hover;
             const vec2     m   = {cell.max.x - 11.0f, cell.center().y};
             const f32      k   = 3.2f;
             const color    xc  = lerp(lerp(m_->style_.text_dim, m_->style_.text, m_->tab_emph_[i]), m_->style_.text, h);
@@ -203,9 +205,9 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     if (add_tab) {
         const f32  ax = overflow ? region.max.x + 2.0f : x + 2.0f;
         const rect ar = {{ax, row.min.y + 1.0f}, {ax + add_w - 2.0f, row.max.y - 3.0f}};
-        const interaction in = interact(widget_id("##add"), ar);
+        const interaction in = interact(part_id(part::tab_add, current_seed()), ar);
         ev.add = in.pressed;
-        anim_slot& a = anim_for(widget_id("##add"));
+        anim_slot& a = anim_for(part_id(part::tab_add, current_seed()));
         a.hover = approach(a.hover, in.hovered ? 1.0f : 0.0f);
         if (a.hover > 0.01f) {
             shape_style hover;
@@ -223,10 +225,10 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
     // a list of every tab: the way to a tab that has scrolled out of view
     if (overflow) {
         const rect lr = {{row.max.x - list_w, row.min.y + 1.0f}, {row.max.x, row.max.y - 3.0f}};
-        const interaction in = interact(widget_id("##list"), lr);
+        const interaction in = interact(part_id(part::tab_list, current_seed()), lr);
         if (in.pressed) { toggle_popup("##tablist"); }
-        anim_slot& a = anim_for(widget_id("##list"));
-        a.hover  = approach(a.hover, in.hovered || popup_is_open("##tablist") ? 1.0f : 0.0f);
+        anim_slot& a = anim_for(part_id(part::tab_list, current_seed()));
+        a.hover  = approach(a.hover, in.hovered || popup_open("##tablist") ? 1.0f : 0.0f);
         if (a.hover > 0.01f) {
             shape_style hover;
             hover.radius      = radii(m_->style_.rounding * 0.7f);
@@ -255,6 +257,122 @@ tab_events context::tab_bar(std::string_view id_label, const tab_desc* tabs, std
 
     pop_id();
     return ev;
+}
+
+bool context::tab_strip(std::string_view id_label, const tab_desc* tabs, std::size_t count, int& selected,
+                        font_id icon_font, f32 width, tab_strip_flags flags, f32 height)
+{
+    if (m_->cur_ == nullptr || count == 0) {
+        return false;
+    }
+    push_id(id_label);
+
+    const bool icons_only = flags == tab_strip_flags::icons_only;
+    const font_id f       = current_font();
+    const f32  lh         = m_->font_.line_height(f);
+    const f32  row_h      = frame_height() + 10.0f;
+    const f32  gap        = 3.0f;
+    const std::size_t n   = std::min<std::size_t>(count, 16);
+    selected = std::clamp(selected, 0, static_cast<int>(n) - 1);
+
+    f32 w = width;
+    if (w <= 0.0f) {
+        if (icons_only) {
+            w = row_h + 12.0f;
+        } else {
+            f32 widest = 0.0f;
+            for (std::size_t i = 0; i < n; ++i) {
+                const f32 iw = tabs[i].icon.empty() ? 0.0f : m_->font_.measure(icon_font, tabs[i].icon).x + 12.0f;
+                widest = std::max(widest, iw + label_size(f, visible_label(tabs[i].label)).x);
+            }
+            w = std::max(widest + 44.0f, 120.0f);
+        }
+    }
+    const f32 natural_h = static_cast<f32>(n) * (row_h + gap) + 16.0f;
+    f32 h = height;
+    if (h <= 0.0f) {
+        h = m_->layout_.bound_bottom > 0.0f ? std::max(m_->layout_.bound_bottom - layout_next_y(), natural_h) : natural_h;
+    }
+
+    const rect r = layout_place({w, h});
+    shape_style panel;
+    panel.radius       = radii(m_->style_.rounding);
+    panel.fill_top     = lighten(m_->style_.title_bg, m_->style_.gradient * 0.5f).scaled_alpha(0.85f);
+    panel.fill_bottom  = darken(m_->style_.title_bg, 0.1f).scaled_alpha(0.85f);
+    panel.border       = m_->style_.border;
+    panel.border_width = m_->style_.border_width;
+    m_->dl_.shape(r, panel);
+
+    std::array<rect, 16> cells{};
+    f32 y = r.min.y + 8.0f;
+    for (std::size_t i = 0; i < n; ++i) {
+        cells[i] = {{r.min.x + 6.0f, y}, {r.max.x - 6.0f, y + row_h}};
+        y += row_h + gap;
+    }
+
+    bool changed = false;
+    std::array<f32, 16> emphasis{};
+    for (std::size_t i = 0; i < n; ++i) {
+        const id key = widget_id(tabs[i].label);
+        const interaction in = interact(key, cells[i]);
+        if (in.pressed && static_cast<int>(i) != selected) {
+            selected = static_cast<int>(i);
+            changed  = true;
+        }
+        anim_slot& a = anim_for(key);
+        a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
+        a.toggle = approach(a.toggle, static_cast<int>(i) == selected ? 1.0f : 0.0f);
+        emphasis[i] = std::max(a.toggle, a.hover * 0.7f);
+
+        if (a.hover > 0.01f && static_cast<int>(i) != selected) {
+            shape_style hv;
+            hv.radius      = radii(m_->style_.rounding * 0.7f);
+            hv.fill_top    = m_->style_.widget_hover.scaled_alpha(0.55f * a.hover);
+            hv.fill_bottom = hv.fill_top;
+            m_->dl_.shape(cells[i], hv);
+        }
+        if (icons_only && in.hovered && m_->hover_time_ > 0.35f) {
+            draw_tooltip(visible_label(tabs[i].label));
+        }
+    }
+
+    const rect sel = cells[static_cast<std::size_t>(selected)];
+    const f32  iy  = r.min.y + animate("strip_y", sel.min.y - r.min.y, 22.0f); // (relative to the strip: moving the window must not make it lag)
+    shape_style pill;
+    pill.radius      = radii(m_->style_.rounding * 0.7f);
+    pill.fill_top    = m_->style_.accent.scaled_alpha(0.22f);
+    pill.fill_bottom = m_->style_.accent.scaled_alpha(0.10f);
+    pill.border      = m_->style_.accent.scaled_alpha(0.35f);
+    pill.border_width = 1.0f;
+    m_->dl_.shape({{sel.min.x, iy}, {sel.max.x, iy + row_h}}, pill);
+    shape_style bar;
+    bar.radius      = radii(1.5f);
+    bar.fill_top    = m_->style_.accent_hover;
+    bar.fill_bottom = m_->style_.accent;
+    m_->dl_.shape({{sel.min.x + 1.0f, iy + 9.0f}, {sel.min.x + 4.0f, iy + row_h - 9.0f}}, bar);
+
+    for (std::size_t i = 0; i < n; ++i) {
+        const color c = lerp(m_->style_.text_dim, m_->style_.text, emphasis[i]);
+        const bool has_icon = !tabs[i].icon.empty();
+        const vec2 isize = has_icon ? m_->font_.measure(icon_font, tabs[i].icon) : vec2{};
+        const color ic   = lerp(c, m_->style_.accent_hover, emphasis[i] * 0.7f);
+        if (icons_only) {
+            if (has_icon) {
+                m_->dl_.text({cells[i].center().x - isize.x * 0.5f, cells[i].center().y - isize.y * 0.5f}, ic, tabs[i].icon, icon_font);
+            }
+        } else {
+            f32 x = cells[i].min.x + 16.0f;
+            if (has_icon) {
+                m_->dl_.text({x, cells[i].center().y - isize.y * 0.5f}, ic, tabs[i].icon, icon_font);
+                x += isize.x + 12.0f;
+            }
+            const std::string_view shown = visible_label(tabs[i].label);
+            label_draw({x, cells[i].center().y - (shown.empty() ? lh : label_size(f, shown).y) * 0.5f}, c, shown, f);
+        }
+    }
+
+    pop_id();
+    return changed;
 }
 
 } // namespace strata

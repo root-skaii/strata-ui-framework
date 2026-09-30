@@ -4,14 +4,15 @@
 
 #include "strata/types.hpp"
 
-#include <array>
+#include <span>
 #include <string_view>
 
 namespace strata::internal {
 
-// a widget's persistent slot, or a free / stale one (untouched for two frames)
-template <class T, std::size_t N>
-[[nodiscard]] T* state_for(std::array<T, N>& slots, id key, u64 frame) noexcept
+// a widget's persistent slot, or a free / stale one (untouched for two frames). all in use: slot 0 is taken over and
+// `full` is set, for the caller to report
+template <class T>
+[[nodiscard]] T* state_for(std::span<T> slots, id key, u64 frame, bool& full) noexcept
 {
     T* spare = nullptr;
     for (T& t : slots) {
@@ -23,6 +24,7 @@ template <class T, std::size_t N>
             spare = &t;
         }
     }
+    full    = spare == nullptr;
     T* slot = spare != nullptr ? spare : &slots[0];
     *slot            = {};
     slot->key        = key;

@@ -1,6 +1,8 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
+#include "widget_util.hpp"
 
 #include "strata/bidi.hpp"
 #include "dock_state.hpp"
@@ -29,10 +31,7 @@ namespace {
     return {buf.data(), r.ptr};
 }
 
-[[nodiscard]] constexpr color lighten(color c, f32 k) noexcept { return lerp(c, color{255, 255, 255, c.a}, k); }
-[[nodiscard]] constexpr color darken(color c, f32 k) noexcept  { return lerp(c, color{0, 0, 0, c.a}, k); }
 
-[[nodiscard]] constexpr f32 smooth(f32 t) noexcept { return t * t * (3.0f - 2.0f * t); }
 
 // wall clock for the frame timings in frame_stats; not used for anything the ui shows
 [[nodiscard]] f64 now_ms() noexcept
@@ -115,9 +114,10 @@ std::expected<context, font_error> context::create(const context_config& cfg)
     if (!atlas) {
         return std::unexpected{atlas.error()};
     }
-    context ctx{std::move(*atlas), cfg.theme, cfg.limits};
+    context ctx{std::move(*atlas), cfg.theme, cfg.limits, cfg.capacity};
     ctx.m_->max_atlas_size_ = cfg.max_atlas_size;
     ctx.m_->diag_           = cfg.diagnostics;
+    ctx.m_->strings_        = cfg.strings;
     ctx.m_->font_sources_.reserve(fonts.size());
     for (const font_config& f : fonts) {
         ctx.m_->font_sources_.push_back({std::string{f.face}, std::string{f.file}, f});
@@ -162,16 +162,24 @@ std::expected<void, font_error> context::build_font_atlas(f32 scale)
     return {};
 }
 
-context::context(font_atlas atlas, const strata::style& theme, draw_list_limits limits)
-    : m_{std::make_unique<impl>(std::move(atlas), theme, limits)}
+context::context(font_atlas atlas, const strata::style& theme, draw_list_limits limits, const capacity_config& capacity)
+    : m_{std::make_unique<impl>(std::move(atlas), theme, limits, capacity)}
 {}
 
-context::impl::impl(font_atlas atlas, const strata::style& theme, draw_list_limits limits)
+context::impl::impl(font_atlas atlas, const strata::style& theme, draw_list_limits limits, const capacity_config& capacity)
     : font_{std::move(atlas)}
     , dl_{limits}
     , style_{theme}
     , dock_(std::make_unique<internal::dock_state>())
-{}
+{
+    const u32 windows = std::clamp<u32>(capacity.windows, 1, max_windows);
+    win_.windows_.resize(windows);
+    win_.z_order_.resize(windows);
+    win_.frame_windows_.resize(windows);
+    tree_table_.tables_.resize(std::max<u32>(capacity.tables, 1));
+    children_cards_.children_.resize(std::max<u32>(capacity.children, 1));
+    children_cards_.cards_.resize(std::max<u32>(capacity.cards, 1));
+}
 
 context::context(context&&) noexcept = default;
 context& context::operator=(context&&) noexcept = default;
@@ -261,10 +269,12 @@ void context::begin_frame(const input_state& in)
     m_->input_.mouse_released_ = !down && m_->input_.mouse_down_;
     m_->input_.mouse_down_     = down;
 
-    m_->input_.mouse_right_pressed_ = in.mouse_down[1] && !m_->input_.mouse_right_down_;
-    m_->input_.mouse_right_down_    = in.mouse_down[1];
-    m_->input_.mouse_middle_pressed_ = in.mouse_down[2] && !m_->input_.mouse_middle_down_;
-    m_->input_.mouse_middle_down_    = in.mouse_down[2];
+    m_->input_.mouse_right_pressed_   = in.mouse_down[1] && !m_->input_.mouse_right_down_;
+    m_->input_.mouse_right_released_  = !in.mouse_down[1] && m_->input_.mouse_right_down_;
+    m_->input_.mouse_right_down_      = in.mouse_down[1];
+    m_->input_.mouse_middle_pressed_  = in.mouse_down[2] && !m_->input_.mouse_middle_down_;
+    m_->input_.mouse_middle_released_ = !in.mouse_down[2] && m_->input_.mouse_middle_down_;
+    m_->input_.mouse_middle_down_     = in.mouse_down[2];
     m_->input_.mod_ctrl_  = in.ctrl;
     m_->input_.mod_shift_ = in.shift;
     m_->input_.mod_alt_   = in.alt;
@@ -272,31 +282,35 @@ void context::begin_frame(const input_state& in)
     // a key_sequence's pending prefix is cleared one frame after a key failed to advance it, so every
     // sequence_pressed() call sharing that prefix sees the key before it is dropped. do not clear it inside
     // sequence_pressed: the first non-matching sequence would tear down a prefix a later one still matches
-    if (m_->hotkey_.seq_pending_count_ > 0 && m_->input_.pressed_key_ != 0 && !m_->hotkey_.seq_pending_touched_) {
+    if (m_->hotkey_.seq_pending_count_ > 0 && m_->input_.pressed_key_ != key::none && !m_->hotkey_.seq_pending_touched_) {
         m_->hotkey_.seq_pending_count_ = 0;
     }
     m_->hotkey_.seq_pending_touched_ = false;
 
     // key presses: this frame's join the queue, and the oldest one is this frame's press
-    const auto enqueue = [this](const key_press& p) noexcept {
-        if (p.key == 0) { return; }
-        if (m_->input_.press_queued_ < m_->input_.press_queue_.size()) { m_->input_.press_queue_[m_->input_.press_queued_++] = p; }
-    };
-    if (in.press_count > 0) {
-        for (u32 i = 0; i < std::min(in.press_count, max_key_presses); ++i) { enqueue(in.presses[i]); }
-    } else {
-        enqueue({in.pressed_key, in.ctrl, in.shift, in.alt});
+    // (text fields and lists read this frame's presses directly: the editing keys, and Ctrl + A / C / V / X / Z / Y)
+    const u32 key_count = std::min(in.key_count, max_key_events);
+    m_->input_.key_count_ = 0;
+    for (u32 i = 0; i < key_count; ++i) {
+        const key_event& e = in.keys[i];
+        if (e.k == key::none) { continue; }
+        if (m_->input_.press_queued_ < m_->input_.press_queue_.size()) { m_->input_.press_queue_[m_->input_.press_queued_++] = e; }
+        const bool editing = e.k == key::left || e.k == key::right || e.k == key::up || e.k == key::down || e.k == key::home ||
+                             e.k == key::end || e.k == key::backspace || e.k == key::del || e.k == key::enter ||
+                             e.k == key::escape || e.k == key::tab || e.k == key::page_up || e.k == key::page_down;
+        const bool shortcut = e.ctrl && (e.k == key::a || e.k == key::c || e.k == key::v || e.k == key::x || e.k == key::z || e.k == key::y);
+        if (editing || shortcut) { m_->input_.keys_[m_->input_.key_count_++] = e; }
     }
     if (m_->input_.press_queued_ > 0) {
-        const key_press p = m_->input_.press_queue_[0];
+        const key_event p = m_->input_.press_queue_[0];
         std::copy(m_->input_.press_queue_.begin() + 1, m_->input_.press_queue_.begin() + m_->input_.press_queued_, m_->input_.press_queue_.begin());
         --m_->input_.press_queued_;
-        m_->input_.pressed_key_ = p.key;
+        m_->input_.pressed_key_ = p.k;
         m_->input_.press_ctrl_  = p.ctrl;
         m_->input_.press_shift_ = p.shift;
         m_->input_.press_alt_   = p.alt;
     } else {
-        m_->input_.pressed_key_ = 0;
+        m_->input_.pressed_key_ = key::none;
         m_->input_.press_ctrl_  = in.ctrl;
         m_->input_.press_shift_ = in.shift;
         m_->input_.press_alt_   = in.alt;
@@ -305,8 +319,6 @@ void context::begin_frame(const input_state& in)
     m_->input_.ime_len_     = std::min<u32>(in.ime_len, static_cast<u32>(in.ime.size()));
     m_->input_.ime_cursor_  = std::min(in.ime_cursor, m_->input_.ime_len_);
     m_->edit_.ime_want_    = false;
-    m_->input_.keys_      = in.keys;
-    m_->input_.key_count_ = std::min(in.key_count, max_key_events);
     m_->input_.typed_     = in.typed;
     m_->input_.typed_len_ = std::min(in.typed_len, max_typed_bytes);
 
@@ -340,6 +352,9 @@ void context::begin_frame(const input_state& in)
     m_->focus_seen_    = false;
     m_->hotkey_.hotkey_seen_   = false;
     m_->children_cards_.child_depth_   = 0;
+    m_->child_base_     = 0;
+    m_->nest_depth_     = 0;
+    m_->nest_overflow_  = 0;
     m_->children_cards_.card_depth_    = 0;
     m_->hover_key_prev_ = m_->hover_key_cur_;
     m_->hover_key_cur_  = 0;
@@ -448,7 +463,32 @@ void context::begin_frame(const input_state& in)
 void context::end_frame()
 {
     const f64 end_start = now_ms();
-    assert(m_->cur_ == nullptr && "missing end_window");
+    // unbalanced begin / end: reported once per kind. the window is closed here (it would otherwise swallow the next
+    // frame); begin_frame resets the other stacks, so only this frame's later widgets were placed wrong.
+    const auto unbalanced = [&](u32 depth, const char* missing) {
+        if (depth == 0) { return; }
+        char buf[128];
+        const int n = std::snprintf(buf, sizeof buf, "%s missing at end_frame (%u open)", missing, depth);
+        diagnose(diagnostic_kind::misuse, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
+                 hash_id(missing));
+    };
+    unbalanced(m_->popup_.popup_depth_, "end_popup()");
+    unbalanced(m_->menu_.menu_depth_, "end_menu() / end_popup_menu()");
+    unbalanced(m_->modal_.modal_depth_, "end_modal()");
+    unbalanced(m_->children_cards_.child_depth_, "end_child()");
+    unbalanced(m_->children_cards_.card_depth_, "end_card()");
+    unbalanced(m_->tree_table_.table_depth_, "end_table()");
+    unbalanced(m_->tree_table_.tree_depth_, "tree_pop()");
+    unbalanced(m_->style_stack_.font_depth(), "pop_font()");
+    unbalanced(m_->disabled_count_, "end_disabled()");
+    unbalanced(m_->gutter_depth_, "pop_right_gutter()");
+    if (m_->cur_ != nullptr) {
+        unbalanced(1, "end_window()");
+        while (m_->cur_ != nullptr) { end_window(); } // (a nested window resumes its parent)
+    }
+    unbalanced(m_->ids_.depth(), "pop_id()");
+    m_->tree_table_.tree_depth_ = 0;
+    m_->popup_.popup_depth_     = 0;
     dock_end_frame();
     toast_end_frame();
     // a menu level not built this frame closes along with everything above it
@@ -486,7 +526,6 @@ void context::end_frame()
             break;
         }
     }
-    assert(m_->popup_.popup_depth_ == 0 && "missing end_popup");
     if (m_->hotkey_.hotkey_capture_ != 0 && !m_->hotkey_.hotkey_seen_) {
         m_->hotkey_.hotkey_capture_ = 0;
     }
@@ -615,40 +654,6 @@ f32 context::animate(std::string_view key, f32 target, f32 speed)
     return a.custom;
 }
 
-context::window_state* context::window_for(id key, vec2 pos, f32 width) noexcept
-{
-    window_state* free_slot = nullptr;
-    for (window_state& w : m_->win_.windows_) {
-        if (w.key == key) {
-            return &w;
-        }
-        if (free_slot == nullptr && w.key == 0) {
-            free_slot = &w;
-        }
-    }
-    if (free_slot == nullptr) {
-        // table full: the least recently shown window gives up its slot (it restarts where its code places it). exempt:
-        // docked windows and floating docks (the layout refers to them), open modals, anything shown this or last frame
-        const auto owns_space = [&](id k) {
-            return std::ranges::any_of(m_->dock_->spaces, [k](const dock_space& sp) { return sp.key != 0 && sp.owner == k; });
-        };
-        const auto modal_open = [&](id k) {
-            return std::find(m_->modal_.modal_stack_.begin(), m_->modal_.modal_stack_.begin() + m_->modal_.modal_count_, k) != m_->modal_.modal_stack_.begin() + m_->modal_.modal_count_;
-        };
-        for (window_state& w : m_->win_.windows_) {
-            if (w.dock != 0 || w.last_frame + 1 >= m_->frame_ || owns_space(w.key) || modal_open(w.key)) { continue; }
-            if (free_slot == nullptr || w.last_frame < free_slot->last_frame) { free_slot = &w; }
-        }
-        if (free_slot == nullptr) {
-            report_limit("windows (max_windows)", max_windows);
-            return nullptr;
-        }
-        forget_window(free_slot->key);
-    }
-    *free_slot = {.key = key, .pos = pos, .width = width};
-    return free_slot;
-}
-
 f32 context::scroll_step(f32 unit, f32 page) const noexcept
 {
     const f32 lines = m_->input_.wheel_lines_;
@@ -720,51 +725,6 @@ void context::track_edit(id session, bool changed, bool engaged) noexcept
     m_->edit_item_  = m_->last_item_key_;
 }
 
-// references to a window by key besides its slot: stacking order and keyboard / hover / focus trackers
-void context::forget_window(id key) noexcept
-{
-    if (const u32 z = z_index(key); z != no_z) {
-        std::copy(m_->win_.z_order_.begin() + z + 1, m_->win_.z_order_.begin() + m_->win_.z_count_, m_->win_.z_order_.begin() + z);
-        --m_->win_.z_count_;
-    }
-    for (id* k : {&m_->win_.focused_window_, &m_->key_window_, &m_->win_.hovered_window_prev_, &m_->win_.hovered_window_cur_}) {
-        if (*k == key) { *k = 0; }
-    }
-}
-
-context::window_state* context::window_find(id key) noexcept
-{
-    for (window_state& w : m_->win_.windows_) {
-        if (w.key == key) {
-            return &w;
-        }
-    }
-    return nullptr;
-}
-
-const context::window_state* context::window_find(id key) const noexcept
-{
-    for (const window_state& w : m_->win_.windows_) {
-        if (w.key == key) {
-            return &w;
-        }
-    }
-    return nullptr;
-}
-
-rect context::window_rect(std::string_view title) const noexcept
-{
-    const window_state* w = window_find(hash_id(title, m_->ids_.root()));
-    if (w == nullptr) {
-        return {};
-    }
-    const f32 height = w->collapsed ? w->title_h
-                     : w->height > 0.0f ? w->height
-                     : w->capped_h > 0.0f ? w->capped_h
-                                          : w->title_h + 2.0f * m_->style_.padding + w->content_h;
-    return rect::from_size(w->pos, {w->width, height});
-}
-
 void context::push_id(std::string_view s) noexcept
 {
     if (!m_->ids_.push(s)) {
@@ -802,30 +762,6 @@ void context::pop_font() noexcept
 }
 
 // layers: window stacking and popups ---------------------------------------------
-
-u32 context::z_index(id key) const noexcept
-{
-    for (u32 i = 0; i < m_->win_.z_count_; ++i) {
-        if (m_->win_.z_order_[i] == key) {
-            return i;
-        }
-    }
-    return no_z;
-}
-
-void context::bring_to_front(id key) noexcept
-{
-    const u32 i = z_index(key);
-    if (i == no_z) {
-        if (m_->win_.z_count_ < max_windows) {
-            m_->win_.z_order_[m_->win_.z_count_++] = key;
-        } else {
-            report_limit("window stacking order (max_windows)", max_windows);
-        }
-        return;
-    }
-    std::rotate(m_->win_.z_order_.begin() + i, m_->win_.z_order_.begin() + i + 1, m_->win_.z_order_.begin() + m_->win_.z_count_);
-}
 
 // closes the current run of draw commands (if it produced any) and starts a new one
 void context::switch_run(u32 owner) noexcept
@@ -1271,55 +1207,61 @@ void context::end_disabled() noexcept
     }
 }
 
-bool context::key_pressed(u32 virtual_key, bool ctrl, bool shift, bool alt) const noexcept
+bool context::key_pressed(key k, bool ctrl, bool shift, bool alt) const noexcept
 {
-    if (virtual_key == 0 || m_->input_.pressed_key_ != virtual_key || m_->hotkey_.hotkey_capture_ != 0) {
+    if (k == key::none || m_->input_.pressed_key_ != k || m_->hotkey_.hotkey_capture_ != 0) {
         return false;
     }
     if (m_->input_.press_ctrl_ != ctrl || m_->input_.press_shift_ != shift || m_->input_.press_alt_ != alt) {
         return false;
     }
-    // a text field owns the plain keys while it is being typed into, and its own Ctrl shortcuts
-    if (want_text_input()) {
-        if (!ctrl && !alt) { return false; }
-        if (ctrl && !alt && !shift &&
-            (virtual_key == 'A' || virtual_key == 'C' || virtual_key == 'V' || virtual_key == 'X' ||
-             virtual_key == 'Z' || virtual_key == 'Y')) {
-            return false;
-        }
+    // a text field being typed into owns what types, moves the caret or deletes, and its own Ctrl shortcuts
+    if (want_text_input() && !alt) {
+        const auto v = static_cast<u32>(k);
+        const bool caret = k == key::left || k == key::right || k == key::home || k == key::end || k == key::backspace ||
+                           k == key::del;
+        const bool types = !ctrl && (k == key::space || (v >= 0x30 && v <= 0x39) || (v >= 0x41 && v <= 0x5a) ||
+                                     (v >= 0x60 && v <= 0x6f) || (v >= 0xba && v <= 0xc0) || (v >= 0xdb && v <= 0xde));
+        const bool edit_shortcut = ctrl && !shift && (k == key::a || k == key::c || k == key::v || k == key::x || k == key::z || k == key::y);
+        if (caret || types || edit_shortcut) { return false; }
     }
     return true;
 }
 
-bool context::key_down(u32 virtual_key) const noexcept
+bool context::key_down(key k) const noexcept
 {
-    if (virtual_key >= 256 || want_text_input()) {
+    if (want_text_input()) {
         return false;
     }
-    return (m_->input_.keys_held_[virtual_key >> 3] & (1u << (virtual_key & 7))) != 0;
+    const auto i = static_cast<u32>(k);
+    return (m_->input_.keys_held_[i >> 3] & (1u << (i & 7))) != 0;
 }
 
-bool context::mouse_down(int button) const noexcept
+bool context::mouse_down(mouse_button b) const noexcept
 {
-    switch (button) {
-    case 1:  return m_->input_.mouse_right_down_;
-    case 2:  return m_->input_.mouse_middle_down_;
-    default: return m_->input_.mouse_down_;
+    switch (b) {
+    case mouse_button::right:  return m_->input_.mouse_right_down_;
+    case mouse_button::middle: return m_->input_.mouse_middle_down_;
+    default:                   return m_->input_.mouse_down_;
     }
 }
 
-bool context::mouse_clicked(int button) const noexcept
+bool context::mouse_clicked(mouse_button b) const noexcept
 {
-    switch (button) {
-    case 1:  return m_->input_.mouse_right_pressed_;
-    case 2:  return m_->input_.mouse_middle_pressed_;
-    default: return m_->input_.mouse_pressed_;
+    switch (b) {
+    case mouse_button::right:  return m_->input_.mouse_right_pressed_;
+    case mouse_button::middle: return m_->input_.mouse_middle_pressed_;
+    default:                   return m_->input_.mouse_pressed_;
     }
 }
 
-bool context::mouse_released(int button) const noexcept
+bool context::mouse_released(mouse_button b) const noexcept
 {
-    return button == 0 && m_->input_.mouse_released_;
+    switch (b) {
+    case mouse_button::right:  return m_->input_.mouse_right_released_;
+    case mouse_button::middle: return m_->input_.mouse_middle_released_;
+    default:                   return m_->input_.mouse_released_;
+    }
 }
 
 bool context::window_focused() const noexcept
@@ -1331,7 +1273,7 @@ bool context::window_focused() const noexcept
     return m_->key_window_ != 0 ? m_->key_window_ == m_->cur_window_ : m_->win_.focused_window_ == m_->cur_window_;
 }
 
-bool context::is_window_focused(std::string_view title) const noexcept
+bool context::window_focused(std::string_view title) const noexcept
 {
     const id key = hash_id(title, 0);
     return m_->key_window_ != 0 ? m_->key_window_ == key : m_->win_.focused_window_ == key;
@@ -1359,26 +1301,6 @@ bool context::copy_text(std::string_view text) const
 bool context::paste_text(std::string& out) const
 {
     return m_->clipboard_.get != nullptr && m_->clipboard_.get(m_->clipboard_.user, out);
-}
-
-bool context::selection_click(selection_state& sel, int index) const
-{
-    if (m_->input_.mod_shift_ && sel.anchor() >= 0) {
-        const int from = sel.anchor();
-        if (!m_->input_.mod_ctrl_) { sel.clear(); }
-        sel.add_range(std::min(from, index), std::max(from, index));
-        sel.set_anchor(from); // the range keeps growing from where it started
-        return true;
-    }
-    if (m_->input_.mod_ctrl_) {
-        sel.toggle(index);
-        return true;
-    }
-    if (sel.size() == 1 && sel.contains(index)) {
-        return false; // already the only one selected
-    }
-    sel.select_one(index);
-    return true;
 }
 
 // slot for the next accessory of the row just submitted, right to left inside the scrollbar inset. false with no
@@ -1458,7 +1380,7 @@ bool context::row_accessory_button(font_id icon_font, std::string_view icon, std
     if (!accessory_slot(side, box)) {
         return false;
     }
-    const id key = hash_id(icon, hash_id(id_extra, hash_id("##acc", m_->accessory_.accessory_row_)));
+    const id key = hash_id(icon, hash_id(id_extra, part_id(part::accessory_button, m_->accessory_.accessory_row_)));
     const interaction in = interact(key, box);
     const press_anim  a  = button_anim(key, in);
     if (a.hover > 0.01f || a.active > 0.01f) {
@@ -1483,7 +1405,7 @@ bool context::row_accessory_checkbox(std::string_view id_extra, bool& value, f32
     if (!accessory_slot(side, box, inset)) {
         return false;
     }
-    const id key = hash_id(id_extra, hash_id("##accbox", m_->accessory_.accessory_row_));
+    const id key = hash_id(id_extra, part_id(part::accessory_checkbox, m_->accessory_.accessory_row_));
     const interaction in = interact(key, box);
     if (in.pressed) { value = !value; }
 
@@ -1512,7 +1434,7 @@ bool context::row_accessory_toggle(std::string_view id_extra, bool& value)
     if (!accessory_slot(h * 1.9f, box)) {
         return false;
     }
-    const id key = hash_id(id_extra, hash_id("##accsw", m_->accessory_.accessory_row_));
+    const id key = hash_id(id_extra, part_id(part::accessory_toggle, m_->accessory_.accessory_row_));
     const interaction in = interact(key, box);
     if (in.pressed) { value = !value; }
 
@@ -1618,12 +1540,7 @@ f32 context::label_clipped(vec2 pos, f32 max_width, color c, std::string_view s,
     return used + (max_width - budget);
 }
 
-// windows ------------------------------------------------------------------
-
-bool context::begin_window(std::string_view title, vec2 initial_pos, f32 width)
-{
-    return begin_window(title, initial_pos, vec2{width, 0.0f}, window_flags::none);
-}
+// scrollbar thumbs ---------------------------------------------------------
 
 // one axis of a scrollbar thumb; `along` and everything else are measured on the track's axis.
 // the wrappers below are all that differs between vertical and horizontal.
@@ -1650,368 +1567,6 @@ f32 context::thumb_drag_x(const interaction& in, f32& grab, f32 thumb_x, f32 thu
                           f32 max_scroll, f32 scroll) const noexcept
 {
     return thumb_drag_along(m_->input_.mouse_.x, in, grab, thumb_x, thumb_w, track_left, travel, max_scroll, scroll);
-}
-
-bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, window_flags flags)
-{
-    assert(m_->cur_ == nullptr && "nested windows are not supported");
-
-    const id wid = hash_id(title, m_->ids_.root());
-    window_state* st = window_for(wid, initial_pos, size.x);
-    if (st == nullptr) {
-        return false;
-    }
-    if (st->content_h > 0.0f) { apply_pending_scroll(wid, st->scroll, nullptr); } // (once its content has been measured)
-    if (!st->size_set) {
-        // (the state can exist before the first begin_window when dock_window() got there first)
-        st->pos      = initial_pos;
-        st->width    = std::max(st->width, size.x);
-        st->height   = std::max(size.y, 0.0f);
-        st->size_set = true;
-        if (st->dock != 0) {
-            st->float_size = {st->width, st->height};
-        }
-    }
-    st->last_frame = m_->frame_;
-    st->passive    = has_flag(flags, window_flags::no_inputs);
-    if (st->passive) { // nothing to grab, move, resize or dock
-        constexpr u16 drop = static_cast<u16>(window_flags::resizable) | static_cast<u16>(window_flags::drag_by_body) | static_cast<u16>(window_flags::dockable);
-        flags = static_cast<window_flags>(static_cast<u16>(flags) & ~drop) | window_flags::no_move | window_flags::no_collapse;
-    }
-    const bool is_menubar   = std::exchange(m_->next_window_menubar_, false);
-    const u32  modal_level  = std::exchange(m_->modal_.next_window_modal_level_, 0);
-    st->menubar     = is_menubar;
-    st->modal_level = modal_level;
-    if (is_menubar) {
-        st->pos    = {0.0f, 0.0f};
-        st->width  = m_->display_.x;
-        st->height = size.y;
-    }
-    { // the visible part of the title, for the tabs of a dock node
-        const std::string_view vt = visible_label(title);
-        std::size_t n = std::min(vt.size(), st->title.size() - 1);
-        while (n > 0 && n < vt.size() && is_continuation(vt[n])) { --n; }
-        std::copy_n(vt.data(), n, st->title.data());
-        st->title_len = static_cast<u8>(n);
-    }
-
-    // docked: the dock node sets position and size; the tab bar replaces the title bar
-    const dock_node*  node  = nullptr;
-    const dock_space* space = nullptr;
-    if (st->dock != 0 && st->dock <= max_dock_nodes && has_flag(flags, window_flags::dockable)) {
-        const dock_node& n = m_->dock_->nodes[st->dock - 1];
-        if (n.used && n.leaf() && n.space < max_dock_spaces && m_->dock_->spaces[n.space].set) {
-            node  = &n;
-            space = &m_->dock_->spaces[n.space];
-        }
-    }
-    const bool docked     = node != nullptr;
-    const bool hidden_tab = docked && (node->active != wid || space->hidden);
-    st->docked_now = docked;
-    st->dock_owner = docked ? space->owner : id{};
-    if (docked) {
-        constexpr u16 strip = static_cast<u16>(window_flags::resizable) | static_cast<u16>(window_flags::drag_by_body);
-        constexpr u16 add   = static_cast<u16>(window_flags::no_title_bar) | static_cast<u16>(window_flags::no_move);
-        flags = static_cast<window_flags>((static_cast<u16>(flags) & ~strip) | add);
-        st->pos       = node->shown_content.min;
-        st->width     = node->shown_content.width();
-        st->height    = node->shown_content.height();
-        st->collapsed = false;
-    }
-    st->resizable = has_flag(flags, window_flags::resizable);
-
-    const bool has_title   = !has_flag(flags, window_flags::no_title_bar);
-    const bool can_collapse = has_title && !has_flag(flags, window_flags::no_collapse);
-    const bool can_move    = !has_flag(flags, window_flags::no_move);
-    const bool background  = !has_flag(flags, window_flags::no_background);
-    if (!can_collapse) {
-        st->collapsed = false;
-    }
-    m_->cur_flags_ = flags;
-
-    push_id(title);
-    m_->cur_        = st;
-    m_->cur_window_ = wid;
-
-    if (z_index(wid) == no_z) {
-        bring_to_front(wid); // first appearance: on top
-    }
-    // a press on the topmost window under the pointer raises it (docked windows stay behind)
-    if (m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && (!docked || st->dock_owner != 0)) {
-        bring_to_front(docked ? st->dock_owner : wid); // (a window in a floating dock raises the whole dock)
-    }
-    // ... and focuses it, docked windows too (without restacking), so panel shortcuts know which panel is active
-    if (m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && !st->menubar && m_->modal_.modal_top_prev_ == 0) {
-        m_->key_window_ = wid;
-    }
-
-    // every window's draw commands form their own run so the windows can be restacked
-    if (m_->win_.frame_window_count_ < max_windows) {
-        m_->win_.frame_windows_[m_->win_.frame_window_count_] = st;
-        switch_run(m_->win_.frame_window_count_);
-        ++m_->win_.frame_window_count_;
-    }
-
-    const f32 lh      = m_->font_.line_height(0);
-    const f32 title_h = has_title ? lh + 10.0f : 0.0f;
-    const f32 pad     = is_menubar ? 0.0f : m_->style_.padding;
-    st->title_h       = title_h;
-
-    // collapse arrow + title drag use last frame's geometry
-    const rect arrow_hit = rect::from_size(st->pos, {title_h, title_h});
-    const rect drag_hit  = {{st->pos.x + (can_collapse ? title_h : 0.0f), st->pos.y}, {st->pos.x + st->width, st->pos.y + title_h}};
-
-    if (can_collapse && interact(hash_id("##collapse", wid), arrow_hit).pressed) {
-        st->collapsed = !st->collapsed;
-    }
-    interaction drag_in;
-    if (has_title && can_move) {
-        drag_in = interact(hash_id("##drag", wid), drag_hit);
-        if (drag_in.held) {
-            st->pos += m_->input_.mouse_delta_;
-        }
-    }
-    const id   body_drag     = hash_id("##bodydrag", wid);
-    const bool body_dragging = m_->active_ == body_drag && m_->input_.mouse_down_ && can_move;
-    if (body_dragging) {
-        st->pos += m_->input_.mouse_delta_;
-    }
-    if (!docked && m_->dock_->any_set && has_flag(flags, window_flags::dockable) && (drag_in.held || body_dragging)) {
-        if (key_pressed(key::escape)) { m_->dock_->void_key = wid; } // Esc: this drag does not dock
-        if (m_->dock_->void_key != wid && !m_->input_.mod_shift_) {             // ... and neither does one with Shift held
-            m_->dock_->drag_win   = wid;
-            const f32 shown_h = st->height > 0.0f ? st->height : title_h + 2.0f * pad + st->content_h;
-            m_->dock_->target_cur = dock_pick(m_->input_.mouse_, no_node, {st->width, shown_h});
-        }
-    }
-
-    // resizing: the right edge, the bottom edge and the corner (last frame's geometry)
-    if (st->resizable && !st->collapsed) {
-        const f32 prev_h = st->height > 0.0f ? st->height
-                         : st->capped_h > 0.0f ? st->capped_h
-                                               : title_h + pad + st->content_h + pad;
-        const f32 grip   = 6.0f;
-        const f32 corner = 16.0f;
-        const f32 x1 = st->pos.x + st->width;
-        const f32 y1 = st->pos.y + prev_h;
-
-        const interaction right  = interact(hash_id("##rsz_r", wid), {{x1 - grip, st->pos.y + title_h}, {x1, y1 - corner}});
-        const interaction bottom = interact(hash_id("##rsz_b", wid), {{st->pos.x, y1 - grip}, {x1 - corner, y1}});
-        const interaction edge   = interact(hash_id("##rsz_c", wid), {{x1 - corner, y1 - corner}, {x1, y1}});
-
-        if (right.hovered || right.held)   { m_->cursor_ = cursor_kind::resize_ew; }
-        if (bottom.hovered || bottom.held) { m_->cursor_ = cursor_kind::resize_ns; }
-        if (edge.hovered || edge.held)     { m_->cursor_ = cursor_kind::resize_nwse; }
-
-        const f32 max_w = m_->display_.x > 0.0f ? m_->display_.x : 4096.0f;
-        const f32 max_h = m_->display_.y > 0.0f ? m_->display_.y : 4096.0f;
-        if (right.held || edge.held) {
-            st->width = std::clamp(st->width + m_->input_.mouse_delta_.x, 150.0f, max_w);
-        }
-        if (bottom.held || edge.held) {
-            st->height = std::clamp(prev_h + m_->input_.mouse_delta_.y, title_h + 48.0f, max_h); // a fixed height from now on
-        }
-    }
-
-    if (!docked && m_->display_.x > 0 && m_->display_.y > 0) {
-        st->pos.x = std::clamp(st->pos.x, 48.0f - st->width, m_->display_.x - 48.0f);
-        st->pos.y = std::clamp(st->pos.y, 0.0f, m_->display_.y - std::max(title_h, 24.0f));
-    }
-
-    const bool fixed_h = st->height > 0.0f;
-    // an auto-height window does not grow past the bottom of the display: it scrolls instead
-    st->capped_h = 0.0f;
-    if (!fixed_h && !docked && !st->menubar && !st->collapsed && m_->display_.y > 0.0f) {
-        const f32 wanted = title_h + pad + st->content_h + pad;
-        const f32 room   = std::max(m_->display_.y - st->pos.y - 8.0f, title_h + 48.0f);
-        if (wanted > room) { st->capped_h = room; }
-    }
-    const bool scrolls = fixed_h || st->capped_h > 0.0f;
-    const f32  height  = st->collapsed ? title_h
-                       : fixed_h ? st->height
-                       : scrolls ? st->capped_h
-                                 : title_h + pad + st->content_h + pad;
-    const rect frame   = rect::from_size(st->pos, {st->width, height});
-    const rect bar     = rect::from_size(st->pos, {st->width, title_h});
-    m_->cur_frame_ = frame;
-
-    // a modal takes the input from everything else
-    const bool input_blocked = m_->modal_.modal_top_prev_ != 0 && wid != m_->modal_.modal_top_prev_;
-    if (frame.contains(m_->input_.mouse_) && !hidden_tab && !input_blocked && !st->passive) {
-        // a floating window beats a docked one, the menu bar beats both, a modal beats them all
-        const bool in_float = docked && st->dock_owner != 0;
-        const u32 rank = modal_level != 0 ? 0x30000u + modal_level * 0x10000u : (is_menubar ? 0x20000u : (docked && !in_float ? 0u : 0x10000u));
-        u32 zi = z_index(in_float ? st->dock_owner : wid);
-        if (zi == no_z) { zi = 0; }
-        const u32 z = zi * 2 + (in_float ? 1u : 0u) + rank; // a window docked in a floating dock is just above that dock
-        if (m_->win_.hovered_z_ == no_z || z > m_->win_.hovered_z_) {
-            m_->win_.hovered_window_cur_ = wid; // highest z under the pointer wins
-            m_->win_.hovered_z_          = z;
-            m_->hovered_docked_cur_ = docked;
-        }
-    }
-
-    // a window carried over a dock target turns see-through so the target pane shows
-    st->ghost = approach(st->ghost, !docked && m_->dock_->drag_prev == wid && m_->dock_->target_prev.valid ? 1.0f : 0.0f);
-    if (st->ghost > 0.01f) {
-        m_->dl_.push_alpha(1.0f - 0.45f * st->ghost);
-        m_->window_faded_ = true;
-    }
-
-    const f32 round = m_->style_.rounding;
-
-    if (docked) {
-        if (background && !hidden_tab) {
-            m_->dl_.rect_filled(frame, m_->style_.window_bg);
-        }
-    } else if (background) {
-        const bool acrylic = has_flag(flags, window_flags::acrylic);
-        // body: fill + soft drop shadow in a single shader quad
-        shape_style body;
-        body.radius        = radii(round);
-        body.fill_top      = m_->style_.window_bg;
-        body.fill_bottom   = m_->style_.window_bg;
-        body.shadow        = m_->style_.shadow;
-        body.shadow_blur   = m_->style_.shadow_blur;
-        body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.45f};
-        if (acrylic) { // the shadow on its own, then the blurred frame with the tint on top
-            body.fill_top = body.fill_bottom = color{0, 0, 0, 0};
-            m_->dl_.shape(frame, body);
-            m_->dl_.backdrop(frame, m_->style_.blur_radius, m_->style_.window_bg.scaled_alpha(m_->style_.acrylic_alpha), radii(round),
-                         m_->style_.acrylic_noise, m_->style_.acrylic_saturation, m_->style_.acrylic_brightness);
-        } else {
-            m_->dl_.shape(frame, body);
-        }
-
-        if (has_title) {
-            shape_style head;
-            head.radius      = radii(round, st->collapsed ? corners::all : corners::top);
-            head.fill_top    = lighten(m_->style_.title_bg, m_->style_.gradient * 0.8f);
-            head.fill_bottom = m_->style_.title_bg;
-            if (acrylic) {
-                head.fill_top    = head.fill_top.scaled_alpha(0.55f);
-                head.fill_bottom = head.fill_bottom.scaled_alpha(0.55f);
-            }
-            m_->dl_.shape(bar, head);
-            if (!st->collapsed) {
-                m_->dl_.rect_filled({{bar.min.x, bar.max.y - 1.0f}, bar.max}, m_->style_.border);
-            }
-        }
-
-        shape_style edge;
-        edge.radius       = radii(round);
-        edge.border       = m_->style_.border;
-        edge.border_width = m_->style_.border_width;
-        m_->dl_.shape(frame, edge);
-    }
-
-    if (st->resizable && !st->collapsed) {
-        const bool   hot = m_->cursor_ == cursor_kind::resize_nwse;
-        const color  gc  = hot ? m_->style_.accent_hover : m_->style_.text_dim.scaled_alpha(0.55f);
-        const vec2   br  = frame.max;
-        for (f32 k = 0.0f; k < 3.0f; ++k) {
-            const f32 d = 4.0f + k * 4.0f;
-            m_->dl_.line({br.x - 3.0f, br.y - d - 1.0f}, {br.x - d - 1.0f, br.y - 3.0f}, gc, 1.5f);
-        }
-    }
-
-    if (has_title) {
-        if (can_collapse) {
-            const vec2 c = arrow_hit.center();
-            const f32  s = 4.0f;
-            if (st->collapsed) {
-                m_->dl_.triangle_filled({c.x - s * 0.5f, c.y - s}, {c.x + s * 0.75f, c.y}, {c.x - s * 0.5f, c.y + s}, m_->style_.text_dim);
-            } else {
-                m_->dl_.triangle_filled({c.x - s, c.y - s * 0.5f}, {c.x + s, c.y - s * 0.5f}, {c.x, c.y + s * 0.75f}, m_->style_.text_dim);
-            }
-        }
-        m_->dl_.text({st->pos.x + (can_collapse ? title_h : pad), st->pos.y + (title_h - lh) * 0.5f},
-                 wid == m_->win_.focused_window_ || m_->win_.focused_window_ == 0 ? m_->style_.text : m_->style_.text_dim, visible_label(title), 0);
-    }
-
-    // content lives below the title bar; fixed-height windows scroll
-    if (st->collapsed) {
-        m_->dl_.push_clip(bar);
-    } else if (hidden_tab) {
-        m_->dl_.push_clip({frame.min, frame.min}); // an inactive tab: nothing of it is drawn
-    } else {
-        m_->dl_.push_clip({{frame.min.x, frame.min.y + title_h}, frame.max});
-    }
-
-    if (scrolls) {
-        const f32 max_scroll = std::max(0.0f, st->content_h + 2.0f * pad - (height - title_h));
-        st->scroll = std::clamp(st->scroll, 0.0f, max_scroll);
-    } else {
-        st->scroll = 0.0f;
-    }
-
-    m_->layout_        = {};
-    m_->layout_.origin = {st->pos.x + pad, st->pos.y + title_h + pad - st->scroll};
-    m_->layout_.width  = st->width - 2.0f * pad - (scrolls && st->overflow ? 10.0f : 0.0f);
-    m_->layout_.bound_bottom = fixed_h ? st->pos.y + height - pad : 0.0f;
-    return !st->collapsed && !hidden_tab;
-}
-
-void context::end_window()
-{
-    if (m_->cur_ == nullptr) {
-        return;
-    }
-    window_state& w = *m_->cur_;
-    const bool has_title = !has_flag(m_->cur_flags_, window_flags::no_title_bar);
-    if (!w.collapsed) {
-        w.content_h = m_->layout_.first ? 0.0f : m_->layout_.bottom - m_->layout_.origin.y;
-
-        const f32 shown_h = w.height > 0.0f ? w.height : w.capped_h;
-        if (shown_h > 0.0f) {
-            const f32 title_h = has_title ? m_->font_.line_height(0) + 10.0f : 0.0f;
-            const f32 pad     = w.menubar ? 0.0f : m_->style_.padding;
-            const f32 body_h  = shown_h - title_h;
-            const f32 full_h  = w.content_h + 2.0f * pad;
-            w.overflow = full_h > body_h + 0.5f;
-
-            if (w.overflow) {
-                const f32  max_scroll = full_h - body_h;
-                const rect body = {{w.pos.x, w.pos.y + title_h}, {w.pos.x + w.width, w.pos.y + shown_h}};
-
-                if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(body)) {
-                    w.scroll = std::clamp(w.scroll - wheel_scroll(m_->font_.line_height(0), body_h), 0.0f, max_scroll);
-                    m_->wheel_consumed_ = true;
-                }
-
-                const f32  track_top = body.min.y + 6.0f;
-                const f32  track_h = body_h - 12.0f;
-                const f32  thumb_h = std::max(20.0f, track_h * body_h / full_h);
-                f32 thumb_y = track_top + (track_h - thumb_h) * (w.scroll / max_scroll);
-                const interaction in = interact(hash_id("##wscroll", m_->cur_window_), {{body.max.x - 13.0f, track_top}, {body.max.x - 2.0f, track_top + track_h}});
-                w.scroll = thumb_drag(in, w.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, w.scroll);
-                thumb_y  = track_top + (track_h - thumb_h) * (w.scroll / max_scroll);
-                const rect thumb = {{body.max.x - 10.0f, thumb_y}, {body.max.x - 5.0f, thumb_y + thumb_h}};
-                shape_style bar;
-                bar.radius      = radii(2.5f);
-                bar.fill_top    = m_->style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.45f);
-                bar.fill_bottom = bar.fill_top;
-                m_->dl_.shape(thumb, bar);
-            }
-        }
-    }
-
-    // an empty spot of a drag_by_body window starts moving the window
-    if (has_flag(m_->cur_flags_, window_flags::drag_by_body) && !has_flag(m_->cur_flags_, window_flags::no_move) &&
-        m_->input_.mouse_pressed_ && m_->active_ == 0 && !m_->swallow_press_ && m_->win_.hovered_window_prev_ == m_->cur_window_ &&
-        m_->cur_frame_.contains(m_->input_.mouse_) && !m_->menu_.menu_hit_prev_ && !m_->popup_.popup_covers(m_->input_.mouse_)) {
-        m_->active_ = hash_id("##bodydrag", m_->cur_window_);
-    }
-
-    m_->dl_.pop_clip();
-    if (m_->window_faded_) {
-        m_->dl_.pop_alpha();
-        m_->window_faded_ = false;
-    }
-    switch_run(run_base);
-    pop_id();
-    m_->cur_        = nullptr;
-    m_->cur_window_ = 0;
 }
 
 // basic widgets ------------------------------------------------------------
@@ -2374,604 +1929,43 @@ void context::spacing(f32 height)
     (void)layout_place({0.0f, height > 0.0f ? height : m_->style_.item_spacing});
 }
 
-// text input ---------------------------------------------------------------
+// page transitions -------------------------------------------------------
 
-bool context::input_text(std::string_view label, std::string& value, std::string_view hint, input_flags flags,
-                         std::size_t max_bytes)
+transition_scope::~transition_scope()
 {
-    if (input_core(label, value, hint, flags, max_bytes)) {
-        value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
-        return true;
-    }
-    return false;
+    ctx_->pop_alpha();
 }
 
-bool context::input_text(std::string_view label, secure_string& value, std::string_view hint, input_flags flags,
-                         std::size_t max_bytes)
+f32 context::layout_next_y() const noexcept
 {
-    if (input_core(label, value, hint, flags, max_bytes)) {
-        value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
-        return true;
+    const layout_state& l = m_->layout_;
+    if (l.same_line && !l.first) {
+        return l.line_top;
     }
-    return false;
+    return l.first ? l.origin.y : l.line_top + l.line_h + m_->style_.item_spacing;
 }
 
-bool context::input_text(std::string_view label, char* buffer, std::size_t capacity, std::string_view hint,
-                         input_flags flags)
+transition_scope context::page_transition(std::string_view key, int page, f32 slide)
 {
-    if (buffer == nullptr || capacity == 0) {
-        return false;
-    }
-    std::size_t len = 0;
-    while (len + 1 < capacity && buffer[len] != '\0') { ++len; }
-
-    if (!input_core(label, {buffer, len}, hint, flags, capacity - 1)) {
-        return false;
-    }
-    const std::size_t n = std::min(m_->edit_.edit_buf_.size(), capacity - 1);
-    std::copy_n(m_->edit_.edit_buf_.data(), n, buffer);
-    buffer[n] = '\0';
-    return true;
-}
-
-bool context::input_core(std::string_view label, std::string_view current, std::string_view hint, input_flags flags,
-                         std::size_t max_bytes)
-{
-    if (m_->cur_ == nullptr) {
-        return false;
-    }
-
-    const font_id fnt      = current_font();
-    f32           lh       = m_->font_.line_height(fnt);
-    f32           asc      = m_->font_.ascent(fnt);
-    const bool    password = has_flag(flags, input_flags::password);
-    const bool    reveal_btn = password && has_flag(flags, input_flags::reveal);
-    const bool    readonly = has_flag(flags, input_flags::read_only);
-    const id      key      = widget_id(label);
-    ed_prepare_spans(m_->focus_id_ == key ? m_->edit_.edit_buf_.size() : current.size(), fnt, lh, asc, password);
-
-    field_layout fl;
-    if (m_->input_rect_set_) { // a widget that owns the box (number fields): no caption, no layout
-        m_->input_rect_set_ = false;
-        fl.control = m_->input_rect_;
+    anim_slot& a = anim_for(widget_id(key));
+    const f32 pf = static_cast<f32>(page);
+    if (!a.custom_init) {
+        a.custom_init = true;
+        a.custom      = pf;
+        a.toggle      = 1.0f;
+    } else if (a.custom != pf) {
+        a.custom = pf; // a new page: start the fade over
+        a.toggle = 0.0f;
     } else {
-        fl = layout_field(visible_label(label), frame_height());
+        a.toggle = approach(a.toggle, 1.0f, m_->style_.anim_speed * 0.65f);
     }
-    const rect         box = fl.control;
+    const f32 t = smooth(std::clamp(a.toggle, 0.0f, 1.0f));
 
-    // password eye button: toggles visibility (state in an animation slot, dropped when the field goes undrawn).
-    // tested first so it wins the press
-    const f32  reveal_w = reveal_btn ? 26.0f : 0.0f;
-    const rect reveal_r = {{box.max.x - reveal_w - 2.0f, box.min.y + 2.0f}, {box.max.x - 3.0f, box.max.y - 2.0f}};
-    bool       revealed = false;
-    bool       reveal_hot = false;
-    if (reveal_btn) {
-        anim_slot& ra = anim_for(hash_id("##reveal", key));
-        const interaction bi = interact(hash_id("##reveal", key), reveal_r);
-        if (bi.pressed) { ra.active = ra.active > 0.5f ? 0.0f : 1.0f; }
-        if (m_->input_.mouse_pressed_ && bi.held) { m_->press_claimed_ = true; } // the field keeps the keyboard if it had it
-        revealed   = ra.active > 0.5f;
-        reveal_hot = bi.hovered;
+    m_->dl_.push_alpha(t);
+    if (m_->layout_.first) {
+        m_->layout_.origin.y += (1.0f - t) * slide;
     }
-    const bool hide = password && !revealed; // what is drawn as bullets
-
-    // clear button (x while the field has text), tested before the field so it takes the press
-    const bool has_text  = m_->focus_id_ == key ? !m_->edit_.edit_buf_.empty() : !current.empty();
-    const bool clear_btn = has_flag(flags, input_flags::clear_button) && !readonly && has_text;
-    const f32  clear_w   = clear_btn ? 22.0f : 0.0f;
-    const rect clear_r   = {{box.max.x - reveal_w - clear_w - 2.0f, box.min.y + 2.0f},
-                            {box.max.x - reveal_w - 3.0f, box.max.y - 2.0f}};
-    bool       clear_hot = false;
-    bool       cleared   = false;
-    if (clear_btn) {
-        const interaction bi = interact(hash_id("##clear", key), clear_r);
-        clear_hot = bi.hovered;
-        cleared   = bi.pressed;
-        if (m_->input_.mouse_pressed_ && bi.held) { m_->press_claimed_ = true; } // the field keeps the keyboard if it had it
-    }
-
-    const interaction  in  = interact(key, box);
-    if (in.hovered || (in.held && m_->focus_id_ == key)) { m_->cursor_ = reveal_hot ? cursor_kind::arrow : cursor_kind::text; }
-
-    const f32  pad_x  = m_->style_.frame_padding.x;
-    const rect inner  = {{box.min.x + pad_x, box.min.y}, {box.max.x - pad_x - reveal_w - clear_w, box.max.y}};
-    const f32  text_y = box.min.y + (box.height() - lh) * 0.5f;
-
-    // what is shown: the live edit buffer while focused, the caller's text otherwise
-    bool focused = m_->focus_id_ == key;
-    const auto text_now = [&]() -> std::string_view { return focused ? std::string_view{m_->edit_.edit_buf_} : current; };
-
-    std::string masked;
-    const auto rebuild_mask = [&] {
-        if (hide) { masked.assign(count_codepoints(text_now()), '*'); }
-    };
-    rebuild_mask();
-
-    // right-to-left text: where the caret and the mouse go follows the reordered letters
-    bidi_layout bidi;
-    std::string bidi_src;
-    const auto rtl_layout = [&]() -> const bidi_layout* {
-        if (hide) { return nullptr; }
-        const std::string_view t = text_now();
-        if (!has_rtl_text(t)) { return nullptr; }
-        if (bidi_src != t) {
-            bidi_src.assign(t);
-            bidi.build(m_->font_, fnt, t);
-        }
-        return &bidi;
-    };
-
-    const auto prefix_width = [&](std::size_t byte_index) -> f32 {
-        const std::string_view t = text_now();
-        if (const bidi_layout* b = rtl_layout()) {
-            return b->caret_x(byte_index);
-        }
-        if (!hide) {
-            return ed_measure(fnt, t, 0, byte_index);
-        }
-        return m_->font_.measure(fnt, std::string_view{masked}.substr(0, count_codepoints(t.substr(0, byte_index)))).x;
-    };
-    const auto index_at = [&](f32 mouse_x) {
-        const std::string_view t = text_now();
-        const f32 rel = mouse_x - inner.min.x + m_->edit_.edit_scroll_;
-        if (const bidi_layout* b = rtl_layout()) {
-            return b->index_at(rel);
-        }
-        std::size_t best = 0;
-        f32         best_d = 1.0e9f;
-        for (std::size_t i = 0;; i = next_boundary(t, i)) {
-            const f32 d = std::abs(prefix_width(i) - rel);
-            if (d < best_d) { best_d = d; best = i; }
-            if (i >= t.size()) { break; }
-        }
-        return best;
-    };
-
-    // --- focus and mouse -----------------------------------------------------
-    if (m_->focus_request_ == key) { // requested by code (find bar opening): like a click, all selected
-        m_->focus_request_ = 0;
-        m_->press_claimed_ = true;
-        if (m_->focus_id_ != key) {
-            m_->focus_id_    = key;
-            focused      = true;
-            wipe_edit_buffer();
-            m_->edit_.edit_buf_.assign(current);
-            m_->edit_.edit_scroll_ = 0.0f;
-            m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
-            m_->edit_.edit_anchor_ = 0;
-            m_->edit_.caret_time_  = m_->time_;
-            rebuild_mask();
-        }
-    }
-    const bool press_here = m_->input_.mouse_pressed_ && in.held;
-    if (press_here) {
-        m_->press_claimed_ = true;
-        if (m_->focus_id_ != key) {
-            m_->focus_id_    = key;
-            focused      = true;
-            wipe_edit_buffer(); // nothing of the previous field's text may stay behind
-            m_->edit_.edit_buf_.assign(current);
-            m_->edit_.edit_scroll_ = 0.0f;
-            m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
-            m_->edit_.edit_anchor_ = has_flag(flags, input_flags::select_all_on_focus) ? 0 : m_->edit_.edit_cursor_;
-            m_->edit_.caret_time_  = m_->time_;
-            rebuild_mask();
-        }
-
-        const std::size_t idx = index_at(m_->input_.mouse_.x);
-        const u32 clicks = register_click();
-        if (clicks == 3) { // triple click: the whole line (a single-line field is one line)
-            m_->edit_.edit_anchor_ = 0;
-            m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
-        } else if (clicks == 2) {
-            m_->edit_.edit_anchor_ = word_start(m_->edit_.edit_buf_, idx);
-            m_->edit_.edit_cursor_ = word_end(m_->edit_.edit_buf_, idx);
-        } else if (!has_flag(flags, input_flags::select_all_on_focus) || m_->edit_.edit_cursor_ != 0) {
-            m_->edit_.edit_cursor_ = idx;
-            m_->edit_.edit_anchor_ = idx;
-        }
-        m_->edit_.caret_time_ = m_->time_;
-    } else if (focused && in.held) {
-        m_->edit_.edit_cursor_ = index_at(m_->input_.mouse_.x);
-        m_->edit_.caret_time_  = m_->time_;
-    }
-    if (focused) {
-        m_->focus_seen_ = true;
-    }
-
-    // --- keyboard ----------------------------------------------------------------
-    bool changed = false;
-    if (cleared) { // empties the field whether or not it has the keyboard
-        m_->edit_.edit_buf_.clear();
-        m_->edit_.edit_cursor_ = 0;
-        m_->edit_.edit_anchor_ = 0;
-        m_->edit_.edit_scroll_ = 0.0f;
-        edit_history_clear();
-        ++m_->edit_.edit_version_;
-        changed = true;
-    }
-    if (focused) {
-        m_->edit_.edit_readonly_   = readonly;
-        m_->edit_.edit_max_bytes_  = max_bytes;
-        m_->edit_.edit_history_on_ = !password && !readonly && m_->edit_mask_.empty();
-
-        if (m_->input_.typed_len_ != 0) {
-            changed = edit_insert({m_->input_.typed_.data(), m_->input_.typed_len_}, true) || changed;
-            m_->input_.typed_len_  = 0;
-            m_->edit_.caret_time_ = m_->time_;
-        }
-
-        for (u32 i = 0; i < m_->input_.key_count_ && focused; ++i) {
-            const key_event& ev = m_->input_.keys_[i];
-            if (ev.alt) { continue; } // Alt + key is a shortcut of the host, not editing
-            const std::string_view t = m_->edit_.edit_buf_;
-            const bool has_sel = m_->edit_.edit_cursor_ != m_->edit_.edit_anchor_;
-            m_->edit_.caret_time_ = m_->time_;
-            switch (ev.k) {
-            case key::left:
-                if (!ev.shift && !ev.ctrl && has_sel) {
-                    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
-                } else {
-                    m_->edit_.edit_cursor_ = ev.ctrl ? prev_word(t, m_->edit_.edit_cursor_) : prev_boundary(t, m_->edit_.edit_cursor_);
-                    if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
-                }
-                break;
-            case key::right:
-                if (!ev.shift && !ev.ctrl && has_sel) {
-                    m_->edit_.edit_cursor_ = m_->edit_.edit_anchor_ = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
-                } else {
-                    m_->edit_.edit_cursor_ = ev.ctrl ? next_word(t, m_->edit_.edit_cursor_) : next_boundary(t, m_->edit_.edit_cursor_);
-                    if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
-                }
-                break;
-            case key::home:
-                m_->edit_.edit_cursor_ = 0;
-                if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
-                break;
-            case key::end:
-                m_->edit_.edit_cursor_ = t.size();
-                if (!ev.shift) { m_->edit_.edit_anchor_ = m_->edit_.edit_cursor_; }
-                break;
-            case key::backspace:
-                if (!readonly) {
-                    if (edit_delete_selection()) {
-                        changed = true;
-                    } else {
-                        const std::size_t a = ev.ctrl ? prev_word(t, m_->edit_.edit_cursor_) : prev_boundary(t, m_->edit_.edit_cursor_);
-                        if (a < m_->edit_.edit_cursor_) {
-                            changed = edit_replace(a, m_->edit_.edit_cursor_ - a, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_back) || changed;
-                        }
-                    }
-                }
-                break;
-            case key::del:
-                if (!readonly) {
-                    if (edit_delete_selection()) {
-                        changed = true;
-                    } else {
-                        const std::size_t b = ev.ctrl ? next_word(t, m_->edit_.edit_cursor_) : next_boundary(t, m_->edit_.edit_cursor_);
-                        if (b > m_->edit_.edit_cursor_) {
-                            changed = edit_replace(m_->edit_.edit_cursor_, b - m_->edit_.edit_cursor_, {}, ev.ctrl ? edit_kind::other : edit_kind::erase_fwd) || changed;
-                        }
-                    }
-                }
-                break;
-            case key::enter:
-                m_->edit_.submitted_ = true;
-                break;
-            case key::escape:
-            case key::tab:
-                m_->focus_id_ = 0;
-                focused   = false;
-                break;
-            case key::a:
-            case key::c:
-            case key::x:
-            case key::v:
-            case key::z:
-            case key::y:
-                changed = edit_shortcut(ev, password, false) || changed;
-                break;
-            default:
-                break;
-            }
-        }
-        m_->input_.key_count_ = 0;
-        if (changed && !m_->edit_mask_.empty()) { apply_input_mask(); }
-        rebuild_mask();
-    }
-
-    if (focused) {
-        const f32 view_w  = std::max(inner.width(), 1.0f);
-        const bool composing_now = !readonly && !password && m_->input_.ime_len_ != 0;
-        const std::string_view comp{m_->input_.ime_text_.data(), m_->input_.ime_len_};
-        const f32 caret_x = prefix_width(m_->edit_.edit_cursor_) + (composing_now ? m_->font_.measure(fnt, comp.substr(0, m_->input_.ime_cursor_)).x : 0.0f);
-        if (caret_x - m_->edit_.edit_scroll_ > view_w - 2.0f) { m_->edit_.edit_scroll_ = caret_x - view_w + 2.0f; }
-        if (caret_x - m_->edit_.edit_scroll_ < 0.0f)          { m_->edit_.edit_scroll_ = caret_x; }
-        const bidi_layout* rtl_now = rtl_layout();
-        const f32 total = (rtl_now != nullptr ? rtl_now->width() : prefix_width(text_now().size())) + (composing_now ? m_->font_.measure(fnt, comp).x : 0.0f);
-        if (total - m_->edit_.edit_scroll_ < view_w - 2.0f)   { m_->edit_.edit_scroll_ = std::max(0.0f, total - view_w + 2.0f); }
-    }
-
-    // --- drawing -----------------------------------------------------------------
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, focused ? 1.0f : 0.0f);
-
-    shape_style field;
-    field.radius       = radii(m_->style_.rounding * 0.8f);
-    field.fill_top     = darken(m_->style_.widget_bg, 0.28f);
-    field.fill_bottom  = darken(m_->style_.widget_bg, 0.12f);
-    field.border       = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
-    field.border_width = 1.0f + a.toggle * 0.5f;
-    field.shadow       = m_->style_.accent.scaled_alpha(0.32f * a.toggle);
-    field.shadow_blur  = 9.0f * a.toggle;
-    m_->dl_.shape(box, field);
-
-    if (clear_btn) { // a small x
-        if (clear_hot) {
-            shape_style hot;
-            hot.radius      = radii(m_->style_.rounding * 0.6f);
-            hot.fill_top    = m_->style_.widget_hover.scaled_alpha(0.8f);
-            hot.fill_bottom = hot.fill_top;
-            m_->dl_.shape(clear_r, hot);
-        }
-        const vec2  c   = clear_r.center();
-        const color col = clear_hot ? m_->style_.text : m_->style_.text_dim;
-        constexpr f32 arm = 4.0f;
-        m_->dl_.line({c.x - arm, c.y - arm}, {c.x + arm, c.y + arm}, col, 1.4f);
-        m_->dl_.line({c.x - arm, c.y + arm}, {c.x + arm, c.y - arm}, col, 1.4f);
-    }
-
-    if (reveal_btn) { // the eye: open when the text is shown, crossed out when it is hidden
-        if (reveal_hot) {
-            shape_style hot;
-            hot.radius      = radii(m_->style_.rounding * 0.6f);
-            hot.fill_top    = m_->style_.widget_hover.scaled_alpha(0.8f);
-            hot.fill_bottom = hot.fill_top;
-            m_->dl_.shape(reveal_r, hot);
-        }
-        const vec2  c   = reveal_r.center();
-        const color col = lerp(m_->style_.text_dim, m_->style_.text, reveal_hot || revealed ? 1.0f : 0.0f);
-        m_->dl_.bezier_quadratic({c.x - 7.0f, c.y}, {c.x, c.y - 8.0f}, {c.x + 7.0f, c.y}, col, 1.3f);
-        m_->dl_.bezier_quadratic({c.x - 7.0f, c.y}, {c.x, c.y + 8.0f}, {c.x + 7.0f, c.y}, col, 1.3f);
-        m_->dl_.circle_filled(c, 2.2f, col);
-        if (!revealed) { m_->dl_.line({c.x - 6.0f, c.y + 6.0f}, {c.x + 6.0f, c.y - 6.0f}, col, 1.5f); }
-    }
-
-    m_->dl_.push_clip({{inner.min.x, box.min.y + 1.0f}, {inner.max.x, box.max.y - 1.0f}});
-    const f32 text_x = inner.min.x - (focused ? m_->edit_.edit_scroll_ : 0.0f);
-
-    const std::string_view shown_text = text_now();
-    const bool composing = focused && !readonly && !password && m_->input_.ime_len_ != 0;
-    const std::string_view comp{m_->input_.ime_text_.data(), m_->input_.ime_len_};
-    std::string disp; // the text with the composition inserted at the caret
-    if (composing) {
-        const std::size_t at = std::min(m_->edit_.edit_cursor_, shown_text.size());
-        disp.assign(shown_text.substr(0, at));
-        disp.append(comp);
-        disp.append(shown_text.substr(at));
-    }
-    const auto disp_width = [&](std::size_t n) { return m_->font_.measure(fnt, std::string_view{disp}.substr(0, n)).x; };
-    if (focused && m_->edit_.edit_cursor_ != m_->edit_.edit_anchor_ && !composing) {
-        const std::size_t lo = std::min(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
-        const std::size_t hi = std::max(m_->edit_.edit_cursor_, m_->edit_.edit_anchor_);
-        shape_style sel;
-        sel.radius      = radii(2.0f);
-        sel.fill_top    = m_->style_.accent.scaled_alpha(0.45f);
-        sel.fill_bottom = m_->style_.accent.scaled_alpha(0.45f);
-        const f32 xa = prefix_width(lo);
-        const f32 xb = prefix_width(hi);
-        m_->dl_.shape({{text_x + std::min(xa, xb), text_y - 1.0f}, {text_x + std::max(xa, xb), text_y + lh + 1.0f}}, sel);
-    }
-
-    if (shown_text.empty() && !focused && !hint.empty()) {
-        m_->dl_.text({text_x, text_y}, m_->style_.text_dim.scaled_alpha(0.7f), hint, fnt);
-    } else if (hide) {
-        m_->dl_.text({text_x, text_y}, m_->style_.text, masked, fnt);
-    } else if (composing) { // the composition sits in the text, underlined and lightly marked
-        const std::size_t at = std::min(m_->edit_.edit_cursor_, shown_text.size());
-        const f32 x0 = text_x + disp_width(at);
-        const f32 x1 = text_x + disp_width(at + comp.size());
-        m_->dl_.rect_filled({{x0, text_y - 1.0f}, {x1, text_y + lh + 1.0f}}, m_->style_.accent.scaled_alpha(0.18f));
-        m_->dl_.text({text_x, text_y}, m_->style_.text, disp, fnt);
-        m_->dl_.rect_filled({{x0, text_y + lh - 1.0f}, {x1, text_y + lh + 0.5f}}, m_->style_.accent_hover);
-    } else if (!m_->edit_.edit_spans_.empty()) {
-        ed_draw({text_x, text_y}, asc, m_->style_.text, shown_text, 0, shown_text.size(), fnt);
-    } else {
-        m_->dl_.text({text_x, text_y}, m_->style_.text, shown_text, fnt);
-    }
-
-    if (focused) { // where the input method puts its candidate window
-        const f32 caret_x = composing ? text_x + disp_width(std::min(m_->edit_.edit_cursor_, shown_text.size()) + m_->input_.ime_cursor_)
-                                      : text_x + prefix_width(m_->edit_.edit_cursor_);
-        m_->edit_.ime_want_   = !password; // (a password field turns the input method off)
-        m_->edit_.ime_pos_    = {caret_x * m_->scale_, (text_y + lh) * m_->scale_};
-        m_->edit_.ime_line_h_ = lh * m_->scale_;
-        if (caret_visible()) {
-            const f32 cx = std::round(caret_x);
-            m_->dl_.rect_filled({{cx, text_y}, {cx + 1.5f, text_y + lh}}, m_->style_.text);
-        }
-    }
-    m_->dl_.pop_clip();
-
-    track_edit(key, changed, m_->focus_id_ == key);
-    return changed;
-}
-
-// combo box ----------------------------------------------------------------
-
-bool context::combo(std::string_view label, int& current, const std::string_view* items, std::size_t count)
-{
-    if (m_->cur_ == nullptr || count == 0) {
-        return false;
-    }
-    const font_id f = current_font();
-    const id key = widget_id(label);
-    current = std::clamp(current, 0, static_cast<int>(count) - 1);
-
-    const field_layout fl  = layout_field(visible_label(label), frame_height());
-    const rect         box = fl.control;
-    const interaction  in  = interact(key, box);
-
-    bool open = m_->popup_.popup_has(key);
-    if (in.pressed) {
-        if (open) {
-            m_->popup_.popup_close(key);
-            open = false;
-        } else if (popup_push(key)) {
-            m_->popup_.popup_scroll_ = 0.0f;
-            m_->popup_.popup_hover_  = current;
-            open = true;
-        }
-    }
-
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, open ? 1.0f : 0.0f);
-
-    const color base = lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover);
-    shape_style field = widget_shape(base, m_->style_.rounding * 0.8f);
-    field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
-    m_->dl_.shape(box, field);
-
-    const std::string_view shown = items[current];
-    const vec2 tsize = label_size(f, shown);
-    m_->dl_.push_clip({{box.min.x, box.min.y}, {box.max.x - m_->style_.frame_padding.x - 14.0f, box.max.y}});
-    label_draw({box.min.x + m_->style_.frame_padding.x, box.min.y + (box.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
-    m_->dl_.pop_clip();
-
-    const vec2 c{box.max.x - m_->style_.frame_padding.x - 4.0f, box.center().y};
-    const f32  s = 4.0f;
-    const color chev = lerp(m_->style_.text_dim, m_->style_.text, std::max(a.hover, a.toggle));
-    if (open) {
-        m_->dl_.triangle_filled({c.x - s, c.y + s * 0.5f}, {c.x, c.y - s * 0.6f}, {c.x + s, c.y + s * 0.5f}, chev);
-    } else {
-        m_->dl_.triangle_filled({c.x - s, c.y - s * 0.5f}, {c.x + s, c.y - s * 0.5f}, {c.x, c.y + s * 0.6f}, chev);
-    }
-
-    bool changed = false;
-    if (open) {
-        draw_combo_popup(key, box, items, count, current, changed);
-    }
-    track_edit(key, changed, m_->popup_.popup_has(key));
-    return changed;
-}
-
-void context::draw_combo_popup(id key, const rect& anchor, const std::string_view* items, std::size_t count,
-                               int& current, bool& changed)
-{
-    const font_id f       = current_font();
-    const f32     item_h  = frame_height() - 4.0f;
-    const u32     visible = static_cast<u32>(std::min<std::size_t>(count, 8));
-    const f32     pad     = 4.0f;
-    const f32     list_h  = static_cast<f32>(visible) * item_h + 2.0f * pad;
-
-    rect list = {{anchor.min.x, anchor.max.y + 4.0f}, {anchor.max.x, anchor.max.y + 4.0f + list_h}};
-    if (list.max.y > m_->display_.y - 4.0f && anchor.min.y - 4.0f - list_h >= 4.0f) {
-        list = {{anchor.min.x, anchor.min.y - 4.0f - list_h}, {anchor.max.x, anchor.min.y - 4.0f}};
-    }
-    const u32 level = m_->popup_.popup_level_of(key); // (before Enter / Esc below can close it: this frame still draws it)
-
-    const f32 view_h     = static_cast<f32>(visible) * item_h;
-    const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
-    if (list.contains(m_->input_.mouse_) && m_->input_.wheel_ != 0.0f) {
-        m_->popup_.popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
-        m_->wheel_consumed_ = true;
-    }
-
-    for (u32 i = 0; i < m_->input_.key_count_; ++i) {
-        switch (m_->input_.keys_[i].k) {
-        case key::down:
-            m_->popup_.popup_hover_ = std::min(m_->popup_.popup_hover_ + 1, static_cast<int>(count) - 1);
-            break;
-        case key::up:
-            m_->popup_.popup_hover_ = std::max(m_->popup_.popup_hover_ - 1, 0);
-            break;
-        case key::enter:
-            if (m_->popup_.popup_hover_ >= 0 && m_->popup_.popup_hover_ < static_cast<int>(count)) {
-                changed   = changed || current != m_->popup_.popup_hover_;
-                current   = m_->popup_.popup_hover_;
-                m_->popup_.popup_close(key);
-            }
-            break;
-        case key::escape:
-            m_->popup_.popup_close(key);
-            break;
-        default:
-            break;
-        }
-    }
-    m_->input_.key_count_ = 0;
-    if (m_->popup_.popup_hover_ >= 0) { // keep the highlighted row on screen
-        const f32 top = static_cast<f32>(m_->popup_.popup_hover_) * item_h;
-        if (top < m_->popup_.popup_scroll_)                    { m_->popup_.popup_scroll_ = top; }
-        if (top + item_h > m_->popup_.popup_scroll_ + view_h)  { m_->popup_.popup_scroll_ = top + item_h - view_h; }
-    }
-    m_->popup_.popup_scroll_ = std::clamp(m_->popup_.popup_scroll_, 0.0f, max_scroll);
-
-    // everything below is emitted into the popup's overlay layer, above all windows (and above a parent popup)
-    popup_enter(level, list, anchor);
-    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
-
-    shape_style body;
-    body.radius        = radii(m_->style_.rounding * 0.8f);
-    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
-    body.fill_bottom   = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
-    body.border        = m_->style_.border;
-    body.border_width  = m_->style_.border_width;
-    body.shadow        = m_->style_.shadow;
-    body.shadow_blur   = m_->style_.shadow_blur * 0.8f;
-    body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.3f};
-    popup_panel(list, body);
-
-    m_->dl_.push_clip({{list.min.x, list.min.y + 1.0f}, {list.max.x, list.max.y - 1.0f}});
-    for (std::size_t i = 0; i < count; ++i) {
-        const f32  y = list.min.y + pad + static_cast<f32>(i) * item_h - m_->popup_.popup_scroll_;
-        const rect r = {{list.min.x + pad, y}, {list.max.x - pad - (max_scroll > 0.0f ? 6.0f : 0.0f), y + item_h}};
-        if (r.max.y < list.min.y || r.min.y > list.max.y) {
-            continue;
-        }
-
-        const id ik = hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, key);
-        const interaction it = interact(ik, r);
-        if (it.hovered) {
-            m_->popup_.popup_hover_ = static_cast<int>(i);
-        }
-        if (it.pressed) {
-            changed   = changed || current != static_cast<int>(i);
-            current   = static_cast<int>(i);
-            m_->popup_.popup_close(key);
-        }
-
-        const bool selected = static_cast<int>(i) == current;
-        const bool hot      = static_cast<int>(i) == m_->popup_.popup_hover_;
-        if (hot || selected) {
-            shape_style row;
-            row.radius      = radii(m_->style_.rounding * 0.55f);
-            row.fill_top    = m_->style_.accent.scaled_alpha(hot ? 0.34f : 0.16f);
-            row.fill_bottom = row.fill_top;
-            m_->dl_.shape(r, row);
-        }
-        const vec2 tsize = label_size(f, items[i]);
-        label_draw({r.min.x + 9.0f, r.min.y + (r.height() - tsize.y) * 0.5f},
-                   selected ? m_->style_.accent_hover : m_->style_.text, items[i], f);
-    }
-    m_->dl_.pop_clip();
-
-    if (max_scroll > 0.0f) {
-        const f32 track_h = view_h;
-        const f32 thumb_h = std::max(16.0f, track_h * view_h / (view_h + max_scroll));
-        const f32 thumb_y = list.min.y + pad + (track_h - thumb_h) * (m_->popup_.popup_scroll_ / max_scroll);
-        shape_style thumb;
-        thumb.radius      = radii(2.0f);
-        thumb.fill_top    = m_->style_.text_dim.scaled_alpha(0.5f);
-        thumb.fill_bottom = thumb.fill_top;
-        m_->dl_.shape({{list.max.x - 8.0f, thumb_y}, {list.max.x - 4.0f, thumb_y + thumb_h}}, thumb);
-    }
-
-    m_->dl_.pop_clip();
-    popup_leave();
+    return transition_scope{*this};
 }
 
 } // namespace strata

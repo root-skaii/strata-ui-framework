@@ -7,6 +7,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 #include "dock_state.hpp"
 #include "text_util.hpp"
@@ -34,7 +35,9 @@ constexpr f32 tab_pad      = 26.0f; // what a tab takes on top of its title
 
 id context::dock_space_key(std::string_view name) noexcept
 {
-    return hash_id(name, hash_id("##dockspace"));
+    // saved dock layouts store keys derived from this seed ("space <key>"): its value must never change
+    static constexpr id dock_space_seed = hash_id("##dockspace");
+    return hash_id(name, dock_space_seed);
 }
 
 u8 context::dock_space_at(id key) noexcept
@@ -148,7 +151,7 @@ rect context::dock_edge(std::string_view name, dock_side side, f32 size, const r
     default:               gap = {{region.min.x, panel.min.y - splitter_gap}, {region.max.x, panel.min.y}}; break;
     }
     const bool free_pointer = m_->win_.hovered_window_prev_ == 0 || m_->hovered_docked_prev_;
-    const id key = hash_id("##dockedge", static_cast<id>(si + 1));
+    const id key = part_id(part::edge_splitter, static_cast<id>(si + 1));
     const interaction in = interact_impl(key, gap.expanded(1.5f), free_pointer);
     if (in.hovered || in.held) { m_->cursor_ = horizontal ? cursor_kind::resize_ew : cursor_kind::resize_ns; }
     if (gap.expanded(1.5f).contains(m_->input_.mouse_)) { m_->dock_chrome_cur_ = true; }
@@ -191,7 +194,7 @@ bool context::floating_dock(std::string_view title, vec2 initial_pos, vec2 size,
         dock_set_space(si, body, body, body);
         sp.hidden = st.collapsed;
         if (open && sp.root == no_node) { // nothing in it yet
-            const std::string_view hint = "drop windows here";
+            const std::string_view hint = m_->strings_.drop_here;
             const vec2 ts = m_->font_.measure(current_font(), hint);
             m_->dl_.text({body.center().x - ts.x * 0.5f, body.center().y - ts.y * 0.5f}, m_->style_.text_dim.scaled_alpha(0.6f), hint, current_font());
         }
@@ -221,7 +224,7 @@ f32 context::dock_tab_width(const window_state& w) const noexcept
 u32 context::dock_leaf_tabs(u8 leaf, std::array<u8, max_windows>& out, bool shown_only) const noexcept
 {
     u32 count = 0;
-    for (u32 i = 0; i < max_windows; ++i) {
+    for (u32 i = 0; i < m_->win_.windows_.size(); ++i) {
         const window_state& w = m_->win_.windows_[i];
         if (w.key != 0 && w.dock == leaf + 1u && (!shown_only || w.last_frame + 1 >= m_->frame_)) { out[count++] = static_cast<u8>(i); }
     }
@@ -682,7 +685,7 @@ void context::undock_window(std::string_view title)
     }
 }
 
-bool context::is_docked(std::string_view title) const noexcept
+bool context::window_docked(std::string_view title) const noexcept
 {
     const window_state* w = window_find(hash_id(title, m_->ids_.root()));
     return w != nullptr && w->dock != 0;
@@ -728,7 +731,7 @@ void context::dock_end_frame()
             const dock_node& b = m_->dock_->nodes[n.child[1]];
             const rect gap = n.vertical ? rect{{n.shown_area.min.x, a.shown_area.max.y}, {n.shown_area.max.x, b.shown_area.min.y}}
                                         : rect{{a.shown_area.max.x, n.shown_area.min.y}, {b.shown_area.min.x, n.shown_area.max.y}};
-            const id skey = hash_id("##dsplit", static_cast<id>(ni + 1));
+            const id skey = part_id(part::dock_splitter, static_cast<id>(ni + 1));
             const interaction in = chrome(skey, gap.expanded(1.5f));
             if (in.hovered || in.held) {
                 m_->cursor_ = n.vertical ? cursor_kind::resize_ns : cursor_kind::resize_ew;
@@ -797,7 +800,7 @@ void context::dock_end_frame()
             const rect cell = {{x, bar.min.y}, {x + tw, bar.max.y}};
             x += tw;
 
-            const id key = hash_id("##dtab", w.key);
+            const id key = part_id(part::dock_tab, w.key);
             const interaction in = chrome(key, cell);
             if (in.hovered && m_->input_.mouse_pressed_) {
                 n.active        = w.key;
@@ -825,7 +828,7 @@ void context::dock_end_frame()
                     dock_detach(w);
                     w.pos = {m_->input_.mouse_.x - std::min(fw * 0.25f, 80.0f), m_->input_.mouse_.y - tab_h * 0.5f};
                     bring_to_front(w.key);
-                    m_->active_ = hash_id("##drag", w.key);
+                    m_->active_ = part_id(part::title_drag, w.key);
                     continue;
                 }
             }
@@ -854,7 +857,7 @@ void context::dock_end_frame()
         // the rest of the bar is a grip that drags the whole pane with all its tabs
         const rect grip = {{x, bar.min.y}, bar.max};
         if (grip.width() >= 16.0f) {
-            const interaction in = chrome(hash_id("##dgrip", static_cast<id>(ni + 1)), grip);
+            const interaction in = chrome(part_id(part::dock_grip, static_cast<id>(ni + 1)), grip);
             if (in.hovered && m_->input_.mouse_pressed_) {
                 m_->dock_->group_src   = static_cast<u8>(ni);
                 m_->dock_->group_moved = false;

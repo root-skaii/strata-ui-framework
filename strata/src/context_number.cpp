@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 #include <algorithm>
 #include <array>
@@ -303,8 +304,8 @@ bool context::input_float(std::string_view label, f32& value, f32 step, int deci
         push_id(label);
         const rect minus = {{field.max.x + 4.0f, fl.control.min.y}, {field.max.x + 4.0f + bw, fl.control.max.y}};
         const rect plus  = {{minus.max.x + 4.0f, minus.min.y}, {minus.max.x + 4.0f + bw, minus.max.y}};
-        const interaction im = interact(widget_id("##minus"), minus);
-        const interaction ip = interact(widget_id("##plus"), plus);
+        const interaction im = interact(part_id(part::step_down, current_seed()), minus);
+        const interaction ip = interact(part_id(part::step_up, current_seed()), plus);
         step_button(*this, m_->dl_, m_->style_, "-", minus, false, im.hovered ? 1.0f : 0.0f, im.hovered, im.held);
         step_button(*this, m_->dl_, m_->style_, "+", plus, true, ip.hovered ? 1.0f : 0.0f, ip.hovered, ip.held);
         if (im.pressed) { value -= step; changed = true; }
@@ -353,8 +354,8 @@ bool context::input_int(std::string_view label, int& value, int step)
         push_id(label);
         const rect minus = {{field.max.x + 4.0f, fl.control.min.y}, {field.max.x + 4.0f + bw, fl.control.max.y}};
         const rect plus  = {{minus.max.x + 4.0f, minus.min.y}, {minus.max.x + 4.0f + bw, minus.max.y}};
-        const interaction im = interact(widget_id("##minus"), minus);
-        const interaction ip = interact(widget_id("##plus"), plus);
+        const interaction im = interact(part_id(part::step_down, current_seed()), minus);
+        const interaction ip = interact(part_id(part::step_up, current_seed()), plus);
         step_button(*this, m_->dl_, m_->style_, "-", minus, false, im.hovered ? 1.0f : 0.0f, im.hovered, im.held);
         step_button(*this, m_->dl_, m_->style_, "+", plus, true, ip.hovered ? 1.0f : 0.0f, ip.hovered, ip.held);
         if (im.pressed) { value -= step; changed = true; }

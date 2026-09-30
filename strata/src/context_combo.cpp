@@ -31,10 +31,11 @@ namespace {
 
 } // namespace
 
-bool context::combo_filtered(std::string_view label, int& current, const std::string_view* items, std::size_t count,
-                             std::string_view hint)
+bool context::combo_filtered(std::string_view label, int& current, const item_list& items, std::string_view hint)
 {
-    if (m_->cur_ == nullptr || count == 0 || items == nullptr) {
+    if (hint.empty()) { hint = m_->strings_.filter_hint; }
+    const std::size_t count = items.size();
+    if (m_->cur_ == nullptr || count == 0) {
         return false;
     }
     const font_id f = current_font();
@@ -127,7 +128,7 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
 
         if (auto list = child("##hits", {0.0f, list_h}, child_flags::none)) {
             if (hits == 0) {
-                text_dim("no match");
+                text_dim(m_->strings_.no_match);
             } else {
                 list_clipper clip{*this, static_cast<std::size_t>(hits), row_h};
                 while (clip.step()) {
@@ -162,9 +163,10 @@ bool context::combo_filtered(std::string_view label, int& current, const std::st
     return changed;
 }
 
-bool context::combo_multi(std::string_view label, bool* selected, const std::string_view* items, std::size_t count,
-                          std::string_view placeholder)
+bool context::combo_multi(std::string_view label, bool* selected, const item_list& items, std::string_view placeholder)
 {
+    if (placeholder.empty()) { placeholder = m_->strings_.nothing_selected; }
+    const std::size_t count = items.size();
     if (m_->cur_ == nullptr || count == 0 || selected == nullptr) {
         return false;
     }
@@ -204,7 +206,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
         summary       = std::string{placeholder};
         summary_color = m_->style_.text_dim;
     } else if (chosen == count && count > 2) {
-        summary = "all (" + std::to_string(count) + ")";
+        summary = std::string{m_->strings_.all_selected} + " (" + std::to_string(count) + ")";
     } else {
         for (std::size_t i = 0; i < count; ++i) {
             if (selected[i]) {
@@ -306,7 +308,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
                 row.fill_bottom = row.fill_top;
                 m_->dl_.shape(r, row);
             }
-            const std::string_view t = k == 0 ? "select all" : "clear";
+            const std::string_view t = k == 0 ? m_->strings_.select_all : m_->strings_.select_none;
             const vec2 ts = m_->font_.measure(f, t);
             m_->dl_.text({r.center().x - ts.x * 0.5f, r.min.y + (r.height() - ts.y) * 0.5f}, ti.hovered ? m_->style_.text : m_->style_.text_dim, t, f);
         }
@@ -369,6 +371,181 @@ bool context::combo_multi(std::string_view label, bool* selected, const std::str
     popup_leave();
     track_edit(key, changed, m_->popup_.popup_has(key));
     return changed;
+}
+
+bool context::combo(std::string_view label, int& current, const item_list& items)
+{
+    const std::size_t count = items.size();
+    if (m_->cur_ == nullptr || count == 0) {
+        return false;
+    }
+    const font_id f = current_font();
+    const id key = widget_id(label);
+    current = std::clamp(current, 0, static_cast<int>(count) - 1);
+
+    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const rect         box = fl.control;
+    const interaction  in  = interact(key, box);
+
+    bool open = m_->popup_.popup_has(key);
+    if (in.pressed) {
+        if (open) {
+            m_->popup_.popup_close(key);
+            open = false;
+        } else if (popup_push(key)) {
+            m_->popup_.popup_scroll_ = 0.0f;
+            m_->popup_.popup_hover_  = current;
+            open = true;
+        }
+    }
+
+    anim_slot& a = anim_for(key);
+    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(a.toggle, open ? 1.0f : 0.0f);
+
+    const color base = lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover);
+    shape_style field = widget_shape(base, m_->style_.rounding * 0.8f);
+    field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
+    m_->dl_.shape(box, field);
+
+    const std::string_view shown = items[static_cast<std::size_t>(current)];
+    const vec2 tsize = label_size(f, shown);
+    m_->dl_.push_clip({{box.min.x, box.min.y}, {box.max.x - m_->style_.frame_padding.x - 14.0f, box.max.y}});
+    label_draw({box.min.x + m_->style_.frame_padding.x, box.min.y + (box.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
+    m_->dl_.pop_clip();
+
+    const vec2 c{box.max.x - m_->style_.frame_padding.x - 4.0f, box.center().y};
+    const f32  s = 4.0f;
+    const color chev = lerp(m_->style_.text_dim, m_->style_.text, std::max(a.hover, a.toggle));
+    if (open) {
+        m_->dl_.triangle_filled({c.x - s, c.y + s * 0.5f}, {c.x, c.y - s * 0.6f}, {c.x + s, c.y + s * 0.5f}, chev);
+    } else {
+        m_->dl_.triangle_filled({c.x - s, c.y - s * 0.5f}, {c.x + s, c.y - s * 0.5f}, {c.x, c.y + s * 0.6f}, chev);
+    }
+
+    bool changed = false;
+    if (open) {
+        draw_combo_popup(key, box, items, current, changed);
+    }
+    track_edit(key, changed, m_->popup_.popup_has(key));
+    return changed;
+}
+
+void context::draw_combo_popup(id key, const rect& anchor, const item_list& items,
+                               int& current, bool& changed)
+{
+    const std::size_t count = items.size();
+    const font_id f       = current_font();
+    const f32     item_h  = frame_height() - 4.0f;
+    const u32     visible = static_cast<u32>(std::min<std::size_t>(count, 8));
+    const f32     pad     = 4.0f;
+    const f32     list_h  = static_cast<f32>(visible) * item_h + 2.0f * pad;
+
+    rect list = {{anchor.min.x, anchor.max.y + 4.0f}, {anchor.max.x, anchor.max.y + 4.0f + list_h}};
+    if (list.max.y > m_->display_.y - 4.0f && anchor.min.y - 4.0f - list_h >= 4.0f) {
+        list = {{anchor.min.x, anchor.min.y - 4.0f - list_h}, {anchor.max.x, anchor.min.y - 4.0f}};
+    }
+    const u32 level = m_->popup_.popup_level_of(key); // (before Enter / Esc below can close it: this frame still draws it)
+
+    const f32 view_h     = static_cast<f32>(visible) * item_h;
+    const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
+    if (list.contains(m_->input_.mouse_) && m_->input_.wheel_ != 0.0f) {
+        m_->popup_.popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
+        m_->wheel_consumed_ = true;
+    }
+
+    for (u32 i = 0; i < m_->input_.key_count_; ++i) {
+        switch (m_->input_.keys_[i].k) {
+        case key::down:
+            m_->popup_.popup_hover_ = std::min(m_->popup_.popup_hover_ + 1, static_cast<int>(count) - 1);
+            break;
+        case key::up:
+            m_->popup_.popup_hover_ = std::max(m_->popup_.popup_hover_ - 1, 0);
+            break;
+        case key::enter:
+            if (m_->popup_.popup_hover_ >= 0 && m_->popup_.popup_hover_ < static_cast<int>(count)) {
+                changed   = changed || current != m_->popup_.popup_hover_;
+                current   = m_->popup_.popup_hover_;
+                m_->popup_.popup_close(key);
+            }
+            break;
+        case key::escape:
+            m_->popup_.popup_close(key);
+            break;
+        default:
+            break;
+        }
+    }
+    m_->input_.key_count_ = 0;
+    if (m_->popup_.popup_hover_ >= 0) { // keep the highlighted row on screen
+        const f32 top = static_cast<f32>(m_->popup_.popup_hover_) * item_h;
+        if (top < m_->popup_.popup_scroll_)                    { m_->popup_.popup_scroll_ = top; }
+        if (top + item_h > m_->popup_.popup_scroll_ + view_h)  { m_->popup_.popup_scroll_ = top + item_h - view_h; }
+    }
+    m_->popup_.popup_scroll_ = std::clamp(m_->popup_.popup_scroll_, 0.0f, max_scroll);
+
+    // everything below is emitted into the popup's overlay layer, above all windows (and above a parent popup)
+    popup_enter(level, list, anchor);
+    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+
+    shape_style body;
+    body.radius        = radii(m_->style_.rounding * 0.8f);
+    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.fill_bottom   = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.border        = m_->style_.border;
+    body.border_width  = m_->style_.border_width;
+    body.shadow        = m_->style_.shadow;
+    body.shadow_blur   = m_->style_.shadow_blur * 0.8f;
+    body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.3f};
+    popup_panel(list, body);
+
+    m_->dl_.push_clip({{list.min.x, list.min.y + 1.0f}, {list.max.x, list.max.y - 1.0f}});
+    for (std::size_t i = 0; i < count; ++i) {
+        const f32  y = list.min.y + pad + static_cast<f32>(i) * item_h - m_->popup_.popup_scroll_;
+        const rect r = {{list.min.x + pad, y}, {list.max.x - pad - (max_scroll > 0.0f ? 6.0f : 0.0f), y + item_h}};
+        if (r.max.y < list.min.y || r.min.y > list.max.y) {
+            continue;
+        }
+
+        const id ik = hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, key);
+        const interaction it = interact(ik, r);
+        if (it.hovered) {
+            m_->popup_.popup_hover_ = static_cast<int>(i);
+        }
+        if (it.pressed) {
+            changed   = changed || current != static_cast<int>(i);
+            current   = static_cast<int>(i);
+            m_->popup_.popup_close(key);
+        }
+
+        const bool selected = static_cast<int>(i) == current;
+        const bool hot      = static_cast<int>(i) == m_->popup_.popup_hover_;
+        if (hot || selected) {
+            shape_style row;
+            row.radius      = radii(m_->style_.rounding * 0.55f);
+            row.fill_top    = m_->style_.accent.scaled_alpha(hot ? 0.34f : 0.16f);
+            row.fill_bottom = row.fill_top;
+            m_->dl_.shape(r, row);
+        }
+        const vec2 tsize = label_size(f, items[i]);
+        label_draw({r.min.x + 9.0f, r.min.y + (r.height() - tsize.y) * 0.5f},
+                   selected ? m_->style_.accent_hover : m_->style_.text, items[i], f);
+    }
+    m_->dl_.pop_clip();
+
+    if (max_scroll > 0.0f) {
+        const f32 track_h = view_h;
+        const f32 thumb_h = std::max(16.0f, track_h * view_h / (view_h + max_scroll));
+        const f32 thumb_y = list.min.y + pad + (track_h - thumb_h) * (m_->popup_.popup_scroll_ / max_scroll);
+        shape_style thumb;
+        thumb.radius      = radii(2.0f);
+        thumb.fill_top    = m_->style_.text_dim.scaled_alpha(0.5f);
+        thumb.fill_bottom = thumb.fill_top;
+        m_->dl_.shape({{list.max.x - 8.0f, thumb_y}, {list.max.x - 4.0f, thumb_y + thumb_h}}, thumb);
+    }
+
+    m_->dl_.pop_clip();
+    popup_leave();
 }
 
 } // namespace strata

@@ -888,6 +888,25 @@ bool d3d12_renderer::update_texture(texture_id id, u32 x, u32 y, u32 width, u32 
                                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
+texture_id d3d12_renderer::register_texture(ID3D12Resource* resource, const D3D12_SHADER_RESOURCE_VIEW_DESC* view)
+{
+    if (impl_ == nullptr || resource == nullptr) {
+        return 0;
+    }
+    impl& s = *impl_;
+    u32 slot = 0;
+    while (slot < max_textures && (s.textures[slot] != nullptr || s.texture_meta_[slot].cooldown > 0)) { ++slot; }
+    if (slot == max_textures) {
+        return 0;
+    }
+    s.textures[slot] = resource; // (takes its own reference)
+    D3D12_CPU_DESCRIPTOR_HANDLE h = s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += static_cast<SIZE_T>(slot + 1) * s.srv_size; // slot 0 of the heap is the font atlas
+    s.device->CreateShaderResourceView(resource, view, h);
+    s.texture_meta_[slot].updatable = false;
+    return static_cast<texture_id>(slot + 1);
+}
+
 void d3d12_renderer::destroy_texture(texture_id id) noexcept
 {
     if (impl_ != nullptr && id != 0 && id <= max_textures && impl_->textures[id - 1] != nullptr) {

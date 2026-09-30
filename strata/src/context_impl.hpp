@@ -89,13 +89,14 @@ struct context::edit_session {
 };
 
 struct context::impl {
-    impl(font_atlas atlas, const strata::style& theme, draw_list_limits limits);
+    impl(font_atlas atlas, const strata::style& theme, draw_list_limits limits, const capacity_config& capacity);
 
     std::vector<std::pair<u64, int>> toast_results_;
 
     font_atlas font_;
     draw_list  dl_;
     strata::style style_;
+    ui_strings    strings_;
     std::vector<font_source> font_sources_;
     u32  max_atlas_size_{4096};
     f32  scale_{1.0f};
@@ -124,6 +125,26 @@ struct context::impl {
     window_state* cur_{};
     id            cur_window_{};
     layout_state  layout_{};
+
+    // a window begun inside another's code suspends that parent until its end_window. `dud`: the nested begin failed
+    // (window table full), so its end_window has nothing to close
+    struct window_nest {
+        window_state*         cur{};
+        id                    window{};
+        window_flags          flags{};
+        rect                  frame{};
+        layout_state          layout{};
+        bool                  faded{};
+        u32                   run_owner{};
+        u32                   child_base{};
+        internal::table_frame table{};
+        bool                  dud{};
+    };
+    static constexpr u32 max_window_nesting = 4;
+    std::array<window_nest, max_window_nesting> nest_{};
+    u32 nest_depth_{};
+    u32 nest_overflow_{}; // nested begins past max_window_nesting, each ignored along with its end_window
+    u32 child_base_{};    // child regions below this belong to a suspended parent window
 
     internal::id_stack       ids_;
     internal::style_stack    style_stack_;

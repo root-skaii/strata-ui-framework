@@ -12,6 +12,7 @@ struct ID3D12Device;
 struct ID3D12Resource;
 struct ID3D12CommandQueue;
 struct ID3D12GraphicsCommandList;
+struct D3D12_SHADER_RESOURCE_VIEW_DESC;
 
 namespace strata {
 
@@ -68,6 +69,10 @@ public:
     // updates a rectangle of an `updatable` texture and its mips, staged: cheap per frame; frames in flight keep the old
     // content. false if not updatable or out of bounds
     [[nodiscard]] bool update_texture(texture_id id, u32 x, u32 y, u32 width, u32 height, std::span<const u8> pixels);
+    // shows a resource the host already has (a render target, a video frame ...) through ui.image(), sampled like
+    // create_texture's straight-alpha rgba. `view` null: the resource's default view. the host keeps it in a
+    // pixel-shader-readable state while render() records. keeps its own reference until destroy_texture()
+    [[nodiscard]] texture_id register_texture(ID3D12Resource* resource, const D3D12_SHADER_RESOURCE_VIEW_DESC* view = nullptr);
     // any time: released (slot reused) once frames in flight are done
     void destroy_texture(texture_id id) noexcept;
     static constexpr u32 max_textures = 255;

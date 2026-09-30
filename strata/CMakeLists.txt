@@ -9,7 +9,9 @@ add_library(strata STATIC
     src/context_badge.cpp
     src/context_code.cpp
     src/context_combo.cpp
-    src/context_data.cpp
+    src/context_color.cpp
+    src/context_table.cpp
+    src/context_tree.cpp
     src/context_nav.cpp
     src/core/animation.cpp
     src/core/id_stack.cpp
@@ -17,7 +19,10 @@ add_library(strata STATIC
     src/context_datetime.cpp
     src/context_debug.cpp
     src/context_dock.cpp
-    src/context_extra.cpp
+    src/context_child.cpp
+    src/context_hotkey.cpp
+    src/context_input.cpp
+    src/context_window.cpp
     src/context_image.cpp
     src/context_log.cpp
     src/context_menu.cpp
@@ -71,7 +76,7 @@ target_sources(strata PUBLIC
         include/strata/types.hpp
         include/strata/vmem.hpp
 )
-target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp)
+target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp src/core/part_id.hpp src/widget_util.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
 # skipped for clang-cl: see the matching guard + comment in cmake/strata_options.cmake --

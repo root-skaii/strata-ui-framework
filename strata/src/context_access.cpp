@@ -24,7 +24,7 @@ bool context::want_capture_mouse() const noexcept
 bool context::want_text_input() const noexcept
 { return m_->focus_id_ != 0 || m_->hotkey_.hotkey_capture_ != 0; }
 
-bool context::popup_open() const noexcept
+bool context::any_popup_open() const noexcept
 { return m_->popup_.popup_any_prev(); }
 
 cursor_kind context::cursor() const noexcept
@@ -169,9 +169,6 @@ void context::close_popup() noexcept
 void context::close_all_popups() noexcept
 { m_->popup_.popup_close_from(0); }
 
-rect context::last_item_rect() const noexcept
-{ return m_->last_item_rect_; }
-
 bool context::dragging() const noexcept
 { return m_->dnd_.dd_active_; }
 
@@ -193,7 +190,7 @@ u64 context::confirm_data() const noexcept
 f32 context::main_menu_bar_height() const noexcept
 { return m_->menu_.menu_bar_h_; }
 
-bool context::menu_is_open() const noexcept
+bool context::menu_open() const noexcept
 { return m_->menu_.menu_open_[0].key != 0; }
 
 void context::clear_toasts() noexcept
@@ -210,14 +207,6 @@ void context::set_dock_animation(bool on) noexcept
 
 void context::set_scroll_smoothing(bool on) noexcept
 { m_->scroll_smoothing_ = on; }
-
-bool context::key_pressed(key k, bool ctrl, bool shift) const noexcept
-{
-    for (u32 i = 0; i < m_->input_.key_count_; ++i) {
-        if (m_->input_.keys_[i].k == k && m_->input_.keys_[i].ctrl == ctrl && m_->input_.keys_[i].shift == shift) { return true; }
-    }
-    return false;
-}
 
 void context::request_text_focus(std::string_view label) noexcept
 {
@@ -323,6 +312,15 @@ strata::style& context::theme() noexcept
 
 const strata::style& context::theme() const noexcept
 { return m_->style_; }
+
+const ui_strings& context::strings() const noexcept
+{ return m_->strings_; }
+
+void context::set_strings(const ui_strings& s) noexcept
+{
+    m_->strings_ = s;
+    invalidate(); // (the text on screen changes)
+}
 
 const font_atlas& context::font() const noexcept
 { return m_->font_; }

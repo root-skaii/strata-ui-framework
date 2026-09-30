@@ -182,7 +182,7 @@ void overlay_ui(context& ui)
         } else {
             std::vector<std::string_view> names;
             for (const std::string_view n : themes::names()) { names.push_back(n); }
-            if (ui.combo("theme", g_theme, names.data(), names.size())) { (void)themes::by_name(names[static_cast<std::size_t>(g_theme)], ui.theme()); }
+            if (ui.combo("theme", g_theme, names)) { (void)themes::by_name(names[static_cast<std::size_t>(g_theme)], ui.theme()); }
             ui.text_dim("themes, fonts and every widget of strata are available here");
         }
     }
@@ -209,8 +209,17 @@ DWORD WINAPI worker(LPVOID)
         ::FreeLibraryAndExitThread(g_module, 1);
     }
     while (!g_eject.load()) { ::Sleep(100); }
-    g_host.uninstall();
-    ::FreeLibraryAndExitThread(g_module, 0); // (only when the window procedure could be restored: see uninstall())
+    overlay::uninstall_result r = g_host.uninstall();
+    for (int tries = 0; r == overlay::uninstall_result::busy && tries < 10; ++tries) {
+        ::Sleep(500);
+        r = g_host.uninstall();
+    }
+    if (r != overlay::uninstall_result::done) { // our code is still reachable from the game: stay loaded
+        const std::string msg = std::string{"strata overlay: "} + overlay::last_error() + "\n";
+        ::OutputDebugStringA(msg.c_str());
+        return 0;
+    }
+    ::FreeLibraryAndExitThread(g_module, 0);
 }
 
 } // namespace

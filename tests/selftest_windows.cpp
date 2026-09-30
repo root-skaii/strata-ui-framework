@@ -44,36 +44,36 @@ void test_menu_extras()
 
     // Alt + F opens File; O picks Open
     h.in.alt = true;
-    h.in.pressed_key = 'F';
+    h.press_now(strata::key::f);
     h.frame(build);
     h.in.alt = false;
     h.frames(build, 5);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     h.type("o");
     h.frames(build, 3);
     CHECK(picked == 1);
-    CHECK(!h.ui.menu_is_open());
+    CHECK(!h.ui.menu_open());
 
     // R for the submenu, then t for its second row (case does not matter)
-    h.in.alt = true; h.in.pressed_key = 'F'; h.frame(build); h.in.alt = false;
+    h.in.alt = true; h.press_now(strata::key::f); h.frame(build); h.in.alt = false;
     h.frames(build, 5);
     h.type("R");
     h.frames(build, 6);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     h.type("t");
     h.frames(build, 3);
     CHECK(picked == 4);
-    CHECK(!h.ui.menu_is_open());
+    CHECK(!h.ui.menu_open());
 
     // a keep-open row toggles and leaves the menu up
-    h.in.alt = true; h.in.pressed_key = 'F'; h.frame(build); h.in.alt = false;
+    h.in.alt = true; h.press_now(strata::key::f); h.frame(build); h.in.alt = false;
     h.frames(build, 5);
     h.type("g");
     h.frames(build, 2);
-    CHECK(toggles == 1 && grid && h.ui.menu_is_open());
+    CHECK(toggles == 1 && grid && h.ui.menu_open());
     h.type("g");
     h.frames(build, 2);
-    CHECK(toggles == 2 && !grid && h.ui.menu_is_open());
+    CHECK(toggles == 2 && !grid && h.ui.menu_open());
     picked = 0;
     h.type("o"); // the disabled row does not take it
     h.frames(build, 3);
@@ -83,12 +83,12 @@ void test_menu_extras()
     CHECK(picked != 5);
 
     // Alt + E switches to the Edit menu; C picks Copy
-    h.in.alt = true; h.in.pressed_key = 'E'; h.frame(build); h.in.alt = false;
+    h.in.alt = true; h.press_now(strata::key::e); h.frame(build); h.in.alt = false;
     h.frames(build, 6);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     h.type("c");
     h.frames(build, 3);
-    CHECK(picked == 6 && !h.ui.menu_is_open());
+    CHECK(picked == 6 && !h.ui.menu_open());
 
     // letters do nothing while no menu is open
     picked = 0;
@@ -98,21 +98,21 @@ void test_menu_extras()
 
     // accelerators need the exact modifiers
     accel = 0;
-    h.in.ctrl = true; h.in.pressed_key = 'O'; h.frame(build); h.in.ctrl = false;
+    h.in.ctrl = true; h.press_now(strata::key::o); h.frame(build); h.in.ctrl = false;
     CHECK(accel == 1);
-    h.in.pressed_key = 'O'; h.frame(build); // no ctrl
+    h.press_now(strata::key::o); h.frame(build); // no ctrl
     CHECK(accel == 1);
-    h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'O'; h.frame(build); // too many
+    h.in.ctrl = true; h.in.shift = true; h.press_now(strata::key::o); h.frame(build); // too many
     h.in.ctrl = false; h.in.shift = false;
     CHECK(accel == 1);
-    h.in.pressed_key = 0x74; h.frame(build); // F5
+    h.press_now(strata::key::f5); h.frame(build); // F5
     CHECK(accel == 11);
-    h.in.ctrl = true; h.in.shift = true; h.in.pressed_key = 'S'; h.frame(build);
+    h.in.ctrl = true; h.in.shift = true; h.press_now(strata::key::s); h.frame(build);
     h.in.ctrl = false; h.in.shift = false;
     CHECK(accel == 111);
-    h.in.alt = true; h.in.pressed_key = 0x73; h.frame(build); h.in.alt = false; // Alt+F4
+    h.in.alt = true; h.press_now(strata::key::f4); h.frame(build); h.in.alt = false; // Alt+F4
     CHECK(accel == 1111);
-    h.in.pressed_key = 0x2e; h.frame(build); // Del
+    h.press_now(strata::key::del); h.frame(build); // Del
     CHECK(accel == 11111);
     CHECK(!h.ui.accelerator("") && !h.ui.accelerator("Ctrl+") && !h.ui.accelerator("Ctrl+Nonsense") && !h.ui.accelerator("+"));
 
@@ -128,10 +128,10 @@ void test_menu_extras()
     h.frames(build_text, 2);
     CHECK(h.ui.want_text_input());
     accel = 0;
-    h.in.pressed_key = 0x2e; h.frame(build_text);
-    h.in.ctrl = true; h.in.pressed_key = 'C'; h.frame(build_text);
+    h.press_now(strata::key::del); h.frame(build_text);
+    h.in.ctrl = true; h.press_now(strata::key::c); h.frame(build_text);
     CHECK(accel == 0);
-    h.in.pressed_key = 'P'; h.frame(build_text); h.in.ctrl = false;
+    h.press_now(strata::key::p); h.frame(build_text); h.in.ctrl = false;
     CHECK(accel == 10000000);
 }
 
@@ -266,12 +266,12 @@ void test_menus()
     // click File: the menu opens; click Open: it is picked and everything closes
     h.click(file, build);
     h.frames(build, 5);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     CHECK(h.ui.want_capture_mouse());
     h.click(row_center(0), build);
     h.frames(build, 2);
     CHECK(picked == 1);
-    CHECK(!h.ui.menu_is_open());
+    CHECK(!h.ui.menu_open());
 
     // a submenu opens on hover beside its row, and its rows can be picked
     h.click(file, build);
@@ -284,11 +284,11 @@ void test_menus()
     h.frames(build, 6);
     h.move({sub_x + 20.0f, row_center(1).y});
     h.frames(build, 6);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     h.click({sub_x + 30.0f, bar_h + 4.0f + row_h * 2.5f}, build); // the second row of the submenu ("two"): it starts level with its parent row
     h.frames(build, 2);
     CHECK(picked == 3);
-    CHECK(!h.ui.menu_is_open());
+    CHECK(!h.ui.menu_open());
 
     // a check item toggles its flag, and the disabled one does nothing
     h.click(file, build);
@@ -301,7 +301,7 @@ void test_menus()
     // hovering another header while a menu is open switches to it
     h.click(file, build);
     h.frames(build, 5);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     const f32 edit_w = h.ui.font().measure(0, "Edit").x + 22.0f;
     h.move({6.0f + file_w + edit_w * 0.5f, bar_h * 0.5f});
     h.frames(build, 5);
@@ -312,10 +312,10 @@ void test_menus()
     // Esc closes a menu
     h.click(file, build);
     h.frames(build, 5);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     h.key(key::escape);
     h.frame(build);
-    CHECK(!h.ui.menu_is_open());
+    CHECK(!h.ui.menu_open());
 
     // a context menu opens at the pointer on right click, and picks like any menu
     const vec2 target{200.0f, 240.0f};
@@ -325,11 +325,11 @@ void test_menus()
     h.frame(build);
     h.in.mouse_down[1] = false;
     h.frames(build, 5);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     h.click({target.x + 30.0f, target.y + 4.0f + row_h * 1.5f}, build); // second row: Delete
     h.frames(build, 2);
     CHECK(ctx_picked == 2);
-    CHECK(!h.ui.menu_is_open());
+    CHECK(!h.ui.menu_open());
 
     // right click elsewhere closes it and does not open another one
     h.move(target);
@@ -338,9 +338,9 @@ void test_menus()
     h.frame(build);
     h.in.mouse_down[1] = false;
     h.frames(build, 4);
-    CHECK(h.ui.menu_is_open());
+    CHECK(h.ui.menu_open());
     h.click({700.0f, 500.0f}, build);
-    CHECK(!h.ui.menu_is_open());
+    CHECK(!h.ui.menu_open());
 }
 
 void test_toasts()
@@ -572,20 +572,20 @@ void test_popups_and_drag_drop()
         const auto build = [&] {
             if (auto w = h.ui.window("p", {100, 100}, {300, 0}, plain_window)) {
                 if (h.ui.button("options")) { h.ui.toggle_popup("opts"); }
-                btn = h.ui.last_item_rect();
+                btn = h.ui.item_rect();
                 if (auto p = h.ui.popup("opts", 220.0f)) {
                     (void)h.ui.checkbox("wrap", wrap);
                     if (h.ui.button("done")) { ++done; h.ui.close_popup(); }
                 }
-                open_now = h.ui.popup_is_open("opts");
+                open_now = h.ui.popup_open("opts");
             }
         };
         h.frames(build, 3);
-        CHECK(!open_now && !h.ui.popup_open());
+        CHECK(!open_now && !h.ui.any_popup_open());
         h.click({btn.min.x + 10.0f, btn.center().y}, build);
         CHECK(open_now);
         h.frames(build, 2);
-        CHECK(h.ui.popup_open() && h.ui.want_capture_mouse());
+        CHECK(h.ui.any_popup_open() && h.ui.want_capture_mouse());
 
         // popup content takes clicks: the check box is the first row, 4 px below the button plus padding
         const vec2 first_row{btn.min.x + 12.0f + 8.0f, btn.max.y + 4.0f + 12.0f + 8.0f};
@@ -594,7 +594,7 @@ void test_popups_and_drag_drop()
 
         // a click outside closes it and does not reach what is below
         h.click({600.0f, 500.0f}, build);
-        CHECK(!open_now && !h.ui.popup_open());
+        CHECK(!open_now && !h.ui.any_popup_open());
 
         // clicking the button again toggles; Esc closes
         h.click({btn.min.x + 10.0f, btn.center().y}, build);
@@ -702,7 +702,7 @@ void test_popups_and_drag_drop()
                 h.ui.same_line();
                 h.ui.badge("new", color{80, 200, 120, 255});
                 last = h.ui.chip("filter", {.closable = true, .selected = &on});
-                body = h.ui.last_item_rect();
+                body = h.ui.item_rect();
                 if (last.closed) { ++closes; }
             }
         };

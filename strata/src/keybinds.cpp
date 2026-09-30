@@ -119,8 +119,8 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
     if (!ui.begin_table(id, 3, table_default, height)) {
         return false;
     }
-    ui.table_setup_column("Action");
-    ui.table_setup_column("Key", 190.0f);
+    ui.table_setup_column(ui.strings().action);
+    ui.table_setup_column(ui.strings().key, 190.0f);
     ui.table_setup_column("", 64.0f);
     (void)ui.table_headers_row();
     for (const keybinds::action& a : binds.actions()) {
@@ -136,7 +136,7 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
             if (const keybinds::action* other = binds.conflict(a.name)) {
                 ui.same_line();
                 ui.text_colored(color{255, 176, 64, 255}, "!");
-                ui.tooltip("the same key is used by " + other->name);
+                ui.tooltip(std::string{ui.strings().key_shared_with} + other->name);
             }
 
             ui.table_next_column();
@@ -147,7 +147,7 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
             }
 
             ui.table_next_column();
-            if (a.chord != a.default_chord && ui.button("reset")) {
+            if (a.chord != a.default_chord && ui.button(ui.strings().reset, "##reset")) {
                 (void)binds.reset(a.name);
                 changed = true;
             }
@@ -218,7 +218,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         return chosen;
     }
 
-    constexpr std::string_view title = "Command palette";
+    const std::string_view title = ui.strings().palette_title;
     if (just_opened_) { ui.open_modal(title); }
     auto m = ui.modal(title, {560.0f, 0.0f}, modal_flags::esc_closes | modal_flags::backdrop_closes | modal_flags::no_title_bar);
     if (!m) {
@@ -234,7 +234,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         ui.request_text_focus("##palette_query");
         just_opened_ = false;
     }
-    if (ui.input_text("##palette_query", query_, "Type a command...", input_flags::none, 96)) { selected_ = 0; }
+    if (ui.input_text("##palette_query", query_, ui.strings().palette_hint, input_flags::none, 96)) { selected_ = 0; }
 
     struct hit {
         const keybinds::action* action;
@@ -290,7 +290,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         }
         if (row.pressed) { chosen = a.name; }
     }
-    if (n == 0) { ui.text_dim("no matching commands"); }
+    if (n == 0) { ui.text_dim(ui.strings().no_commands); }
     if (n > shown) { ui.text_dim(std::to_string(n) + " commands"); }
 
     if (ui.input_submitted() && n > 0) { chosen = hits[static_cast<std::size_t>(selected_)].action->name; }

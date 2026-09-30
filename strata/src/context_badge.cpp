@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "core/part_id.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -75,7 +76,7 @@ chip_result context::chip(std::string_view label, const chip_options& o)
 
     interaction close_in;
     if (o.closable) {
-        close_in = interact(hash_id("##close", key), close_r.expanded(2.0f));
+        close_in = interact(part_id(part::chip_close, key), close_r.expanded(2.0f));
         res.closed = close_in.pressed;
     }
     const interaction in = interact(key, body_r);

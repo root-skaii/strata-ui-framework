@@ -82,7 +82,7 @@ void tabs_window(context& ui, demo3_state& s)
                 ui.combo("layout", s.layout_mode, {"single page", "two pages", "continuous", "outline"});
                 static constexpr std::array<std::string_view, 8> fonts{"Segoe UI", "Consolas", "Cascadia Code", "Georgia",
                                                                        "Verdana", "Tahoma", "Calibri", "Arial"};
-                ui.combo_filtered("font", s.font_pick, fonts.data(), fonts.size(), "search fonts");
+                ui.combo_filtered("font", s.font_pick, fonts, "search fonts");
                 ui.color_edit("highlight", s.highlight);
                 if (ui.button("more...")) { ui.toggle_popup("more"); }
                 if (auto q = ui.popup("more", 220.0f)) {
@@ -146,7 +146,7 @@ void dnd_window(context& ui, demo3_state& s)
                 const int idx = static_cast<int>(i);
                 if (ui.selectable(s.todo[i], s.selected_task == idx)) { s.selected_task = idx; }
                 if (auto d = ui.drag_source("task", idx)) { ui.text_colored(ui.theme().accent_hover, s.todo[i]); }
-                const rect row = ui.last_item_rect();
+                const rect row = ui.item_rect();
                 const drop_result drop = ui.drop_target("task", drop_flags::no_highlight);
                 if (drop.hovering) { // an insert marker above or below the row, by the half the pointer is in
                     const f32 y = drop.local.y < 0.5f ? row.min.y - 1.0f : row.max.y + 1.0f;

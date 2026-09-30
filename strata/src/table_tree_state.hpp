@@ -95,7 +95,7 @@ struct table_tree_state {
     std::vector<tree_state>    tree_states_; // sorted by key
     bool                       item_pressed_{}; // last tree row / selectable was clicked
 
-    std::array<table_state, 32> tables_{};      // (context::max_tables is the same)
+    std::vector<table_state>    tables_;        // context_config::capacity.tables slots, sized once
     table_frame                 table_{};       // the table being built this frame
     std::array<table_frame, 4>  table_stack_{}; // (context::max_table_depth is the same) the tables around the current one
     u32                         table_depth_{};

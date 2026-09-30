@@ -652,10 +652,10 @@ void test_tabs()
         const f32 list_x = 112.0f + 476.0f - 13.0f;
         h.click({list_x, 112.0f + h.ui.frame_height() * 0.5f}, build);
         h.frames(build, 2);
-        CHECK(h.ui.popup_open());
+        CHECK(h.ui.any_popup_open());
         CHECK(h.ui.want_capture_mouse());
         h.click({30.0f, 500.0f}, build); // outside the list
-        CHECK(!h.ui.popup_open());
+        CHECK(!h.ui.any_popup_open());
 
         // the list is at most nine rows tall and scrolls; a row picks its tab
         h.click({list_x, 112.0f + h.ui.frame_height() * 0.5f}, build);
@@ -666,7 +666,7 @@ void test_tabs()
             const f32 top   = 111.0f + h.ui.frame_height() + 4.0f + 12.0f; // under the list button, plus the popup padding
             h.click({650.0f, top + 3.0f * pitch + (lh + 8.0f) * 0.5f}, build); // about the fourth row (the popup sits at 556 .. 796)
             h.frames(build, 2);
-            CHECK(sel == 3 && !h.ui.popup_open());
+            CHECK(sel == 3 && !h.ui.any_popup_open());
         }
 
         // selecting a far tab from outside scrolls it into view and nothing breaks with the wheel
@@ -730,9 +730,9 @@ void test_datetime_pickers()
     const auto build = [&] {
         if (auto w = h.ui.window("p", {100, 100}, {320, 0}, plain_window)) {
             day_changed  = h.ui.date_picker("day", day) || day_changed;
-            if (!boxes_known) { day_box = h.ui.last_item_rect(); }
+            if (!boxes_known) { day_box = h.ui.item_rect(); }
             time_changed = h.ui.time_picker("time", clock) || time_changed;
-            if (!boxes_known) { clock_box = h.ui.last_item_rect(); }
+            if (!boxes_known) { clock_box = h.ui.item_rect(); }
         }
     };
     h.frames(build, 3);
@@ -742,7 +742,7 @@ void test_datetime_pickers()
     // the calendar: September 2026 starts on a Tuesday, so the grid begins on Monday 31 August
     h.click(day_box.center(), build);
     h.frames(build, 3);
-    CHECK(h.ui.popup_open());
+    CHECK(h.ui.any_popup_open());
     {
         const f32 fh    = h.ui.frame_height();
         const f32 pad   = 12.0f;
@@ -758,7 +758,7 @@ void test_datetime_pickers()
         h.click({gx + cw * 2.5f, grid0 + (ch + 2.0f) * 1.5f}, build);
         h.frames(build, 2);
         CHECK(day_changed && day == date{2026, 9, 9});
-        CHECK(!h.ui.popup_open());
+        CHECK(!h.ui.any_popup_open());
     }
 
     // next month with the arrow, then a day: the popup shows the month of the value when it opens
@@ -774,7 +774,7 @@ void test_datetime_pickers()
         const vec2 next{day_box.min.x + pad + w - head * 1.5f, top + head * 0.5f}; // the single right arrow
         h.click(next, build);
         h.click(next, build);
-        CHECK(!day_changed && h.ui.popup_open()); // moving through months changes nothing
+        CHECK(!day_changed && h.ui.any_popup_open()); // moving through months changes nothing
         // October, then November 2026: 1 November is a Sunday, the last column of row 0
         const f32 lh    = h.ui.font().line_height(0);
         const f32 ch    = fh - 6.0f;
@@ -788,7 +788,7 @@ void test_datetime_pickers()
     // the time grid: an hour, a minute and the fine step
     h.click(clock_box.center(), build);
     h.frames(build, 3);
-    CHECK(h.ui.popup_open());
+    CHECK(h.ui.any_popup_open());
     {
         const f32 fh  = h.ui.frame_height();
         const f32 pad = 12.0f;
@@ -816,7 +816,7 @@ void test_datetime_pickers()
     }
     h.key(key::escape);
     h.frames(build, 3);
-    CHECK(!h.ui.popup_open());
+    CHECK(!h.ui.any_popup_open());
     CHECK(clock.hour == 8 && day == date{2026, 11, 1});
 
     // an invalid value is brought back to a valid one
@@ -1011,7 +1011,7 @@ void test_lists_and_tables()
         h.frame(build);
         h.in.mouse_down[1] = false;
         h.frames(build, 2);
-        CHECK(h.ui.menu_is_open());
+        CHECK(h.ui.menu_open());
     }
 
     // a tree table: the children are rows, shown while the node is open
@@ -1067,6 +1067,51 @@ void test_lists_and_tables()
         h.frames(build, 2);
         CHECK(rows == 1);
     }
+}
+
+void test_item_list()
+{
+    std::fprintf(stderr, "[item_list: braced, containers, projections, combo over a vector]\n");
+    const auto third = [](const item_list& l) { return l.size() == 3 && l[2] == "ccc"; }; // (a braced list lives for the call)
+    CHECK(third({"a", "bb", "ccc"}));
+    const std::vector<std::string> owned{"red", "green"};
+    CHECK(item_list{owned}.size() == 2 && item_list{owned}[1] == "green");
+    const std::array<std::string_view, 2> views{"x", "y"};
+    CHECK(item_list{views}[0] == "x");
+    const char* const raw[] = {"one", "two", "three"};
+    CHECK(item_list{raw}.size() == 3 && item_list{raw}[2] == "three");
+    struct unit { int factor; std::string name; };
+    const std::vector<unit> units{{1, "m"}, {1000, "km"}};
+    CHECK(item_list(units, &unit::name)[1] == "km");
+    CHECK(item_list(units, [](const unit& u) -> std::string_view { return u.name; })[0] == "m");
+    const std::string_view* none = nullptr;
+    CHECK(item_list(none, 5).empty());
+
+    harness h;
+    int pick = 5; // out of range: clamped to the last entry
+    const auto build = [&] {
+        if (auto w = h.ui.window("list", {20, 20}, {300, 0}, plain_window)) { (void)h.ui.combo("unit", pick, {units, &unit::name}); }
+    };
+    h.frames(build, 2);
+    CHECK(pick == 1);
+}
+
+void test_ui_strings()
+{
+    std::fprintf(stderr, "[ui_strings: the words widgets draw themselves come from the table]\n");
+    harness h;
+    key k = key::none;
+    const auto build = [&] {
+        if (auto w = h.ui.window("words", {20, 20}, {300, 0}, plain_window)) { (void)h.ui.hotkey("shortcut", k); }
+    };
+    h.frames(build, 2);
+    const u32 english = h.ui.stats().vertices;
+    ui_strings de = h.ui.strings();
+    de.unbound = "Keine Taste belegt"; // longer than "None": more glyphs
+    h.ui.set_strings(de);
+    h.frames(build, 2);
+    CHECK(h.ui.strings().unbound == "Keine Taste belegt" && h.ui.strings().today == "Today");
+    CHECK(h.ui.stats().vertices > english);
 }
 
 void test_scrollbar_drag()
@@ -1192,4 +1237,6 @@ void run_widgets_tests()
     test_datetime_pickers();
     test_lists_and_tables();
     test_scrollbar_drag();
+    test_item_list();
+    test_ui_strings();
 }

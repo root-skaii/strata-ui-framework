@@ -68,8 +68,6 @@ demo4_state::demo4_state()
     for (int i = 0; i < 300; ++i) {
         types.push_back(std::format("UnityEngine.{}{:03}", kinds[i % 12], i));
     }
-    type_views.reserve(types.size());
-    for (const std::string& t : types) { type_views.emplace_back(t); }
 }
 
 // icons ---------------------------------------------------------------------------------------
@@ -191,12 +189,12 @@ void demo4_app(context& ui, demo4_state& s)
         // window-scoped shortcuts: Delete destroys, F2 renames, Ctrl+D duplicates; only while this panel is focused and
         // no text field has the keyboard.
         if (ui.window_focused()) {
-            if (ui.key_pressed(VK_DELETE) && !s.sel.empty()) {
+            if (ui.key_pressed(strata::key::del) && !s.sel.empty()) {
                 ui.ask_confirm("destroy", std::format("Destroy {} object(s)?", s.sel.size()),
                                static_cast<strata::u64>(s.sel.size()));
             }
-            if (ui.key_pressed(VK_F2))          { s.status = "rename"; }
-            if (ui.key_pressed('D', true))      { s.status = "duplicate"; }
+            if (ui.key_pressed(strata::key::f2))          { s.status = "rename"; }
+            if (ui.key_pressed(strata::key::d, true))      { s.status = "duplicate"; }
         }
 
         {   // bulk actions are disabled while nothing is selected, and still say why
@@ -243,7 +241,7 @@ void demo4_app(context& ui, demo4_state& s)
 
         ui.text("component type (300 entries, type to filter)");
         ui.set_next_item_width(ui.content_width());
-        (void)ui.combo_filtered("##type", s.type_index, s.type_views.data(), s.type_views.size());
+        (void)ui.combo_filtered("##type", s.type_index, s.types);
         ui.separator();
 
         ui.textf("ui scale {} %", ui.scale_percent());

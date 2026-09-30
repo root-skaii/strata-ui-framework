@@ -63,38 +63,38 @@ void test_raw_keys_and_buttons()
     bool held = false, middle = false, right_down = false;
     const auto build = [&] {
         if (auto w = h.ui.window("w", {0.0f, 0.0f}, {300.0f, 300.0f}, plain_window)) {
-            if (h.ui.key_pressed(VK_DELETE))  { ++del; }
-            if (h.ui.key_pressed(VK_F2))      { ++f2; }
-            if (h.ui.key_pressed('D', true))  { ++dup; }
-            held       = h.ui.key_down(VK_SHIFT);
-            middle     = h.ui.mouse_clicked(2);
-            right_down = h.ui.mouse_down(1);
+            if (h.ui.key_pressed(strata::key::del))  { ++del; }
+            if (h.ui.key_pressed(strata::key::f2))      { ++f2; }
+            if (h.ui.key_pressed(strata::key::d, true))  { ++dup; }
+            held       = h.ui.key_down(strata::key::shift);
+            middle     = h.ui.mouse_clicked(strata::mouse_button::middle);
+            right_down = h.ui.mouse_down(strata::mouse_button::right);
         }
     };
     h.frames(build, 2);
     CHECK(del == 0 && f2 == 0 && dup == 0);
 
-    h.in.pressed_key = VK_DELETE;
+    h.press_now(strata::key::del);
     h.frame(build);
     CHECK(del == 1);
 
-    h.in.pressed_key = VK_F2;
+    h.press_now(strata::key::f2);
     h.frame(build);
     CHECK(f2 == 1);
 
-    h.in.pressed_key = 'D';            // without Ctrl it is not the shortcut
+    h.press_now(strata::key::d);            // without Ctrl it is not the shortcut
     h.frame(build);
     CHECK(dup == 0);
-    h.in.pressed_key = 'D';
     h.in.ctrl = true;
+    h.press_now(strata::key::d);
     h.frame(build);
     h.in.ctrl = false;
     CHECK(dup == 1);
 
-    h.in.set_held(VK_SHIFT, true);
+    h.in.set_held(strata::key::shift, true);
     h.frame(build);
     CHECK(held);
-    h.in.set_held(VK_SHIFT, false);
+    h.in.set_held(strata::key::shift, false);
     h.frame(build);
     CHECK(!held);
 
@@ -112,7 +112,7 @@ void test_raw_keys_and_buttons()
     rect field{};
     const auto with_field = [&] {
         if (auto w = h.ui.window("w", {0.0f, 0.0f}, {300.0f, 300.0f}, plain_window)) {
-            if (h.ui.key_pressed(VK_DELETE)) { ++del; }
+            if (h.ui.key_pressed(strata::key::del)) { ++del; }
             (void)h.ui.input_text("n", name);
             field = h.ui.item_rect();
         }
@@ -121,7 +121,7 @@ void test_raw_keys_and_buttons()
     h.click(field.center(), with_field);
     CHECK(h.ui.want_text_input());
     const int before = del;
-    h.in.pressed_key = VK_DELETE;
+    h.press_now(strata::key::del);
     h.frame(with_field);
     CHECK(del == before);
 }
@@ -148,12 +148,12 @@ void test_window_focus()
     h.click(a_rect.center(), build);
     h.frames(build, 2);
     CHECK(a_focused && !b_focused);
-    CHECK(h.ui.is_window_focused("A") && !h.ui.is_window_focused("B"));
+    CHECK(h.ui.window_focused("A") && !h.ui.window_focused("B"));
 
     h.click(b_rect.center(), build);
     h.frames(build, 2);
     CHECK(b_focused && !a_focused);
-    CHECK(h.ui.is_window_focused("B"));
+    CHECK(h.ui.window_focused("B"));
 }
 
 void test_text_focus()
@@ -438,31 +438,60 @@ void test_combo_filtered()
     rect field{};
     const auto build = [&] {
         if (auto w = h.ui.window("w", {0.0f, 0.0f}, {300.0f, 300.0f}, plain_window)) {
-            if (h.ui.combo_filtered("pick", current, items.data(), items.size())) { ++changes; }
+            if (h.ui.combo_filtered("pick", current, items)) { ++changes; }
             field = h.ui.item_rect();
         }
     };
     h.frames(build, 2);
-    CHECK(!h.ui.popup_open());
+    CHECK(!h.ui.any_popup_open());
 
     h.click(field.center(), build);
     h.frames(build, 2);
-    CHECK(h.ui.popup_open());          // the popup is up with the keyboard in the search field
+    CHECK(h.ui.any_popup_open());          // the popup is up with the keyboard in the search field
     CHECK(h.ui.want_text_input());
 
     h.type("del");                     // narrows to "delta"
     h.frames(build, 2);
     h.key(key::enter);
-    h.frames(build, 3); // popup drawn on the key's frame; popup_open() lags one more
+    h.frames(build, 3); // popup drawn on the key's frame; any_popup_open() lags one more
     CHECK(current == 3);
     CHECK(changes == 1);
-    CHECK(!h.ui.popup_open());
+    CHECK(!h.ui.any_popup_open());
 }
 
 } // namespace
 
+void test_keys_while_typing()
+{
+    std::fprintf(stderr, "[keys: a focused text field keeps what it types and edits, the rest still arrives]\n");
+    harness h;
+    std::string text;
+    int f5 = 0, enter = 0, s = 0, left = 0, save = 0;
+    const auto build = [&] {
+        if (auto w = h.ui.window("w", {0.0f, 0.0f}, {300.0f, 300.0f}, plain_window)) {
+            f5    += h.ui.key_pressed(strata::key::f5) ? 1 : 0;
+            enter += h.ui.key_pressed(strata::key::enter) ? 1 : 0;
+            s     += h.ui.key_pressed(strata::key::s) ? 1 : 0;
+            left  += h.ui.key_pressed(strata::key::left) ? 1 : 0;
+            save  += h.ui.key_pressed(strata::key::s, true) ? 1 : 0;
+            h.ui.request_text_focus("field");
+            (void)h.ui.input_text("field", text);
+        }
+    };
+    h.frames(build, 3);
+    CHECK(h.ui.want_text_input());
+    for (const strata::key k : {strata::key::f5, strata::key::enter, strata::key::s, strata::key::left}) {
+        h.press(k);
+        h.frame(build);
+    }
+    h.press(strata::key::s, true);
+    h.frame(build);
+    CHECK(f5 == 1 && enter == 1 && s == 0 && left == 0 && save == 1);
+}
+
 void run_app_tests()
 {
+    test_keys_while_typing();
     test_disabled();
     test_raw_keys_and_buttons();
     test_window_focus();

@@ -18,7 +18,7 @@
 //   strata::overlay::host overlay;
 //   overlay.add<fps>();
 //   overlay.add<my_menu>();
-//   overlay.install({.toggle_key = 0x70});     // F1 opens / closes the overlay; `always` modules run regardless
+//   overlay.install({.toggle_key = strata::key::f1});     // F1 opens / closes the overlay; `always` modules run regardless
 //
 // the hook under the host is per process (a swap chain's vtable exists once), so there is one installed host at a time.
 
@@ -97,7 +97,7 @@ public:
     // hdr ...); its ui / hud callbacks are ignored. false: see last_error()
     bool install(const options& base = {});
     // removes the hook, detaches every module and destroys it
-    void uninstall();
+    overlay::uninstall_result uninstall(); // modules are destroyed unless it is `busy` (they could still be running)
     [[nodiscard]] bool installed() const noexcept { return installed_.load(); }
 
     // one frame of modules on `ui`, between its begin_frame and end_frame: attaches new modules, drops removed ones,

@@ -98,14 +98,14 @@ void context::open_popup(std::string_view label, vec2 pos)
 
 void context::toggle_popup(std::string_view label)
 {
-    if (popup_is_open(label)) {
+    if (popup_open(label)) {
         m_->popup_.popup_close(hash_id(label, m_->ids_.current()));
     } else {
         open_popup(label);
     }
 }
 
-bool context::popup_is_open(std::string_view label) const noexcept
+bool context::popup_open(std::string_view label) const noexcept
 {
     return m_->popup_.popup_has(hash_id(label, m_->ids_.current()));
 }
@@ -276,6 +276,139 @@ drop_result context::drop_target(std::string_view type, drop_flags flags)
         r.data    = m_->dnd_.dd_data_;
     }
     return r;
+}
+
+bool context::pointer_over(const rect& r) const noexcept
+{
+    const bool in_window = m_->in_overlay_ || (m_->cur_window_ != 0 && m_->win_.hovered_window_prev_ == m_->cur_window_);
+    return in_window && !m_->pointer_blocked() && m_->dl_.clip().contains(m_->input_.mouse_) && r.contains(m_->input_.mouse_);
+}
+
+// draws the popup frame in its overlay layer and redirects layout into it until end_popup(). false while closed.
+bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
+{
+    const u32 level = m_->popup_.popup_level_of(key);
+    if (level == popup_stack::no_popup) {
+        return false;
+    }
+    // Esc closes the top level only, and not while a text field or a menu (opened from here) has the keyboard
+    if (level + 1 == m_->popup_.popup_count_ && m_->focus_id_ == 0 && m_->menu_.menu_open_[0].key == 0 && !m_->popup_.popup_esc_used_) {
+        for (u32 i = 0; i < m_->input_.key_count_; ++i) {
+            if (m_->input_.keys_[i].k == key::escape) {
+                m_->popup_.popup_close_from(level);
+                m_->popup_.popup_esc_used_ = true;
+                return false;
+            }
+        }
+    }
+
+    rect list = {{anchor.min.x, anchor.max.y + 4.0f}, {anchor.min.x + size.x, anchor.max.y + 4.0f + size.y}};
+    if (list.max.y > m_->display_.y - 4.0f && anchor.min.y - 4.0f - size.y >= 4.0f) {
+        list = {{anchor.min.x, anchor.min.y - 4.0f - size.y}, {anchor.min.x + size.x, anchor.min.y - 4.0f}};
+    }
+    if (list.max.x > m_->display_.x - 4.0f) { // keep it on screen horizontally
+        const f32 shift = list.max.x - (m_->display_.x - 4.0f);
+        list = {{list.min.x - shift, list.min.y}, {list.max.x - shift, list.max.y}};
+    }
+
+    popup_enter(level, list, anchor);
+    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+
+    shape_style body;
+    body.radius        = radii(m_->style_.rounding * 0.8f);
+    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.fill_bottom   = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.border        = m_->style_.border;
+    body.border_width  = m_->style_.border_width;
+    body.shadow        = m_->style_.shadow;
+    body.shadow_blur   = m_->style_.shadow_blur * 0.8f;
+    body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.3f};
+    popup_panel(list, body);
+
+    m_->dl_.push_clip({{list.min.x + 1.0f, list.min.y + 1.0f}, {list.max.x - 1.0f, list.max.y - 1.0f}});
+
+    m_->layout_        = {};
+    m_->layout_.origin = {list.min.x + m_->style_.padding, list.min.y + m_->style_.padding};
+    m_->layout_.width  = size.x - 2.0f * m_->style_.padding;
+    return true;
+}
+
+void context::end_popup_at()
+{
+    m_->dl_.pop_clip();
+    m_->dl_.pop_clip();
+    popup_leave(); // (restores the layout)
+}
+
+void context::popup_panel(const rect& r, const shape_style& body)
+{
+    const f32 k = std::clamp(m_->style_.popup_acrylic, 0.0f, 1.0f);
+    if (k <= 0.0f || m_->dl_.alpha() < 0.99f) { // (a popup that is still fading in is drawn opaque: the blur has no fade)
+        m_->dl_.shape(r, body);
+        return;
+    }
+    const color clear{0, 0, 0, 0};
+    shape_style shadow_only = body; // the shadow first, the glass over it, then the border on top
+    shadow_only.fill_top = shadow_only.fill_bottom = clear;
+    shadow_only.border = clear;
+    shadow_only.border_width = 0.0f;
+    m_->dl_.shape(r, shadow_only);
+
+    const color tint = body.fill_top.scaled_alpha(1.0f + (m_->style_.acrylic_alpha - 1.0f) * k);
+    m_->dl_.backdrop(r, m_->style_.blur_radius, tint, body.radius, m_->style_.acrylic_noise, m_->style_.acrylic_saturation, m_->style_.acrylic_brightness);
+
+    shape_style edge = body;
+    edge.fill_top = edge.fill_bottom = clear;
+    edge.shadow = clear;
+    edge.shadow_blur = 0.0f;
+    m_->dl_.shape(r, edge);
+}
+
+void context::draw_tooltip(std::string_view text)
+{
+    if (m_->in_overlay_ || text.empty()) {
+        return;
+    }
+    const font_id f  = current_font();
+    const vec2 ts    = label_size(f, text);
+    const f32  padx  = 9.0f;
+    const f32  pady  = 6.0f;
+    const vec2 size{ts.x + 2.0f * padx, ts.y + 2.0f * pady};
+
+    vec2 pos = m_->input_.mouse_ + vec2{14.0f, 20.0f};
+    if (pos.x + size.x > m_->display_.x - 4.0f) { pos.x = m_->display_.x - 4.0f - size.x; }
+    if (pos.y + size.y > m_->display_.y - 4.0f) { pos.y = m_->input_.mouse_.y - size.y - 10.0f; }
+    pos.x = std::max(pos.x, 4.0f);
+    pos.y = std::max(pos.y, 4.0f);
+
+    const f32 fade = std::clamp((m_->hover_time_ - 0.35f) / 0.12f, 0.0f, 1.0f);
+    const u32 previous_owner = m_->run_owner_;
+    switch_run(m_->popup_.overlay_run());
+    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+    m_->dl_.push_alpha(fade);
+
+    shape_style body;
+    body.radius        = radii(m_->style_.rounding * 0.6f);
+    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.fill_bottom   = body.fill_top;
+    body.border        = m_->style_.border;
+    body.border_width  = m_->style_.border_width;
+    body.shadow        = m_->style_.shadow;
+    body.shadow_blur   = m_->style_.shadow_blur * 0.5f;
+    body.shadow_offset = {0.0f, 3.0f};
+    popup_panel(rect::from_size(pos, size), body);
+    label_draw({pos.x + padx, pos.y + pady}, m_->style_.text, text, f);
+
+    m_->dl_.pop_alpha();
+    m_->dl_.pop_clip();
+    switch_run(previous_owner);
+}
+
+void context::tooltip(std::string_view text)
+{
+    if (m_->last_item_hovered_ && m_->last_item_key_ == m_->hover_key_cur_ && m_->hover_time_ > 0.4f) {
+        draw_tooltip(text);
+    }
 }
 
 } // namespace strata
