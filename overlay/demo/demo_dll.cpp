@@ -4,7 +4,7 @@
 //   STRATA_OVERLAY_SHOW=1        start with the overlay open
 //   STRATA_OVERLAY_CAPTURE=path  write a png of the frame (ui included) after 30 visible frames (for tests)
 
-#include <strata/overlay/overlay.hpp>
+#include <strata/overlay/module.hpp>
 #if STRATA_HAS_OPENVR
 #include <strata/backend/d3d11.hpp>
 #include <strata/backend/openvr.hpp>
@@ -188,20 +188,28 @@ void overlay_ui(context& ui)
     }
 }
 
+// the demo's whole overlay is one module; see overlay/module.hpp for the others you can add next to it
+struct demo_menu final : overlay::module {
+    [[nodiscard]] std::string_view name() const noexcept override { return "demo menu"; }
+    void on_frame(context& ui) override { overlay_ui(ui); }
+};
+
+overlay::host g_host;
+
 DWORD WINAPI worker(LPVOID)
 {
+    g_host.add<demo_menu>();
     overlay::options opt;
-    opt.ui = overlay_ui;
     opt.start_visible = env("STRATA_OVERLAY_SHOW") == "1";
     opt.capture_path  = env("STRATA_OVERLAY_CAPTURE");
     if (const std::string f = env("STRATA_OVERLAY_CAPTURE_FRAME"); !f.empty()) { opt.capture_frame = static_cast<unsigned>(std::atoi(f.c_str())); }
-    if (!overlay::install(opt)) {
+    if (!g_host.install(opt)) {
         std::string msg = std::string{"strata overlay: "} + overlay::last_error() + "\n";
         ::OutputDebugStringA(msg.c_str());
         ::FreeLibraryAndExitThread(g_module, 1);
     }
     while (!g_eject.load()) { ::Sleep(100); }
-    overlay::uninstall();
+    g_host.uninstall();
     ::FreeLibraryAndExitThread(g_module, 0); // (only when the window procedure could be restored: see uninstall())
 }
 

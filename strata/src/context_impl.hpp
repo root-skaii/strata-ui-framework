@@ -135,6 +135,8 @@ struct context::impl {
     u32                           run_owner_{run_base};
     u32                           run_start_{};
     bool                          runs_overflow_{};
+    u32                           layer_saved_owner_{run_base}; // run to return to when a layer scope ends
+    bool                          in_layer_{};
 
 
     // number widgets

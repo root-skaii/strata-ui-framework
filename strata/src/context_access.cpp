@@ -2,6 +2,7 @@
 
 #include "context_impl.hpp"
 
+#include <cassert>
 #include <cmath>
 
 namespace strata {
@@ -243,6 +244,29 @@ bool context::alt_down() const noexcept
 
 draw_list& context::draw() noexcept
 { return m_->dl_; }
+
+layer_scope context::layer(strata::layer which)
+{
+    begin_layer(which);
+    return layer_scope{*this};
+}
+
+void context::begin_layer(strata::layer which)
+{
+    assert(!m_->in_layer_ && "layers do not nest");
+    m_->in_layer_          = true;
+    m_->layer_saved_owner_ = m_->run_owner_;
+    switch_run(which == strata::layer::foreground ? run_foreground : run_base);
+    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+}
+
+void context::end_layer()
+{
+    if (!m_->in_layer_) { return; }
+    m_->in_layer_ = false;
+    m_->dl_.pop_clip();
+    switch_run(m_->layer_saved_owner_);
+}
 
 const frame_stats& context::stats() const noexcept
 { return m_->stats_prev_; }

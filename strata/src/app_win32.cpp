@@ -1,6 +1,7 @@
 #include "strata/app.hpp"
 
 #include "strata/config.hpp"
+#include "strata/frame.hpp"
 #include "strata/platform/win32.hpp"
 #include "strata/themes.hpp"
 
@@ -315,15 +316,10 @@ int app::run(const std::function<void(app&, context&)>& frame)
         // start the frame when the swap chain can take one, so its input is as fresh as possible
         if (s.latency_wait != nullptr) { ::WaitForSingleObjectEx(s.latency_wait, 100, TRUE); }
 
-        s.ui->begin_frame(s.platform.new_frame());
-        frame(*this, *s.ui);
-        s.ui->end_frame();
-        ++s.frames;
-        s.platform.set_ime(s.ui->ime_wanted(), s.ui->ime_position(), s.ui->ime_line_height());
-        s.platform.set_cursor(s.ui->cursor());
-
         // nothing changed: what is on the screen is right. (idling off: every frame is drawn)
-        if (!s.cfg.idle || !s.ui->frame_unchanged()) {
+        const bool changed = run_frame(*s.ui, s.platform, [&](context& ui) { frame(*this, ui); }, s.cfg.idle);
+        ++s.frames;
+        if (changed) {
             if (!s.present()) { // the device is gone: a new one, and the frame again
                 if (!s.reset_device()) { s.exit_code = -1; break; }
                 continue;

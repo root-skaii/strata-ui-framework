@@ -1,4 +1,5 @@
 #include "strata/backend/d3d11.hpp"
+#include "strata/backend/backend.hpp"
 
 #include "blur_plan.hpp"
 
@@ -22,6 +23,8 @@
 #include "g_strata_ui_ps_blur_gauss.h"
 
 namespace strata {
+
+static_assert(renderer_backend<d3d11_renderer>);
 
 using Microsoft::WRL::ComPtr;
 

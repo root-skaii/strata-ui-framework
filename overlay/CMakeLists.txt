@@ -4,7 +4,9 @@
 #   strata_overlay_host     a stand-in "game" that loads the dll and checks that it works
 #   strata_overlay_inject   a small LoadLibrary injector
 
-add_library(strata_overlay STATIC src/overlay.cpp)
+add_library(strata_overlay STATIC
+    src/overlay.cpp src/host.cpp src/diagnostics.cpp src/capture.cpp src/render_d3d12.cpp src/window.cpp
+    src/attach.cpp src/output.cpp src/frame.cpp src/hooks.cpp)
 add_library(strata::overlay ALIAS strata_overlay)
 target_include_directories(strata_overlay PUBLIC include)
 target_link_libraries(strata_overlay PUBLIC strata::strata PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib dxgi.lib user32.lib)
@@ -21,11 +23,16 @@ target_link_libraries(strata_overlay_host PRIVATE $<BUILD_INTERFACE:strata_optio
 # like a real game, a run only loads the api it uses; the host checks that the overlay does not bring in the other one
 target_link_options(strata_overlay_host PRIVATE /DELAYLOAD:d3d11.dll /DELAYLOAD:d3d12.dll)
 
+# headless: modules, modes, ordering, enable / remove (no window, no hook, no input)
+add_executable(strata_overlay_module_test tools/module_test.cpp)
+target_link_libraries(strata_overlay_module_test PRIVATE strata_overlay $<BUILD_INTERFACE:strata_options>)
+
 add_executable(strata_overlay_inject tools/injector.cpp)
 target_link_libraries(strata_overlay_inject PRIVATE $<BUILD_INTERFACE:strata_options> user32.lib)
 target_compile_definitions(strata_overlay_inject PRIVATE UNICODE _UNICODE)
 
 if(STRATA_BUILD_TESTS)
+    add_test(NAME strata_overlay_modules COMMAND strata_overlay_module_test)
     # the host loads the dll the way an injector would, presses F1 through its message queue and checks that frames are
     # drawn while the overlay is open (and only then); the frame is captured as a png next to the other test artifacts
     add_test(NAME strata_overlay_smoke

@@ -48,6 +48,11 @@ window_scope::~window_scope()
     ctx_->end_window();
 }
 
+layer_scope::~layer_scope()
+{
+    ctx_->end_layer();
+}
+
 font_scope::~font_scope()
 {
     ctx_->pop_font();
@@ -868,7 +873,7 @@ void context::apply_layer_order()
         return (wa.dock_owner != 0 && wa.docked_now ? 1 : 0) < (wb.dock_owner != 0 && wb.docked_now ? 1 : 0);
     });
     for (u32 i = n; i-- > 0;) { // topmost window; the menu bar does not take focus from windows below
-        if (!m_->win_.frame_windows_[order[i]]->menubar) {
+        if (!m_->win_.frame_windows_[order[i]]->menubar && !m_->win_.frame_windows_[order[i]]->passive) {
             m_->win_.focused_window_ = m_->win_.frame_windows_[order[i]]->key;
             break;
         }
@@ -900,6 +905,7 @@ void context::apply_layer_order()
     for (u32 level = 1; level < popup_stack::max_popup_levels; ++level) { // nested popups, each above its parent
         add_owner(popup_stack::popup_run(level));
     }
+    add_owner(run_foreground);
 
     // nothing to do when the emission order already is the draw order
     u32  cursor   = 0;
@@ -1667,6 +1673,11 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         }
     }
     st->last_frame = m_->frame_;
+    st->passive    = has_flag(flags, window_flags::no_inputs);
+    if (st->passive) { // nothing to grab, move, resize or dock
+        constexpr u16 drop = static_cast<u16>(window_flags::resizable) | static_cast<u16>(window_flags::drag_by_body) | static_cast<u16>(window_flags::dockable);
+        flags = static_cast<window_flags>(static_cast<u16>(flags) & ~drop) | window_flags::no_move | window_flags::no_collapse;
+    }
     const bool is_menubar   = std::exchange(m_->next_window_menubar_, false);
     const u32  modal_level  = std::exchange(m_->modal_.next_window_modal_level_, 0);
     st->menubar     = is_menubar;
@@ -1699,9 +1710,9 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     st->docked_now = docked;
     st->dock_owner = docked ? space->owner : id{};
     if (docked) {
-        constexpr u8 strip = static_cast<u8>(window_flags::resizable) | static_cast<u8>(window_flags::drag_by_body);
-        constexpr u8 add   = static_cast<u8>(window_flags::no_title_bar) | static_cast<u8>(window_flags::no_move);
-        flags = static_cast<window_flags>((static_cast<u8>(flags) & ~strip) | add);
+        constexpr u16 strip = static_cast<u16>(window_flags::resizable) | static_cast<u16>(window_flags::drag_by_body);
+        constexpr u16 add   = static_cast<u16>(window_flags::no_title_bar) | static_cast<u16>(window_flags::no_move);
+        flags = static_cast<window_flags>((static_cast<u16>(flags) & ~strip) | add);
         st->pos       = node->shown_content.min;
         st->width     = node->shown_content.width();
         st->height    = node->shown_content.height();
@@ -1826,7 +1837,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
 
     // a modal takes the input from everything else
     const bool input_blocked = m_->modal_.modal_top_prev_ != 0 && wid != m_->modal_.modal_top_prev_;
-    if (frame.contains(m_->input_.mouse_) && !hidden_tab && !input_blocked) {
+    if (frame.contains(m_->input_.mouse_) && !hidden_tab && !input_blocked && !st->passive) {
         // a floating window beats a docked one, the menu bar beats both, a modal beats them all
         const bool in_float = docked && st->dock_owner != 0;
         const u32 rank = modal_level != 0 ? 0x30000u + modal_level * 0x10000u : (is_menubar ? 0x20000u : (docked && !in_float ? 0u : 0x10000u));

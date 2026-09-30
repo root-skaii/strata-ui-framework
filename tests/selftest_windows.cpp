@@ -906,6 +906,50 @@ void test_scale()
     CHECK(h.ui.set_scale(1.0f).has_value()); // the same scale again is a no-op that succeeds
 }
 
+void test_layers_and_passive_windows()
+{
+    std::fprintf(stderr, "[layers and no_inputs windows]\n");
+    harness h;
+    bool clicked = false;
+    const auto build = [&] {
+        if (auto w = h.ui.window("plate", {100, 100}, {200, 100}, window_flags::no_inputs)) {
+            h.ui.text("hud");
+            if (h.ui.button("under the pointer")) { clicked = true; }
+        }
+        if (auto w = h.ui.window("tool", {400, 100}, {200, 100}, window_flags::none)) { h.ui.text("tool"); }
+        { auto fg = h.ui.layer(layer::foreground); h.ui.draw().rect_filled({{10, 10}, {60, 40}}, {255, 0, 0, 255}); }
+        if (auto w = h.ui.window("late", {400, 300}, 100.0f)) { h.ui.text("drawn after the foreground"); }
+        { auto bg = h.ui.layer(layer::background); h.ui.draw().rect_filled({{0, 0}, {800, 600}}, {0, 0, 255, 255}); }
+    };
+    h.frames(build, 3);
+
+    // the last command is the foreground rect (full-display clip) even though a window was built after it
+    const draw_data dd = h.ui.render_data();
+    CHECK(!dd.commands.empty());
+    CHECK(near_eq(dd.commands.back().clip.max.x, dd.display_size.x, 0.5f) && near_eq(dd.commands.back().clip.max.y, dd.display_size.y, 0.5f));
+
+    // the pointer over a passive window is nobody's: nothing captured, the button does not react
+    h.click({150.0f, 120.0f}, build);
+    CHECK(!h.ui.want_capture_mouse());
+    CHECK(!clicked);
+    h.move({450.0f, 120.0f});
+    h.frames(build, 2);
+    CHECK(h.ui.want_capture_mouse());
+
+    // and it cannot be dragged by its body
+    const rect before = h.ui.window_rect("plate");
+    h.move({150.0f, 130.0f});
+    h.frames(build, 2);
+    h.down();
+    h.frames(build, 2);
+    h.move({250.0f, 230.0f});
+    h.frames(build, 2);
+    h.up();
+    h.frames(build, 2);
+    const rect after = h.ui.window_rect("plate");
+    CHECK(near_eq(before.min.x, after.min.x, 0.5f) && near_eq(before.min.y, after.min.y, 0.5f));
+}
+
 } // namespace
 
 void run_windows_tests()
@@ -921,4 +965,5 @@ void run_windows_tests()
     test_window_height_cap();
     test_layout_scrolled_above_screen();
     test_scale();
+    test_layers_and_passive_windows();
 }

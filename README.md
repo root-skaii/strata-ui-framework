@@ -2,6 +2,8 @@
 
 Immediate-mode UI framework for Direct3D 11 and 12. C++ latest (`/std:c++latest`), CMake 4.3+, Windows x64, MSVC.
 
+**This project is in progress and not made to expect your expectations. I do not recommend use it until I would finish at least better core design.**
+
 ![Docked windows with a tree, nested tables, images and rich text](docs/screenshots/features.png)
 
 ```
@@ -94,6 +96,10 @@ ui.end_frame();
 // bind your render target, then:
 renderer.render(ui.render_data());
 ```
+
+With any `platform_backend`, `strata::run_frame(ui, platform, build)` does begin / build / end (IME, cursor) and returns
+whether to render. Backends are C++ concepts (`strata/backend/backend.hpp`): a new renderer or platform only has to
+satisfy `renderer_backend` / `platform_backend`; there are no virtual calls in the frame loop.
 
 `d3d11_renderer::render` saves and restores every pipeline stage it touches. `d3d12_renderer::render` records into
 your open command list and expects the usual frames-in-flight fence discipline.
@@ -601,6 +607,11 @@ Windows drag, collapse and stack; pressing one raises it. Input goes to the topm
 
 `ui.cursor()` reports the pointer shape to apply (`arrow`, `text`, `hand`, `not_allowed`, `resize_*`);
 `platform.set_cursor(ui.cursor())` after `end_frame()` applies it via `win32_platform`.
+
+- **Passive windows:** `window_flags::no_inputs` (hud, name plates, readouts) is never hovered, focused, moved or
+  docked; the pointer goes to whatever is below and it doesn't count toward `want_capture_mouse()`.
+- **Layers:** `{ auto fg = ui.layer(strata::layer::foreground); ui.draw().rect_filled(...); }` draws above every window
+  and popup from anywhere (`layer::background` goes behind them all); drawing only, no input.
 
 ## Idling
 

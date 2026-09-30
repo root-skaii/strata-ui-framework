@@ -36,6 +36,9 @@ struct options {
     // (esp, name plates, crosshairs). draw it with ui.draw() -- outside a window that lands behind the windows of `ui`.
     // with a hud set the overlay draws (and frames() counts) hidden frames too.
     std::function<void(context&)> hud;
+    // draw (and count) frames while hidden, for things shown over the game all the time. implied by `hud`;
+    // set_draw_hidden() changes it later. prefer overlay::host / module (module.hpp) over hud and ui.
+    bool draw_hidden = false;
     // virtual-key that toggles the overlay (default F1); 0: none (use show())
     unsigned toggle_key = 0x70;
     bool     start_visible = false;
@@ -66,6 +69,11 @@ bool install(const options& opt);
 void uninstall();
 
 void show(bool visible);
+// draw frames while hidden (see options::draw_hidden)
+void set_draw_hidden(bool on) noexcept;
+// runs `fn` on the render thread at the start of the next drawn frame, from any thread: the way to touch ui state owned
+// by the render thread (it is not run while hidden unless draw_hidden is on)
+void post(std::function<void()> fn);
 [[nodiscard]] bool visible() noexcept;
 // frames drawn (0 while hidden / not attached; with options::hud set, hidden frames count too)
 [[nodiscard]] unsigned long long frames() noexcept;

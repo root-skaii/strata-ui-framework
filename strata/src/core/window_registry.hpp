@@ -35,6 +35,7 @@ struct window_state {
     f32  title_h{};
     u64  last_frame{};
     id   dock_owner{};     // in a floating dock: that dock's window (they stack together)
+    bool passive{};        // window_flags::no_inputs
     bool menubar{};        // the main menu bar (no padding, above the other windows)
     u32  modal_level{};    // 1 + index in the modal stack, 0 = not a modal
     u8   title_len{};

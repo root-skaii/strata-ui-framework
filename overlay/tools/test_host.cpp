@@ -288,7 +288,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             click(77, 96);
             click(222, 380); // the "unload overlay" button
             bool gone = false;
-            for (int i = 0; i < 300 && !gone && !quit; ++i) {
+            // (the dll's worker polls for the request, then waits out hooked calls in flight: time, not frames, bounds it)
+            const ULONGLONG give_up = ::GetTickCount64() + 5000;
+            while (!gone && !quit && ::GetTickCount64() < give_up) {
                 run_frame();
                 gone = ::GetModuleHandleW(L"strata_overlay_demo.dll") == nullptr;
             }

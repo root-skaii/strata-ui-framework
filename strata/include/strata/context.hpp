@@ -341,7 +341,7 @@ template <class E>
     return (static_cast<u32>(set) & static_cast<u32>(f)) != 0;
 }
 
-enum class window_flags : u8 {
+enum class window_flags : u16 {
     none          = 0,
     resizable     = 1,  // resize by the right / bottom edge or corner
     no_title_bar  = 2,  // no title bar or collapse arrow; move with drag_by_body
@@ -351,15 +351,24 @@ enum class window_flags : u8 {
     drag_by_body  = 32, // dragging any empty part of the window moves it
     dockable      = 64, // can dock into dock_area(); needs a title bar
     acrylic       = 128, // blurred backdrop shows through the translucent background
+    // a passive window (hud, name plates, readouts): never hovered, focused, raised, moved or docked, so the pointer
+    // goes to whatever is below it and it never counts toward want_capture_mouse()
+    no_inputs     = 256,
 };
 
 [[nodiscard]] constexpr window_flags operator|(window_flags a, window_flags b) noexcept
 {
-    return static_cast<window_flags>(static_cast<u8>(a) | static_cast<u8>(b));
+    return static_cast<window_flags>(static_cast<u16>(a) | static_cast<u16>(b));
 }
 
 // pointer shape for hosts that can set it (win32_platform::set_cursor). `hand` = clickable (links),
 // `not_allowed` = disabled item, `resize_nesw` = bottom-left grip
+// where custom drawing lands regardless of the window being built (see context::layer)
+enum class layer : u8 {
+    background, // behind every window
+    foreground, // in front of every window and popup
+};
+
 enum class cursor_kind : u8 { arrow, text, hand, not_allowed, resize_ew, resize_ns, resize_nwse, resize_nesw };
 
 enum class child_flags : u8 {
@@ -724,6 +733,19 @@ public:
 private:
     context* ctx_;
     bool     open_;
+};
+
+// ui.draw() goes to a fixed layer while this lives
+class layer_scope {
+public:
+    explicit layer_scope(context& ctx) noexcept : ctx_{&ctx} {}
+    ~layer_scope();
+
+    layer_scope(const layer_scope&)            = delete;
+    layer_scope& operator=(const layer_scope&) = delete;
+
+private:
+    context* ctx_;
 };
 
 class font_scope {
@@ -1696,6 +1718,11 @@ public:
     // custom drawing -------------------------------------------------------
     // the frame's draw list, screen space. lands between neighbouring widgets; outside a window, behind all windows.
     [[nodiscard]] draw_list& draw() noexcept;
+    // draws into a layer from anywhere, inside a window or not; clipped to the display, screen space, no input:
+    //     { auto fg = ui.layer(layer::foreground); ui.draw().text(...); }   // a crosshair above everything
+    [[nodiscard]] layer_scope layer(strata::layer which);
+    void begin_layer(strata::layer which);
+    void end_layer();
 
     // reserves a layout slot; returns its rect and hover / held / pressed. draw into it with draw()
     [[nodiscard]] item_result custom_item(std::string_view label, vec2 size);
@@ -1875,6 +1902,7 @@ private:
     static constexpr u32 no_z          = 0xffffffffu;
     static constexpr u32 run_base      = 0xffffffffu;
     static constexpr u32 run_overlay   = 0xfffffffeu;
+    static constexpr u32 run_foreground = 0xfffffffdu; // above popups
     static constexpr u32 run_backdrop  = 0xfffffff0u; // + modal level - 1: the dim behind a modal
 
     [[nodiscard]] id       current_seed() const noexcept;

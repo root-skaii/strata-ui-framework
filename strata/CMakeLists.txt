@@ -47,6 +47,7 @@ target_sources(strata PUBLIC
     FILE_SET HEADERS
     BASE_DIRS include
     FILES
+        include/strata/backend/backend.hpp
         include/strata/backend/d3d11.hpp
         include/strata/backend/d3d12.hpp
         include/strata/backend/openxr.hpp
@@ -59,6 +60,7 @@ target_sources(strata PUBLIC
         include/strata/datetime.hpp
         include/strata/draw_list.hpp
         include/strata/font.hpp
+        include/strata/frame.hpp
         include/strata/icons.hpp
         include/strata/keybinds.hpp
         include/strata/log.hpp

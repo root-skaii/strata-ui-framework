@@ -1,4 +1,5 @@
 #include "strata/platform/win32.hpp"
+#include "strata/backend/backend.hpp"
 
 #include <windows.h>
 #include <windowsx.h>
@@ -13,6 +14,8 @@
 #include <string>
 
 namespace strata {
+
+static_assert(platform_backend<win32_platform>);
 
 namespace {
 
