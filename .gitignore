@@ -29,3 +29,6 @@ out_selftest.txt
 
 # fuzzer-generated corpus
 tests/fuzz/corpus/
+
+CLAUDE.md
+.claude/skills/run/
