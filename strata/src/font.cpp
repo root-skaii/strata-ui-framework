@@ -208,6 +208,7 @@ struct font_source {
     HFONT                        font{};
     HGDIOBJ                      previous{};
     TEXTMETRICW                  tm{};
+    int                          y_shift{}; // font_config::y_offset in physical pixels
     std::vector<codepoint_range> merged;
     std::vector<raw_glyph>       raws;
     cmap12                       cmap;          // (only read when a supplementary range was asked for)
@@ -319,6 +320,7 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
         }
 
         ::GetTextMetricsW(src.dc, &src.tm);
+        src.y_shift = static_cast<int>(std::lround(cfg.y_offset * scale));
 
         // faces to fall back on: same height, same weight
         for (const std::string_view fb : cfg.fallback_faces) {
@@ -501,7 +503,7 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
             }
 
             g.x0 = static_cast<f32>(r.origin_x);
-            g.y0 = static_cast<f32>(src.tm.tmAscent - r.origin_y);
+            g.y0 = static_cast<f32>(src.tm.tmAscent - r.origin_y + src.y_shift);
             g.x1 = g.x0 + static_cast<f32>(r.w);
             g.y1 = g.y0 + static_cast<f32>(r.h);
             g.u0 = to_uv15(r.x, aw);

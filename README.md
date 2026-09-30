@@ -697,6 +697,8 @@ strata::overlay::install(opt);       // from a thread of your own, not from DllM
   `ResizeBuffers` can be replaced on the game's own swap chain with no code patched (`uninstall()` restores them).
 - **Input:** the game window is subclassed and feeds `win32_platform`; while open the game can optionally get no
   keyboard / mouse (`options.block_game_input`).
+- **Hud:** `options.hud` runs on every frame, menu open or not, with no input and the game keeping its mouse and keyboard: for
+  esp / name plates next to the toggled `ui`. `selfexamples/argon` is a multi-module overlay built on it.
 - **Pieces:** `strata_overlay` (static lib for your dll), `strata_overlay_demo` (sample dll), `strata_overlay_inject
   <pid|exe> <dll>` (LoadLibrary injector), `strata_overlay_host` (a stand-in game used by ctest).
 - **Direct3D 12:** the queue seen calling `ExecuteCommandLists` is hooked the same way; the overlay submits its own

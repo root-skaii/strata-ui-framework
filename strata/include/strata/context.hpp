@@ -1212,7 +1212,8 @@ public:
     //   if (ui.row_accessory_button(icon_font, icons::trash)) { destroy(); }
     //   ui.row_accessory_checkbox("on", object.enabled);
     bool row_accessory_button(font_id icon_font, std::string_view icon, std::string_view id = {});
-    bool row_accessory_checkbox(std::string_view id, bool& value);
+    // `inset`: pixels between the checkbox and the row's right edge (0: hugging it); counts when it is the row's first control
+    bool row_accessory_checkbox(std::string_view id, bool& value, f32 inset = 0.0f);
     bool row_accessory_toggle(std::string_view id, bool& value);
     // room for accessories at the right of the next row only
     void set_next_item_gutter(f32 width) noexcept;
@@ -1914,7 +1915,7 @@ private:
     [[nodiscard]] bool     nav_is_cursor(id key) const noexcept;
     void                   nav_click(id key) noexcept;  // a click moves the cursor
     // accessory strip of the row just submitted; false if there is no row
-    [[nodiscard]] bool     accessory_slot(f32 width, rect& out) noexcept;
+    [[nodiscard]] bool     accessory_slot(f32 width, rect& out, f32 inset = 0.0f) noexcept;
     // a row accessories can attach to (see row_anchor_)
     void                   note_row_anchor(id key, const rect& r) noexcept;
     void                   allow_item_overlap_at(id key, const rect& r) noexcept;

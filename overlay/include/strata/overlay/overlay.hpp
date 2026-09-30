@@ -31,6 +31,11 @@ namespace strata::overlay {
 struct options {
     // called every visible frame between begin_frame and end_frame, on the game's render thread
     std::function<void(context&)> ui;
+    // called on every frame the game presents, hidden or not, before `ui` and on the same context. while hidden the ui
+    // gets no input and the game keeps its keyboard / mouse / cursor: for what is drawn over the game all the time
+    // (esp, name plates, crosshairs). draw it with ui.draw() -- outside a window that lands behind the windows of `ui`.
+    // with a hud set the overlay draws (and frames() counts) hidden frames too.
+    std::function<void(context&)> hud;
     // virtual-key that toggles the overlay (default F1); 0: none (use show())
     unsigned toggle_key = 0x70;
     bool     start_visible = false;
@@ -62,7 +67,7 @@ void uninstall();
 
 void show(bool visible);
 [[nodiscard]] bool visible() noexcept;
-// frames drawn (0 while hidden / not attached)
+// frames drawn (0 while hidden / not attached; with options::hud set, hidden frames count too)
 [[nodiscard]] unsigned long long frames() noexcept;
 [[nodiscard]] const char* last_error() noexcept;
 // current output encoding (see options::output)

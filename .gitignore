@@ -23,6 +23,8 @@ CMakeScripts/
 
 golden/
 
+selfexamples/
+
 out_selftest.txt
 
 # fuzzer-generated corpus

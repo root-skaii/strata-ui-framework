@@ -750,13 +750,32 @@ void draw_frame(IDXGISwapChain* sc)
 
     apply_pending_scale();
 
+    const bool open = g.visible.load(); // (latched: a toggle in the middle of the frame applies to the next one)
     input_state input;
     {
         const std::lock_guard lock{g.platform_mutex};
         input = g.platform.new_frame();
     }
+    {   // a game that stretches a fixed-size back buffer over its window: the ui lives in back buffer pixels, so the
+        // mouse is mapped into them (the window's client size is what the platform reports)
+        DXGI_SWAP_CHAIN_DESC bd{};
+        if (SUCCEEDED(sc->GetDesc(&bd)) && bd.BufferDesc.Width > 0 && bd.BufferDesc.Height > 0 && input.display_size.x > 0.0f && input.display_size.y > 0.0f) {
+            const f32 bw = static_cast<f32>(bd.BufferDesc.Width), bh = static_cast<f32>(bd.BufferDesc.Height);
+            if (std::fabs(bw - input.display_size.x) > 0.5f || std::fabs(bh - input.display_size.y) > 0.5f) {
+                input.mouse_pos.x   *= bw / input.display_size.x;
+                input.mouse_pos.y   *= bh / input.display_size.y;
+                input.display_size   = {bw, bh};
+            }
+        }
+    }
+    if (!open) { // hud only: the ui sees the window's size and the clock, nothing the user does
+        input_state idle;
+        idle.display_size = input.display_size;
+        idle.delta_time   = input.delta_time;
+        input = std::move(idle);
+    }
     g.ui->begin_frame(std::move(input));
-    if (g.opt.scale_hotkeys && !g.ui->want_text_input()) {
+    if (open && g.opt.scale_hotkeys && !g.ui->want_text_input()) {
         //  Ctrl + Plus / Minus (main row or keypad), Ctrl + 0 resets
         const auto stepped = [&](int direction) {
             const float next = std::clamp(g.ui->scale() + 0.1f * static_cast<float>(direction), 0.5f, 4.0f);
@@ -766,15 +785,18 @@ void draw_frame(IDXGISwapChain* sc)
         else if (g.ui->key_pressed(VK_OEM_MINUS, true) || g.ui->key_pressed(VK_SUBTRACT, true)) { stepped(-1); }
         else if (g.ui->key_pressed('0', true) || g.ui->key_pressed(VK_NUMPAD0, true))       { g.want_scale.store(g.base_scale); }
     }
-    if (g.opt.ui) { g.opt.ui(*g.ui); }
+    if (g.opt.hud) { g.opt.hud(*g.ui); }
+    if (open && g.opt.ui) { g.opt.ui(*g.ui); }
     g.ui->end_frame();
-    g.capture_mouse.store(g.ui->want_capture_mouse());
-    g.capture_keys.store(g.ui->want_text_input());
-    {
-        const std::lock_guard lock{g.platform_mutex};
-        g.platform.set_cursor(g.ui->cursor());
+    g.capture_mouse.store(open && g.ui->want_capture_mouse());
+    g.capture_keys.store(open && g.ui->want_text_input());
+    if (open) {
+        {
+            const std::lock_guard lock{g.platform_mutex};
+            g.platform.set_cursor(g.ui->cursor());
+        }
+        ::ClipCursor(nullptr); // (games clipping the cursor every frame are overridden: the ui needs the whole desktop)
     }
-    ::ClipCursor(nullptr); // (games clipping the cursor every frame are overridden: the ui needs the whole desktop)
 
     const bool want_capture = !g.opt.capture_path.empty() && !g.captured && g.visible_frames + 1 >= g.opt.capture_frame;
     if (g.backend == state::api::d3d12) {
@@ -830,7 +852,7 @@ void on_present(IDXGISwapChain* sc)
         }
         if (g.visible.load() && g.hwnd != nullptr) { ::PostMessageW(g.hwnd, wm_show_changed, 0, 0); }
     }
-    if (sc == g.chain && g.visible.load()) { draw_frame(sc); }
+    if (sc == g.chain && (g.visible.load() || g.opt.hud)) { draw_frame(sc); }
 }
 
 struct hook_scope {

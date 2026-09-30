@@ -1377,7 +1377,7 @@ bool context::selection_click(selection_state& sel, int index) const
 
 // slot for the next accessory of the row just submitted, right to left inside the scrollbar inset. false with no
 // row or no room.
-bool context::accessory_slot(f32 width, rect& out) noexcept
+bool context::accessory_slot(f32 width, rect& out, f32 inset) noexcept
 {
     if (m_->cur_ == nullptr || m_->accessory_.row_anchor_ == 0) {
         return false;
@@ -1387,6 +1387,7 @@ bool context::accessory_slot(f32 width, rect& out) noexcept
         m_->accessory_.accessory_row_rect_ = m_->accessory_.row_anchor_rect_;
         m_->accessory_.accessory_x_        = std::min(m_->accessory_.row_anchor_rect_.max.x, m_->layout_.origin.x + m_->layout_.width + m_->layout_.gutter);
         allow_item_overlap_at(m_->accessory_.row_anchor_, m_->accessory_.row_anchor_rect_); // the row lets go of the press where they sit
+        m_->accessory_.accessory_x_ -= inset; // (the first control only: the others follow it)
     }
     const rect& row = m_->accessory_.accessory_row_rect_;
     const f32   h   = std::min(width, std::max(row.height() - 4.0f, 4.0f));
@@ -1469,11 +1470,11 @@ bool context::row_accessory_button(font_id icon_font, std::string_view icon, std
     return in.pressed;
 }
 
-bool context::row_accessory_checkbox(std::string_view id_extra, bool& value)
+bool context::row_accessory_checkbox(std::string_view id_extra, bool& value, f32 inset)
 {
     rect box;
     const f32 side = std::min(frame_height() - 8.0f, 16.0f);
-    if (!accessory_slot(side, box)) {
+    if (!accessory_slot(side, box, inset)) {
         return false;
     }
     const id key = hash_id(id_extra, hash_id("##accbox", m_->accessory_.accessory_row_));

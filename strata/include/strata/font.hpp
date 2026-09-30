@@ -75,6 +75,9 @@ struct font_config {
 
     f32  pixel_height = 14.0f; // logical pixels (baked at size * ui scale)
     bool bold         = false;
+    // moves every glyph of this font down (+) or up (-) by this many logical pixels, to line a font up with another one
+    // whose ink sits higher or lower in its line box (an icon font next to a pixel font)
+    f32  y_offset     = 0.0f;
     bool kerning      = true; // apply kerning pairs (integer pixels)
     // fail with font_unavailable instead of letting gdi substitute a missing `face`
     bool exact_face   = false;
