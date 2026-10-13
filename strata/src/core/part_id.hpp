@@ -25,6 +25,8 @@ enum class part : u32 {
     year_month, calendar_day, select_all, select_none, popup_menu, modal_fade, column_grip, chip_close,
     // toasts
     toast, toast_button, toast_close,
+    // sideways scrollbars
+    window_scrollbar_x, table_scrollbar_x,
 };
 
 // the id of `p` inside the widget `owner` (splitmix64 finaliser over both: well spread, never 0)

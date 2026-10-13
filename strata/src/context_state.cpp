@@ -4,6 +4,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -11,6 +12,8 @@
 #include <string>
 
 namespace strata {
+
+using namespace internal;
 
 namespace {
 
@@ -77,7 +80,9 @@ void context::save_state(config& cfg, std::string_view section) const
     if (!line.empty()) { cfg.set(section, std::format("tree_{:04}", chunk), line); }
 
     for (const window_state& w : m_->win_.windows_) {
-        if (w.key != 0 && w.scroll > 0.0f) { cfg.set(section, std::format("scroll_{:x}", w.key), std::format("{}", w.scroll)); }
+        if (w.key != 0 && (w.scroll > 0.0f || w.scroll_x > 0.0f)) {
+            cfg.set(section, std::format("scroll_{:x}", w.key), std::format("{} {}", w.scroll, w.scroll_x));
+        }
     }
     for (const child_state& c : m_->children_cards_.children_) {
         if (c.key != 0 && (c.scroll > 0.0f || c.scroll_x > 0.0f)) {
@@ -126,7 +131,7 @@ bool context::load_state(const config& cfg, std::string_view section)
             // a window that exists already takes it now, the rest when they appear
             bool applied = false;
             for (window_state& w : m_->win_.windows_) {
-                if (w.key == k) { w.scroll = s.y; applied = true; }
+                if (w.key == k) { w.scroll = s.y; w.scroll_x = s.x; applied = true; }
             }
             if (!applied) { m_->scroll_pending_.emplace_back(k, s); }
         }
@@ -135,16 +140,17 @@ bool context::load_state(const config& cfg, std::string_view section)
     return true;
 }
 
-void context::apply_pending_scroll(id key, f32& scroll_y, f32* scroll_x) noexcept
+void internal::apply_pending_scroll(context& ui, id key, f32& scroll_y, f32* scroll_x) noexcept
 {
-    if (m_->scroll_pending_.empty()) {
+    auto& m = context_access::of(ui);
+    if (m.scroll_pending_.empty()) {
         return;
     }
-    for (auto it = m_->scroll_pending_.begin(); it != m_->scroll_pending_.end(); ++it) {
+    for (auto it = m.scroll_pending_.begin(); it != m.scroll_pending_.end(); ++it) {
         if (it->first != key) { continue; }
         scroll_y = it->second.y; // (a window clamps it to its content on the frame it is drawn)
         if (scroll_x != nullptr) { *scroll_x = it->second.x; }
-        m_->scroll_pending_.erase(it);
+        m.scroll_pending_.erase(it);
         return;
     }
 }

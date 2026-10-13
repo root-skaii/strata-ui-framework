@@ -13,7 +13,7 @@
 
 namespace strata::internal {
 
-inline constexpr u32 max_table_columns = 16; // (context::max_table_columns is the same)
+inline constexpr u32 max_table_columns = 16;
 
 struct tree_frame {
     f32 arrow_x{};
@@ -43,6 +43,9 @@ struct table_state { // persists across frames
     f32                                scroll_wanted{-1.0f}; // table_set_scroll_y(), for the next body; < 0 none
     f32                                grab{};
     f32                                content_h{};
+    f32                                scroll_x{};
+    f32                                grab_x{};
+    f32                                content_w{}; // scroll_x tables: the preferred width of all columns together (0: the table's)
     bool                               inited{};
 };
 
@@ -87,17 +90,18 @@ struct table_frame { // the table being built this frame
     bool                                      clip_pushed{};
     bool                                      cell_clip{}; // the current cell has its own clip rectangle
     f32                                       body_top{}, body_h{};
+    f32                                       span{};    // the width the visible columns share: the table's, or more when scrolling sideways
 };
 
 struct table_tree_state {
-    std::array<tree_frame, 16> tree_stack_{};  // (context::max_tree_depth is the same)
+    std::array<tree_frame, 16> tree_stack_{};  // (internal::max_tree_depth is the same)
     u32                        tree_depth_{};
     std::vector<tree_state>    tree_states_; // sorted by key
     bool                       item_pressed_{}; // last tree row / selectable was clicked
 
     std::vector<table_state>    tables_;        // context_config::capacity.tables slots, sized once
     table_frame                 table_{};       // the table being built this frame
-    std::array<table_frame, 4>  table_stack_{}; // (context::max_table_depth is the same) the tables around the current one
+    std::array<table_frame, 4>  table_stack_{}; // (internal::max_table_depth is the same) the tables around the current one
     u32                         table_depth_{};
 };
 

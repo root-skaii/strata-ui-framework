@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 
 #include <algorithm>
@@ -11,6 +12,11 @@
 #include <cmath>
 
 namespace strata {
+
+using namespace internal;
+
+static bool drag_box(context& ui, std::string_view id_label, const rect& box, f32& value, f32 speed, f32 lo, f32 hi, int decimals,
+    std::string_view suffix, bool integer);
 
 namespace {
 
@@ -54,32 +60,33 @@ namespace {
 } // namespace
 
 // one number box: drag changes the value, a click without drag starts typing. `box` is its rect
-bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f32 speed, f32 lo, f32 hi, int decimals,
+static bool drag_box(context& ui, std::string_view id_label, const rect& box, f32& value, f32 speed, f32 lo, f32 hi, int decimals,
                        std::string_view suffix, bool integer)
 {
-    const id      wkey     = widget_id(id_label);
-    const font_id f        = current_font();
+    auto& m = context_access::of(ui);
+    const id      wkey     = widget_id(ui, id_label);
+    const font_id f        = ui.current_font();
     const bool    bounded  = lo < hi;
     bool          changed  = false;
 
     // --- typing ------------------------------------------------------------------------------------------------
-    if (m_->number_edit_ == wkey) {
+    if (m.number_edit_ == wkey) {
         bool esc = false;
-        for (u32 i = 0; i < m_->input_.key_count_; ++i) { esc = esc || m_->input_.keys_[i].k == key::escape; }
+        for (u32 i = 0; i < m.input_.key_count_; ++i) { esc = esc || m.input_.keys_[i].k == key::escape; }
 
-        m_->input_rect_     = box;
-        m_->input_rect_set_ = true;
+        m.input_rect_     = box;
+        m.input_rect_set_ = true;
         {
-            const edit_mute mute{*this}; // (its keystrokes are not edits of the value: the parsed result below is)
-            (void)input_text(id_label, m_->number_buf_, {}, input_flags::select_all_on_focus);
+            const edit_mute mute{ui}; // (its keystrokes are not edits of the value: the parsed result below is)
+            (void)ui.input_text(id_label, m.number_buf_, {}, input_flags::select_all_on_focus);
         }
 
-        const bool enter = m_->edit_.submitted_;
-        if (enter) { m_->focus_id_ = 0; } // enter ends the entry too (the buffer is wiped at the end of the frame)
-        if (m_->focus_id_ != wkey) {       // the entry is over: apply it, unless it was cancelled
-            m_->number_edit_ = 0;
+        const bool enter = m.edit_.submitted_;
+        if (enter) { m.focus_id_ = 0; } // enter ends the entry too (the buffer is wiped at the end of the frame)
+        if (m.focus_id_ != wkey) {       // the entry is over: apply it, unless it was cancelled
+            m.number_edit_ = 0;
             f32 typed{};
-            if (!esc && parse_f32(m_->number_buf_, typed)) {
+            if (!esc && parse_f32(m.number_buf_, typed)) {
                 if (integer) { typed = std::round(typed); }
                 if (bounded) { typed = std::clamp(typed, lo, hi); }
                 if (typed != value) {
@@ -87,43 +94,43 @@ bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f
                     changed = true;
                 }
             }
-            detail::secure_wipe(m_->number_buf_.data(), m_->number_buf_.size());
-            m_->number_buf_.clear();
+            detail::secure_wipe(m.number_buf_.data(), m.number_buf_.size());
+            m.number_buf_.clear();
         }
-        track_edit(wkey, changed, m_->number_edit_ == wkey);
+        track_edit(ui, wkey, changed, m.number_edit_ == wkey);
         return changed;
     }
 
     // --- dragging ------------------------------------------------------------------------------------------------
-    const interaction in = interact(wkey, box);
-    if (in.hovered || in.held) { m_->cursor_ = cursor_kind::resize_ew; }
+    const interaction in = interact(ui, wkey, box);
+    if (in.hovered || in.held) { m.cursor_ = cursor_kind::resize_ew; }
 
     if (in.held) {
         // nothing changes until the pointer leaves a small dead zone (clicks never nudge the value); then the distance
         // travelled applies at once
         f32 dx = 0.0f;
-        if (m_->input_.mouse_pressed_) {
-            m_->drag_frac_  = 0.0f;
-            m_->drag_start_ = m_->input_.mouse_;
-            m_->drag_moved_ = false;
-        } else if (!m_->drag_moved_) {
-            const vec2 d = m_->input_.mouse_ - m_->drag_start_;
+        if (m.input_.mouse_pressed_) {
+            m.drag_frac_  = 0.0f;
+            m.drag_start_ = m.input_.mouse_;
+            m.drag_moved_ = false;
+        } else if (!m.drag_moved_) {
+            const vec2 d = m.input_.mouse_ - m.drag_start_;
             if (dot(d, d) > 25.0f) {
-                m_->drag_moved_ = true;
+                m.drag_moved_ = true;
                 dx          = d.x;
             }
         } else {
-            dx = m_->input_.mouse_delta_.x;
+            dx = m.input_.mouse_delta_.x;
         }
         if (dx != 0.0f) {
-            const f32 mul   = m_->input_.mod_shift_ ? 0.1f : (m_->input_.mod_alt_ ? 10.0f : 1.0f);
+            const f32 mul   = m.input_.mod_shift_ ? 0.1f : (m.input_.mod_alt_ ? 10.0f : 1.0f);
             // with a range the box is a ruler: its width spans [lo, hi], so the fill follows the pointer 1:1
             const f32 per_pixel = bounded ? (hi - lo) / std::max(box.width(), 1.0f) : speed;
             f32       delta = dx * per_pixel * mul;
             if (integer) { // whole steps only; the rest carries over to the next frame
-                m_->drag_frac_ += delta;
-                const f32 whole = std::trunc(m_->drag_frac_);
-                m_->drag_frac_ -= whole;
+                m.drag_frac_ += delta;
+                const f32 whole = std::trunc(m.drag_frac_);
+                m.drag_frac_ -= whole;
                 delta = whole;
             }
             f32 next = value + delta;
@@ -134,59 +141,59 @@ bool context::drag_box(std::string_view id_label, const rect& box, f32& value, f
             }
         }
     }
-    if (in.pressed && !m_->drag_moved_) { // a click: type the number instead
+    if (in.pressed && !m.drag_moved_) { // a click: type the number instead
         std::array<char, 40> buf;
-        m_->number_buf_.assign(format_number(buf, value, integer ? 0 : decimals));
-        m_->number_edit_ = wkey;
-        m_->focus_id_    = wkey;
-        wipe_edit_buffer();
-        m_->edit_.edit_buf_.assign(m_->number_buf_);
-        m_->edit_.edit_cursor_ = m_->edit_.edit_buf_.size();
-        m_->edit_.edit_anchor_ = 0;
-        m_->edit_.edit_scroll_ = 0.0f;
-        m_->edit_.caret_time_  = m_->time_;
-        m_->focus_seen_  = true;
-        m_->press_claimed_ = true;
+        m.number_buf_.assign(format_number(buf, value, integer ? 0 : decimals));
+        m.number_edit_ = wkey;
+        m.focus_id_    = wkey;
+        wipe_edit_buffer(ui);
+        m.edit_.edit_buf_.assign(m.number_buf_);
+        m.edit_.edit_cursor_ = m.edit_.edit_buf_.size();
+        m.edit_.edit_anchor_ = 0;
+        m.edit_.edit_scroll_ = 0.0f;
+        m.edit_.caret_time_  = m.time_;
+        m.focus_seen_  = true;
+        m.press_claimed_ = true;
     }
 
     // --- drawing --------------------------------------------------------------------------------------------------
-    anim_slot& a = anim_for(wkey);
-    a.hover  = approach(a.hover, in.hovered || in.held ? 1.0f : 0.0f);
-    a.active = approach(a.active, in.held ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(ui, wkey);
+    a.hover  = approach(ui, a.hover, in.hovered || in.held ? 1.0f : 0.0f);
+    a.active = approach(ui, a.active, in.held ? 1.0f : 0.0f);
 
-    const f32 radius = m_->style_.rounding * 0.8f;
-    shape_style field = widget_shape(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), radius);
-    field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.5f), m_->style_.accent, a.active);
-    m_->dl_.shape(box, field);
+    const f32 radius = m.style_.rounding * 0.8f;
+    shape_style field = widget_shape(ui, lerp(m.style_.widget_bg, m.style_.widget_hover, a.hover), radius);
+    field.border = lerp(lerp(m.style_.widget_border, m.style_.accent_hover, a.hover * 0.5f), m.style_.accent, a.active);
+    m.dl_.shape(box, field);
 
     if (bounded) { // where in its range the value sits
         const f32 t = std::clamp((value - lo) / (hi - lo), 0.0f, 1.0f);
         const f32 w = box.width() * t;
         if (w > 1.0f) {
-            m_->dl_.push_clip(box);
+            m.dl_.push_clip(box);
             shape_style fill;
             fill.radius      = radii(radius);
-            fill.fill_top    = m_->style_.accent.scaled_alpha(0.20f + 0.10f * a.hover);
+            fill.fill_top    = m.style_.accent.scaled_alpha(0.20f + 0.10f * a.hover);
             fill.fill_bottom = fill.fill_top;
-            m_->dl_.shape({box.min, {box.min.x + w, box.max.y}}, fill);
-            m_->dl_.pop_clip();
+            m.dl_.shape({box.min, {box.min.x + w, box.max.y}}, fill);
+            m.dl_.pop_clip();
         }
     }
 
     std::array<char, 40> buf;
     std::string text{format_number(buf, value, integer ? 0 : decimals)};
     text.append(suffix);
-    const vec2 tsize = m_->font_.measure(f, text);
-    m_->dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, m_->style_.text, text, f);
+    const vec2 tsize = m.font_.measure(f, text);
+    m.dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, m.style_.text, text, f);
 
     if (a.hover > 0.02f) { // little arrows: this can be dragged
-        const color ac = m_->style_.text_dim.scaled_alpha(a.hover);
+        const color ac = m.style_.text_dim.scaled_alpha(a.hover);
         const f32   cy = box.center().y;
         const f32   s  = 3.5f;
-        m_->dl_.triangle_filled({box.min.x + 9.0f + s, cy - s}, {box.min.x + 9.0f + s, cy + s}, {box.min.x + 9.0f, cy}, ac);
-        m_->dl_.triangle_filled({box.max.x - 9.0f - s, cy - s}, {box.max.x - 9.0f - s, cy + s}, {box.max.x - 9.0f, cy}, ac);
+        m.dl_.triangle_filled({box.min.x + 9.0f + s, cy - s}, {box.min.x + 9.0f + s, cy + s}, {box.min.x + 9.0f, cy}, ac);
+        m.dl_.triangle_filled({box.max.x - 9.0f - s, cy - s}, {box.max.x - 9.0f - s, cy + s}, {box.max.x - 9.0f, cy}, ac);
     }
-    track_edit(wkey, changed, m_->active_ == wkey || m_->number_edit_ == wkey);
+    track_edit(ui, wkey, changed, m.active_ == wkey || m.number_edit_ == wkey);
     return changed;
 }
 
@@ -195,8 +202,8 @@ bool context::drag_float(std::string_view label, f32& value, f32 speed, f32 lo, 
     if (m_->cur_ == nullptr) {
         return false;
     }
-    const field_layout fl = layout_field(visible_label(label), frame_height());
-    return drag_box(label, fl.control, value, speed, lo, hi, decimals, suffix, false);
+    const field_layout fl = layout_field(*this, visible_label(label), frame_height());
+    return drag_box(*this, label, fl.control, value, speed, lo, hi, decimals, suffix, false);
 }
 
 bool context::drag_int(std::string_view label, int& value, f32 speed, int lo, int hi, std::string_view suffix)
@@ -204,9 +211,9 @@ bool context::drag_int(std::string_view label, int& value, f32 speed, int lo, in
     if (m_->cur_ == nullptr) {
         return false;
     }
-    const field_layout fl = layout_field(visible_label(label), frame_height());
+    const field_layout fl = layout_field(*this, visible_label(label), frame_height());
     f32 tmp = static_cast<f32>(value);
-    if (drag_box(label, fl.control, tmp, speed, static_cast<f32>(lo), static_cast<f32>(hi), 0, suffix, true)) {
+    if (drag_box(*this, label, fl.control, tmp, speed, static_cast<f32>(lo), static_cast<f32>(hi), 0, suffix, true)) {
         value = static_cast<int>(std::lround(tmp));
         return true;
     }
@@ -219,14 +226,14 @@ bool context::drag_float_n(std::string_view label, f32* values, int count, f32 s
         return false;
     }
     count = std::clamp(count, 1, 4);
-    const field_layout fl = layout_field(visible_label(label), frame_height());
+    const field_layout fl = layout_field(*this, visible_label(label), frame_height());
 
     static constexpr std::array<std::string_view, 4> names = {"##x", "##y", "##z", "##w"};
     static constexpr std::array<u32, 4> tints = {0xff6b6bffu, 0x6bd968ffu, 0x6ba7ffffu, 0xb8b8c8ffu};
     constexpr f32 gap = 4.0f;
     const f32 w = (fl.control.width() - gap * static_cast<f32>(count - 1)) / static_cast<f32>(count);
 
-    const id key     = widget_id(label);
+    const id key     = widget_id(*this, label);
     bool     changed = false;
     bool     engaged = false;
     push_id(label);
@@ -235,9 +242,9 @@ bool context::drag_float_n(std::string_view label, f32* values, int count, f32 s
         const rect box = {{x, fl.control.min.y}, {x + w, fl.control.max.y}};
         {
             const edit_mute mute{*this}; // (the components are one edit: see below)
-            changed = drag_box(names[static_cast<std::size_t>(i)], box, values[i], speed, lo, hi, decimals, {}, false) || changed;
+            changed = drag_box(*this, names[static_cast<std::size_t>(i)], box, values[i], speed, lo, hi, decimals, {}, false) || changed;
         }
-        const id part = widget_id(names[static_cast<std::size_t>(i)]);
+        const id part = widget_id(*this, names[static_cast<std::size_t>(i)]);
         engaged = engaged || m_->active_ == part || m_->number_edit_ == part;
         // a colored tick on the left edge tells the components apart
         shape_style tick;
@@ -247,7 +254,7 @@ bool context::drag_float_n(std::string_view label, f32* values, int count, f32 s
         m_->dl_.shape({{box.min.x + 1.0f, box.min.y + 5.0f}, {box.min.x + 3.5f, box.max.y - 5.0f}}, tick);
     }
     pop_id();
-    track_edit(key, changed, engaged);
+    track_edit(*this, key, changed, engaged);
     return changed;
 }
 
@@ -276,7 +283,7 @@ bool context::input_float(std::string_view label, f32& value, f32 step, int deci
     if (m_->cur_ == nullptr) {
         return false;
     }
-    const field_layout fl = layout_field(visible_label(label), frame_height());
+    const field_layout fl = layout_field(*this, visible_label(label), frame_height());
     rect field = fl.control;
     const f32 bw = fl.control.height();
     if (step > 0.0f) { field.max.x -= 2.0f * (bw + 4.0f); }
@@ -285,7 +292,7 @@ bool context::input_float(std::string_view label, f32& value, f32 step, int deci
     std::string shown{format_number(buf, value, decimals)}; // what the field shows while it is not being edited
     bool changed    = false;
     bool steps_held = false;
-    const id key = widget_id(label); // (the id input_text gives the field)
+    const id key = widget_id(*this, label); // (the id input_text gives the field)
     m_->input_rect_     = field;
     m_->input_rect_set_ = true;
     bool typed = false;
@@ -304,8 +311,8 @@ bool context::input_float(std::string_view label, f32& value, f32 step, int deci
         push_id(label);
         const rect minus = {{field.max.x + 4.0f, fl.control.min.y}, {field.max.x + 4.0f + bw, fl.control.max.y}};
         const rect plus  = {{minus.max.x + 4.0f, minus.min.y}, {minus.max.x + 4.0f + bw, minus.max.y}};
-        const interaction im = interact(part_id(part::step_down, current_seed()), minus);
-        const interaction ip = interact(part_id(part::step_up, current_seed()), plus);
+        const interaction im = interact(*this, part_id(part::step_down, current_seed(*this)), minus);
+        const interaction ip = interact(*this, part_id(part::step_up, current_seed(*this)), plus);
         step_button(*this, m_->dl_, m_->style_, "-", minus, false, im.hovered ? 1.0f : 0.0f, im.hovered, im.held);
         step_button(*this, m_->dl_, m_->style_, "+", plus, true, ip.hovered ? 1.0f : 0.0f, ip.hovered, ip.held);
         if (im.pressed) { value -= step; changed = true; }
@@ -313,7 +320,7 @@ bool context::input_float(std::string_view label, f32& value, f32 step, int deci
         steps_held = im.held || ip.held;
         pop_id();
     }
-    track_edit(key, changed, m_->focus_id_ == key || steps_held);
+    track_edit(*this, key, changed, m_->focus_id_ == key || steps_held);
     return changed;
 }
 
@@ -322,7 +329,7 @@ bool context::input_int(std::string_view label, int& value, int step)
     if (m_->cur_ == nullptr) {
         return false;
     }
-    const field_layout fl = layout_field(visible_label(label), frame_height());
+    const field_layout fl = layout_field(*this, visible_label(label), frame_height());
     rect field = fl.control;
     const f32 bw = fl.control.height();
     if (step > 0) { field.max.x -= 2.0f * (bw + 4.0f); }
@@ -335,7 +342,7 @@ bool context::input_int(std::string_view label, int& value, int step)
     }
     bool changed    = false;
     bool steps_held = false;
-    const id key = widget_id(label); // (the id input_text gives the field)
+    const id key = widget_id(*this, label); // (the id input_text gives the field)
     m_->input_rect_     = field;
     m_->input_rect_set_ = true;
     bool typed = false;
@@ -354,8 +361,8 @@ bool context::input_int(std::string_view label, int& value, int step)
         push_id(label);
         const rect minus = {{field.max.x + 4.0f, fl.control.min.y}, {field.max.x + 4.0f + bw, fl.control.max.y}};
         const rect plus  = {{minus.max.x + 4.0f, minus.min.y}, {minus.max.x + 4.0f + bw, minus.max.y}};
-        const interaction im = interact(part_id(part::step_down, current_seed()), minus);
-        const interaction ip = interact(part_id(part::step_up, current_seed()), plus);
+        const interaction im = interact(*this, part_id(part::step_down, current_seed(*this)), minus);
+        const interaction ip = interact(*this, part_id(part::step_up, current_seed(*this)), plus);
         step_button(*this, m_->dl_, m_->style_, "-", minus, false, im.hovered ? 1.0f : 0.0f, im.hovered, im.held);
         step_button(*this, m_->dl_, m_->style_, "+", plus, true, ip.hovered ? 1.0f : 0.0f, ip.hovered, ip.held);
         if (im.pressed) { value -= step; changed = true; }
@@ -363,7 +370,7 @@ bool context::input_int(std::string_view label, int& value, int step)
         steps_held = im.held || ip.held;
         pop_id();
     }
-    track_edit(key, changed, m_->focus_id_ == key || steps_held);
+    track_edit(*this, key, changed, m_->focus_id_ == key || steps_held);
     return changed;
 }
 

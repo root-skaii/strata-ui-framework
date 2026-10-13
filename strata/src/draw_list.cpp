@@ -388,6 +388,49 @@ void draw_list::reorder_commands(std::span<const command_range> order)
     std::copy_n(reorder_scratch_.data(), total, commands_.data());
 }
 
+// a command whose geometry lies inside both its own clip and the previous command's draws the same under either, so
+// it joins that one: otherwise every table cell's clip costs a draw call. needs the two index ranges adjacent (true
+// within a window's run, not always across reordered runs) and the shifted indices to fit 16 bits
+void draw_list::merge_commands() noexcept
+{
+    const auto n = static_cast<u32>(commands_.size());
+    if (n < 2) { return; }
+    draw_cmd*     cmds = commands_.data();
+    index_t*      idx  = indices_.data();
+    const vertex* vtx  = vertices_.data();
+    const auto inside = [](const rect& outer, const rect& r) {
+        return r.min.x >= outer.min.x && r.min.y >= outer.min.y && r.max.x <= outer.max.x && r.max.y <= outer.max.y;
+    };
+    u32 out = 0;
+    for (u32 i = 1; i < n; ++i) {
+        draw_cmd&       a = cmds[out];
+        const draw_cmd& b = cmds[i];
+        bool join = a.blur == 0.0f && b.blur == 0.0f && a.texture == b.texture &&
+                    b.idx_offset == a.idx_offset + a.idx_count && b.vtx_offset >= a.vtx_offset;
+        if (join && b.idx_count > 0) {
+            const u32 shift = b.vtx_offset - a.vtx_offset;
+            u32  top = 0;
+            rect bb{vtx[b.vtx_offset + idx[b.idx_offset]].pos, vtx[b.vtx_offset + idx[b.idx_offset]].pos};
+            for (u32 k = 0; k < b.idx_count; ++k) {
+                const u32  ix = idx[b.idx_offset + k];
+                const vec2 p  = vtx[b.vtx_offset + ix].pos;
+                top = std::max(top, ix);
+                bb  = {{std::min(bb.min.x, p.x), std::min(bb.min.y, p.y)}, {std::max(bb.max.x, p.x), std::max(bb.max.y, p.y)}};
+            }
+            join = shift + top < max_command_vertices && inside(a.clip, bb) && inside(b.clip, bb);
+            if (join && shift != 0) {
+                for (u32 k = 0; k < b.idx_count; ++k) { idx[b.idx_offset + k] = static_cast<index_t>(idx[b.idx_offset + k] + shift); }
+            }
+        }
+        if (join) {
+            a.idx_count += b.idx_count;
+        } else {
+            cmds[++out] = b;
+        }
+    }
+    commands_.shrink(n - (out + 1));
+}
+
 void draw_list::fill_convex_aa(std::span<const vec2> logical_pts, color c) noexcept
 {
     const u32 n = static_cast<u32>(logical_pts.size());

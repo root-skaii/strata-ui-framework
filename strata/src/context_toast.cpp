@@ -3,12 +3,15 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace strata {
+
+using namespace internal;
 
 color kind_color(toast_kind k, const style& st) noexcept
 {
@@ -112,112 +115,113 @@ bool context::toast_alive(toast_handle h) const noexcept
     return false;
 }
 
-void context::toast_end_frame()
+void internal::toast_end_frame(context& ui)
 {
-    if (m_->toast_.toasts_.empty()) {
+    auto& m = context_access::of(ui);
+    if (m.toast_.toasts_.empty()) {
         return;
     }
     const font_id f  = 0;
-    const f32 lh     = m_->font_.line_height(f);
-    const f32 width  = std::min(340.0f, m_->display_.x * 0.45f);
+    const f32 lh     = m.font_.line_height(f);
+    const f32 width  = std::min(340.0f, m.display_.x * 0.45f);
     const f32 pad    = 12.0f;
     const f32 margin = 14.0f;
     const f32 gap    = 8.0f;
     const f32 btn_h  = lh + 8.0f;
-    const bool at_bottom = m_->toast_.toast_corner_ == screen_corner::bottom_right || m_->toast_.toast_corner_ == screen_corner::bottom_left;
-    const bool at_right  = m_->toast_.toast_corner_ == screen_corner::top_right || m_->toast_.toast_corner_ == screen_corner::bottom_right;
+    const bool at_bottom = m.toast_.toast_corner_ == screen_corner::bottom_right || m.toast_.toast_corner_ == screen_corner::bottom_left;
+    const bool at_right  = m.toast_.toast_corner_ == screen_corner::top_right || m.toast_.toast_corner_ == screen_corner::bottom_right;
 
-    const u32 previous_owner = m_->run_owner_;
-    switch_run(run_overlay);
-    const bool saved_overlay = m_->in_overlay_;
-    m_->in_overlay_ = true; // toasts are popup content: they get the pointer even where a window would
-    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+    const u32 previous_owner = m.run_owner_;
+    switch_run(ui, run_overlay);
+    const bool saved_overlay = m.in_overlay_;
+    m.in_overlay_ = true; // toasts are popup content: they get the pointer even where a window would
+    m.dl_.push_clip_absolute({{0.0f, 0.0f}, m.display_});
 
-    f32 cursor = at_bottom ? m_->display_.y - margin : margin;
-    for (std::size_t n = m_->toast_.toasts_.size(); n-- > 0;) { // newest nearest the corner
-        toast_entry& t = m_->toast_.toasts_[n];
+    f32 cursor = at_bottom ? m.display_.y - margin : margin;
+    for (std::size_t n = m.toast_.toasts_.size(); n-- > 0;) { // newest nearest the corner
+        toast_entry& t = m.toast_.toasts_[n];
 
         const bool  has_bar   = t.progress >= 0.0f || t.progress == toast_busy;
         const bool  has_acts  = !t.actions.empty();
         const bool  plain     = !has_bar && !has_acts && t.sticky == false;
         const f32  inner_w = width - 2.0f * pad - 6.0f;
-        const vec2 body_size = t.text.empty() ? vec2{} : rich_layout(t.text, f, m_->style_.text, inner_w, false);
+        const vec2 body_size = t.text.empty() ? vec2{} : rich_layout(ui, t.text, f, m.style_.text, inner_w, false);
         // (rich_layout's lines are drawn right after measuring, before the next toast)
         const f32 title_h = t.title.empty() ? 0.0f : lh;
         f32 height  = pad * 2.0f + title_h + (t.title.empty() || t.text.empty() ? 0.0f : 3.0f) + body_size.y + 3.0f;
         if (has_bar)  { height += 9.0f; }
         if (has_acts) { height += btn_h + 8.0f; }
 
-        t.anim = approach(t.anim, t.dismissed ? 0.0f : 1.0f, 14.0f);
+        t.anim = approach(ui, t.anim, t.dismissed ? 0.0f : 1.0f, 14.0f);
         const f32 eased  = t.anim * t.anim * (3.0f - 2.0f * t.anim);
         const f32 fade_out = t.sticky ? 1.0f : std::clamp((t.duration - t.age) / 0.30f, 0.0f, 1.0f);
         const f32 alpha  = std::min(eased, fade_out);
-        const f32 x = at_right ? m_->display_.x - margin - width + (1.0f - eased) * 36.0f : margin - (1.0f - eased) * 36.0f;
+        const f32 x = at_right ? m.display_.x - margin - width + (1.0f - eased) * 36.0f : margin - (1.0f - eased) * 36.0f;
         const f32 y = at_bottom ? cursor - height : cursor;
         const rect r = rect::from_size({x, y}, {width, height});
 
-        m_->dl_.push_alpha(alpha);
+        m.dl_.push_alpha(alpha);
         const id key = part_id(part::toast, static_cast<id>(t.seq));
 
         // the controls first: they claim a press before the body can
         const rect close_r = rect::from_size({r.max.x - 26.0f, r.min.y + 6.0f}, {20.0f, 20.0f});
-        const bool over_body = r.contains(m_->input_.mouse_);
+        const bool over_body = r.contains(m.input_.mouse_);
         interaction close_in{};
-        if (!plain && !t.dismissed) { close_in = interact(part_id(part::toast_close, static_cast<id>(t.seq)), close_r); }
+        if (!plain && !t.dismissed) { close_in = interact(ui, part_id(part::toast_close, static_cast<id>(t.seq)), close_r); }
         std::array<rect, 3> btn{};
         std::array<interaction, 3> btn_in{};
         if (has_acts) {
             f32 bx = r.min.x + pad + 6.0f;
             const f32 by = r.max.y - pad - btn_h + 2.0f;
             for (std::size_t i = 0; i < t.actions.size(); ++i) {
-                const f32 bw = m_->font_.measure(f, t.actions[i]).x + 22.0f;
+                const f32 bw = m.font_.measure(f, t.actions[i]).x + 22.0f;
                 btn[i] = rect::from_size({bx, by}, {bw, btn_h});
                 bx += bw + 6.0f;
-                if (!t.dismissed) { btn_in[i] = interact(part_id(part::toast_button, static_cast<id>(t.seq * 4 + i)), btn[i]); }
+                if (!t.dismissed) { btn_in[i] = interact(ui, part_id(part::toast_button, static_cast<id>(t.seq * 4 + i)), btn[i]); }
             }
         }
-        const interaction in = interact(key, r);
-        if (in.hovered) { m_->toast_.toast_hover_cur_ = true; }
+        const interaction in = interact(ui, key, r);
+        if (in.hovered) { m.toast_.toast_hover_cur_ = true; }
         if (in.pressed && plain) { t.dismissed = true; }
         if (close_in.pressed) { t.dismissed = true; }
         for (std::size_t i = 0; i < t.actions.size(); ++i) {
             if (btn_in[i].pressed && !t.dismissed) {
                 t.dismissed = true;
-                if (m_->toast_results_.size() >= 16) { m_->toast_results_.erase(m_->toast_results_.begin()); }
-                m_->toast_results_.emplace_back(t.seq, static_cast<int>(i));
+                if (m.toast_results_.size() >= 16) { m.toast_results_.erase(m.toast_results_.begin()); }
+                m.toast_results_.emplace_back(t.seq, static_cast<int>(i));
             }
         }
         const bool touched = over_body || in.hovered || in.held;
         t.paused = touched;
-        if (!touched && !t.sticky) { t.age += m_->wall_dt_; } // hovering pauses the timer
-        if (has_bar && t.progress == toast_busy) { t.busy_phase += m_->dt_; }
+        if (!touched && !t.sticky) { t.age += m.wall_dt_; } // hovering pauses the timer
+        if (has_bar && t.progress == toast_busy) { t.busy_phase += m.dt_; }
 
-        const color accent = kind_color(t.kind, m_->style_);
+        const color accent = kind_color(t.kind, m.style_);
         shape_style body;
-        body.radius        = radii(m_->style_.rounding * 0.8f);
-        body.fill_top      = lerp(color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255}, m_->style_.widget_hover, in.hovered && plain ? 0.35f : 0.0f);
+        body.radius        = radii(m.style_.rounding * 0.8f);
+        body.fill_top      = lerp(color{m.style_.window_bg.r, m.style_.window_bg.g, m.style_.window_bg.b, 255}, m.style_.widget_hover, in.hovered && plain ? 0.35f : 0.0f);
         body.fill_bottom   = body.fill_top;
-        body.border        = m_->style_.border;
-        body.border_width  = m_->style_.border_width;
-        body.shadow        = m_->style_.shadow;
-        body.shadow_blur   = m_->style_.shadow_blur * 0.8f;
-        body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.3f};
-        popup_panel(r, body);
+        body.border        = m.style_.border;
+        body.border_width  = m.style_.border_width;
+        body.shadow        = m.style_.shadow;
+        body.shadow_blur   = m.style_.shadow_blur * 0.8f;
+        body.shadow_offset = {0.0f, m.style_.shadow_blur * 0.3f};
+        popup_panel(ui, r, body);
 
         shape_style bar; // the kind's color down the left edge
         bar.radius      = radii(2.0f);
         bar.fill_top    = accent;
         bar.fill_bottom = accent;
-        m_->dl_.shape({{r.min.x + 6.0f, r.min.y + 8.0f}, {r.min.x + 9.0f, r.max.y - 8.0f}}, bar);
+        m.dl_.shape({{r.min.x + 6.0f, r.min.y + 8.0f}, {r.min.x + 9.0f, r.max.y - 8.0f}}, bar);
 
         f32 ty = r.min.y + pad;
         if (!t.title.empty()) {
-            m_->dl_.text({r.min.x + pad + 6.0f, ty}, accent, t.title, f);
+            m.dl_.text({r.min.x + pad + 6.0f, ty}, accent, t.title, f);
             ty += title_h + (t.text.empty() ? 0.0f : 3.0f);
         }
         if (!t.text.empty()) {
-            rich_layout(t.text, f, m_->style_.text, inner_w, false);
-            rich_draw({r.min.x + pad + 6.0f, ty});
+            rich_layout(ui, t.text, f, m.style_.text, inner_w, false);
+            rich_draw(ui, {r.min.x + pad + 6.0f, ty});
         }
         ty += body_size.y + 3.0f;
 
@@ -225,8 +229,8 @@ void context::toast_end_frame()
             const rect track = {{r.min.x + pad + 6.0f, ty + 1.0f}, {r.max.x - pad, ty + 6.0f}};
             shape_style tr;
             tr.radius = radii(2.5f);
-            tr.fill_top = tr.fill_bottom = m_->style_.widget_bg;
-            m_->dl_.shape(track, tr);
+            tr.fill_top = tr.fill_bottom = m.style_.widget_bg;
+            m.dl_.shape(track, tr);
             shape_style fill;
             fill.radius = radii(2.5f);
             fill.fill_top = fill.fill_bottom = accent;
@@ -234,46 +238,46 @@ void context::toast_end_frame()
                 const f32 span = track.width() * 0.35f;
                 const f32 phase = std::fmod(t.busy_phase * 0.9f, 1.0f);
                 const f32 x0 = track.min.x - span + (track.width() + span) * phase;
-                m_->dl_.push_clip({{track.min.x, track.min.y - 1.0f}, {track.max.x, track.max.y + 1.0f}});
-                m_->dl_.shape({{x0, track.min.y}, {x0 + span, track.max.y}}, fill);
-                m_->dl_.pop_clip();
+                m.dl_.push_clip({{track.min.x, track.min.y - 1.0f}, {track.max.x, track.max.y + 1.0f}});
+                m.dl_.shape({{x0, track.min.y}, {x0 + span, track.max.y}}, fill);
+                m.dl_.pop_clip();
             } else if (t.progress > 0.0f) {
-                m_->dl_.shape({track.min, {track.min.x + std::max(track.width() * t.progress, 5.0f), track.max.y}}, fill);
+                m.dl_.shape({track.min, {track.min.x + std::max(track.width() * t.progress, 5.0f), track.max.y}}, fill);
             }
             ty += 9.0f;
         }
         if (has_acts) {
             for (std::size_t i = 0; i < t.actions.size(); ++i) {
                 shape_style b;
-                b.radius = radii(m_->style_.rounding * 0.6f);
-                b.fill_top = b.fill_bottom = lerp(m_->style_.widget_bg, m_->style_.widget_hover, btn_in[i].hovered ? 1.0f : 0.0f);
-                b.border = btn_in[i].hovered ? accent : m_->style_.widget_border;
+                b.radius = radii(m.style_.rounding * 0.6f);
+                b.fill_top = b.fill_bottom = lerp(m.style_.widget_bg, m.style_.widget_hover, btn_in[i].hovered ? 1.0f : 0.0f);
+                b.border = btn_in[i].hovered ? accent : m.style_.widget_border;
                 b.border_width = 1.0f;
-                m_->dl_.shape(btn[i], b);
-                const vec2 ts = m_->font_.measure(f, t.actions[i]);
-                m_->dl_.text({btn[i].min.x + (btn[i].width() - ts.x) * 0.5f, btn[i].min.y + (btn_h - ts.y) * 0.5f}, m_->style_.text, t.actions[i], f);
+                m.dl_.shape(btn[i], b);
+                const vec2 ts = m.font_.measure(f, t.actions[i]);
+                m.dl_.text({btn[i].min.x + (btn[i].width() - ts.x) * 0.5f, btn[i].min.y + (btn_h - ts.y) * 0.5f}, m.style_.text, t.actions[i], f);
             }
         }
         if (!plain && (over_body || close_in.hovered)) { // a small x to dismiss it
             const vec2 c = close_r.center();
-            const color xc = close_in.hovered ? m_->style_.text : m_->style_.text_dim;
-            m_->dl_.line({c.x - 3.5f, c.y - 3.5f}, {c.x + 3.5f, c.y + 3.5f}, xc, 1.5f);
-            m_->dl_.line({c.x - 3.5f, c.y + 3.5f}, {c.x + 3.5f, c.y - 3.5f}, xc, 1.5f);
+            const color xc = close_in.hovered ? m.style_.text : m.style_.text_dim;
+            m.dl_.line({c.x - 3.5f, c.y - 3.5f}, {c.x + 3.5f, c.y + 3.5f}, xc, 1.5f);
+            m.dl_.line({c.x - 3.5f, c.y + 3.5f}, {c.x + 3.5f, c.y - 3.5f}, xc, 1.5f);
         }
         // how much time is left (a plain or timed toast; a progress bar shows its own)
         if (!t.sticky && !has_bar) {
             const f32 left = std::clamp(1.0f - t.age / t.duration, 0.0f, 1.0f);
-            m_->dl_.rect_filled({{r.min.x + 12.0f, r.max.y - 5.0f}, {r.min.x + 12.0f + (width - 24.0f) * left, r.max.y - 3.0f}}, accent.scaled_alpha(0.55f), 1.0f);
+            m.dl_.rect_filled({{r.min.x + 12.0f, r.max.y - 5.0f}, {r.min.x + 12.0f + (width - 24.0f) * left, r.max.y - 3.0f}}, accent.scaled_alpha(0.55f), 1.0f);
         }
-        m_->dl_.pop_alpha();
+        m.dl_.pop_alpha();
 
         cursor += at_bottom ? -(height + gap) : (height + gap);
     }
-    m_->dl_.pop_clip();
-    m_->in_overlay_ = saved_overlay;
-    switch_run(previous_owner);
+    m.dl_.pop_clip();
+    m.in_overlay_ = saved_overlay;
+    switch_run(ui, previous_owner);
 
-    std::erase_if(m_->toast_.toasts_, [](const toast_entry& t) { return (!t.sticky && t.age >= t.duration) || (t.dismissed && t.anim < 0.02f); });
+    std::erase_if(m.toast_.toasts_, [](const toast_entry& t) { return (!t.sticky && t.age >= t.duration) || (t.dismissed && t.anim < 0.02f); });
 }
 
 } // namespace strata

@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 
 #include <algorithm>
@@ -12,6 +13,8 @@
 #include <ctime>
 
 namespace strata {
+
+using namespace internal;
 
 namespace {
 
@@ -132,7 +135,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
     // the body: a scrolling child; only visible rows are drawn ---------------------------------------------------------
     f32 body_h = size.y;
     if (body_h <= 0.0f) {
-        body_h = m_->layout_.bound_bottom > 0.0f ? std::max(m_->layout_.bound_bottom - layout_next_y(), 60.0f) : 220.0f;
+        body_h = m_->layout_.bound_bottom > 0.0f ? std::max(m_->layout_.bound_bottom - layout_next_y(*this), 60.0f) : 220.0f;
     }
     if (begin_child("##body", {size.x, body_h}, child_flags::frame)) {
         child_frame& cf = m_->children_cards_.child_stack_[m_->children_cards_.child_depth_ - 1];
@@ -150,7 +153,7 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             for (std::size_t i = 0; i < count; ++i) {
                 log_buffer::line& l = log.lines_[log.visible_[i]];
                 if (l.wrap_w != wrap_w) {
-                    l.wrap_h = l.text().empty() ? m_->font_.line_height(f) : rich_layout(l.text(), f, m_->style_.text, wrap_w, false).y;
+                    l.wrap_h = l.text().empty() ? m_->font_.line_height(f) : rich_layout(*this, l.text(), f, m_->style_.text, wrap_w, false).y;
                     l.wrap_w = wrap_w;
                 }
                 log.row_top_[i] = y;
@@ -180,11 +183,11 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
         log.last_scroll_ = v.follow ? st.scroll : -1.0f;
         m_->layout_.origin.y = cf.inner.min.y - st.scroll;
 
-        (void)layout_place({1.0f, std::max(total, 1.0f)}); // the scrollable height
+        (void)layout_place(*this, {1.0f, std::max(total, 1.0f)}); // the scrollable height
 
         const bool overflowing = total > view_h;
         const rect hit = {cf.bounds.min, {cf.bounds.max.x - (overflowing ? 12.0f : 0.0f), cf.bounds.max.y}};
-        const interaction in = interact(part_id(part::log_rows, current_seed()), hit);
+        const interaction in = interact(*this, part_id(part::log_rows, current_seed(*this)), hit);
         if (in.held && count > 0) {
             const std::size_t idx = row_at(m_->input_.mouse_.y - m_->layout_.origin.y);
             const u64 seq = log.lines_[log.visible_[idx]].seq;
@@ -251,8 +254,8 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
             const color c = level_color(l.level, m_->style_);
             m_->dl_.text({tx, y + 1.5f}, c, level_tag(l.level), f);
             if (wrap) {
-                rich_layout(l.text(), f, c, wrap_w, false);
-                rich_draw({tx + tag_w, y + 1.5f});
+                rich_layout(*this, l.text(), f, c, wrap_w, false);
+                rich_draw(*this, {tx + tag_w, y + 1.5f});
             } else {
                 m_->dl_.text({tx + tag_w, y + 1.5f}, c, l.text(), f);
             }

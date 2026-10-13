@@ -39,54 +39,71 @@
 
 namespace strata {
 
-struct context::interaction {
+namespace internal {
+
+inline constexpr u32 max_tree_depth  = 16;
+inline constexpr u32 max_table_depth = 4;
+inline constexpr u32 max_child_depth = 4;
+inline constexpr u32 max_card_depth  = 4;
+// open popup chain (0 = root context / bar menu, 1.. = submenus)
+inline constexpr u32 max_menu_levels = 4;
+inline constexpr u32 max_modals      = 4;
+
+inline constexpr u32 max_windows        = 255; // hard cap on capacity.windows (dock layouts index windows with a u8)
+inline constexpr u32 max_id_depth       = 16;
+inline constexpr u32 max_overrides      = 32;
+inline constexpr u32 max_font_depth     = 8;
+inline constexpr u32 max_runs           = 256;
+inline constexpr u32 max_gutter_depth   = 8;  // right gutter stack (push_right_gutter)
+inline constexpr u32 max_disabled_depth = 16;
+inline constexpr u32 measure_cache_size = 4096;
+inline constexpr u32 no_z               = 0xffffffffu;
+inline constexpr u32 run_base           = 0xffffffffu;
+inline constexpr u32 run_overlay        = 0xfffffffeu;
+inline constexpr u32 run_foreground     = 0xfffffffdu; // above popups
+inline constexpr u32 run_backdrop       = 0xfffffff0u; // + modal level - 1: the dim behind a modal
+
+struct interaction {
     bool hovered{};
     bool held{};
     bool pressed{};
 };
 
 // a run of draw commands and its owner: windows restack / popups lift by reordering runs
-struct context::cmd_run {
+struct cmd_run {
     u32 first{};
     u32 count{};
     u32 owner{};
 };
 
-struct context::field_layout {
+struct field_layout {
     rect control;
     rect label_row;
     bool has_label{};
 };
 
-
-
-
-struct context::press_anim { f32 hover{}; f32 active{}; };
-
-// a composite reports for its parts: they stay quiet while this lives
+struct press_anim { f32 hover{}; f32 active{}; };
 
 // what set_scale needs to rebuild the atlas (owned strings; font_config views re-pointed)
-struct context::font_source {
+struct font_source {
     std::string face;
     std::string file;
     font_config cfg;
 };
 
-
-   // bulk open also applies to nodes revealed later
-
-
 // edit sessions (track_edit): last widget's flags, the open session and whether it changed, engaged widgets this /
 // last frame
-struct context::edit_flags {
+struct edit_flags {
     bool active{}, activated{}, deactivated{}, edited{}, after_edit{};
 };
 
- // the item (last_item_key_) these flags belong to
-struct context::edit_session {
+// the item (last_item_key_) these flags belong to
+struct edit_session {
     id   key{};
     bool changed{};
 };
+
+} // namespace internal
 
 struct context::impl {
     impl(font_atlas atlas, const strata::style& theme, draw_list_limits limits, const capacity_config& capacity);
@@ -97,7 +114,7 @@ struct context::impl {
     draw_list  dl_;
     strata::style style_;
     ui_strings    strings_;
-    std::vector<font_source> font_sources_;
+    std::vector<internal::font_source> font_sources_;
     u32  max_atlas_size_{4096};
     f32  scale_{1.0f};
     u32  font_generation_{1};
@@ -122,18 +139,18 @@ struct context::impl {
     bool        wheel_consumed_{}; // an inner scroller used this frame's wheel
     bool        wheel_x_consumed_{};
 
-    window_state* cur_{};
+    internal::window_state* cur_{};
     id            cur_window_{};
-    layout_state  layout_{};
+    internal::layout_state  layout_{};
 
     // a window begun inside another's code suspends that parent until its end_window. `dud`: the nested begin failed
     // (window table full), so its end_window has nothing to close
     struct window_nest {
-        window_state*         cur{};
+        internal::window_state*         cur{};
         id                    window{};
         window_flags          flags{};
         rect                  frame{};
-        layout_state          layout{};
+        internal::layout_state          layout{};
         bool                  faded{};
         u32                   run_owner{};
         u32                   child_base{};
@@ -151,12 +168,12 @@ struct context::impl {
     internal::window_registry win_;
 
     // draw-command runs of this frame, in emission order
-    std::array<cmd_run, max_runs> runs_{};
+    std::array<internal::cmd_run, internal::max_runs> runs_{};
     u32                           run_count_{};
-    u32                           run_owner_{run_base};
+    u32                           run_owner_{internal::run_base};
     u32                           run_start_{};
     bool                          runs_overflow_{};
-    u32                           layer_saved_owner_{run_base}; // run to return to when a layer scope ends
+    u32                           layer_saved_owner_{internal::run_base}; // run to return to when a layer scope ends
     bool                          in_layer_{};
 
 
@@ -283,11 +300,11 @@ struct context::impl {
     id   tree_bulk_seed_{};
     u32  tree_bulk_frames_{};
     internal::nav_state nav_{};
-    std::array<f32, max_gutter_depth> gutter_stack_{};
+    std::array<f32, internal::max_gutter_depth> gutter_stack_{};
     u32                               gutter_depth_{};
     u32                                disabled_depth_{};
     bool                               disabled_alpha_{};
-    std::array<bool, max_disabled_depth> disabled_stack_{};
+    std::array<bool, internal::max_disabled_depth> disabled_stack_{};
     u32                                disabled_count_{};
 
     // window owning the keyboard: the last one pressed in, docked included (focused_window_ is only the topmost)
@@ -314,9 +331,9 @@ struct context::impl {
     id   hover_key_cur_{};
     id   hover_key_prev_{};
     f32  hover_time_{};
-    edit_flags         edit_flags_{};
+    internal::edit_flags         edit_flags_{};
     id                 edit_item_{};
-    std::array<edit_session, 4> edit_sessions_{}; // open ones (key 0 = free); focus survives a slider drag
+    std::array<internal::edit_session, 4> edit_sessions_{}; // open ones (key 0 = free); focus survives a slider drag
     u32                edit_muted_{};
     std::array<id, 8>  engaged_cur_{};
     std::array<id, 8>  engaged_prev_{};
@@ -330,13 +347,22 @@ struct context::impl {
     internal::animation                   anim_;
 };
 
+namespace internal {
+
+struct context_access {
+    static context::impl&       of(context& ui) noexcept { return *ui.m_; }
+    static const context::impl& of(const context& ui) noexcept { return *ui.m_; }
+};
+
 // a composite reports for its parts: they stay quiet while this lives
-struct context::edit_mute {
+struct edit_mute {
     context& ctx;
-    explicit edit_mute(context& c) noexcept : ctx{c} { ++ctx.m_->edit_muted_; }
-    ~edit_mute() { --ctx.m_->edit_muted_; }
+    explicit edit_mute(context& c) noexcept : ctx{c} { ++context_access::of(ctx).edit_muted_; }
+    ~edit_mute() { --context_access::of(ctx).edit_muted_; }
     edit_mute(const edit_mute&)            = delete;
     edit_mute& operator=(const edit_mute&) = delete;
 };
+
+} // namespace internal
 
 } // namespace strata

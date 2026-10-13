@@ -439,6 +439,9 @@ enum class window_flags : u16 {
     // a passive window (hud, name plates, readouts): never hovered, focused, raised, moved or docked, so the pointer
     // goes to whatever is below it and it never counts toward want_capture_mouse()
     no_inputs     = 256,
+    // wider content scrolls sideways (scrollbar, tilt wheel, Shift + wheel) instead of being clipped; like
+    // child_flags::horizontal, full-width widgets still fit the visible width. see scroll_x() / set_scroll_x()
+    horizontal    = 512,
 };
 
 [[nodiscard]] constexpr window_flags operator|(window_flags a, window_flags b) noexcept
@@ -502,6 +505,9 @@ enum class table_flags : u8 {
     row_hover = 8, // highlight the row under the pointer
     hideable    = 16, // header right-click menu shows / hides columns
     reorderable = 32, // drag a header sideways to move its column
+    // columns keep their widths when they add up to more than the table: the table scrolls sideways (scrollbar, tilt
+    // wheel, Shift + wheel) and resizing a column widens the table instead of narrowing its neighbour
+    scroll_x    = 64,
 };
 
 [[nodiscard]] constexpr table_flags operator|(table_flags a, table_flags b) noexcept
@@ -827,26 +833,7 @@ class context;
 class list_clipper;
 class config;
 
-namespace internal { // (src/dock_state.hpp)
-struct dock_state;
-struct dock_target;
-struct dock_guide;
-struct dock_space;
-} // namespace internal
-
-namespace internal { struct anim_slot; } // (src/core/animation.hpp)
-namespace internal { struct window_state; } // (src/core/window_registry.hpp)
-namespace internal { struct layout_state; } // (src/core/layout_state.hpp)
-namespace internal { class popup_stack; } // (src/popup_state.hpp)
-namespace internal { struct toast_entry; } // (src/toast_state.hpp)
-namespace internal { struct menu_level; struct menu_frame; } // (src/menu_state.hpp)
-namespace internal { struct code_mode; struct code_state; } // (src/code_state.hpp)
-namespace internal { enum class edit_kind : u8; struct edit_op; struct edit_history; struct ml_line; } // (src/edit_state.hpp)
-namespace internal { struct child_state; struct child_frame; struct card_state; struct card_frame; } // (src/child_card_state.hpp)
-namespace internal { struct rich_run; struct rich_seg; struct rich_line; } // (src/rich_text_state.hpp)
-namespace internal { struct tree_frame; struct tree_state; struct table_state; struct table_column; struct table_frame; } // (src/table_tree_state.hpp)
-namespace internal { struct chart_view; } // (src/chart_state.hpp)
-namespace internal { struct measure_slot; } // (src/measure_cache_state.hpp)
+namespace internal { struct context_access; } // (src/context_impl.hpp)
 
 // false when the window is collapsed; end_window always runs
 class window_scope {
@@ -1390,8 +1377,8 @@ public:
     // ... recursively. Ctrl / Shift + arrow click does the same.
     void set_next_item_open_recursive(bool open) noexcept;
     // opens / closes every tree node in the current id scope (all nodes at top level); applies when next submitted.
-    void open_all_tree_nodes() noexcept { tree_set_bulk(current_seed(), true); }
-    void close_all_tree_nodes() noexcept { tree_set_bulk(current_seed(), false); }
+    void open_all_tree_nodes() noexcept;
+    void close_all_tree_nodes() noexcept;
 
     // scrolling ------------------------------------------------------------
     // innermost scrolling region (child, else window); logical pixels from content top, 0 if not scrolling
@@ -1908,7 +1895,7 @@ public:
     [[nodiscard]] f32  content_width() const noexcept;
     // scrollbar width (already subtracted from content_width() when shown), and the visible rect of the innermost
     // scrolling region in logical screen coordinates
-    [[nodiscard]] static constexpr f32 scrollbar_width() noexcept { return scrollbar_w; }
+    [[nodiscard]] static constexpr f32 scrollbar_width() noexcept { return 10.0f; }
     [[nodiscard]] rect content_rect() const noexcept;
     // the press that activated the last tree row hit its arrow (what tree_flags::arrow_only tests)
     [[nodiscard]] bool item_arrow_hit() const noexcept;
@@ -1966,283 +1953,16 @@ public:
 
 private:
     friend class list_clipper;
+    // the free helpers in src/ (context_helpers.hpp, and each file's own) reach the private state through this
+    friend struct internal::context_access;
 
     // list_clipper: reserve the space above / below the visible rows (`item_height` 0 = one text line; in a table, its
     // row height)
     void list_clip_begin(int count, f32 item_height, int& first, int& last);
     void list_clip_end(int count, f32 item_height, int last);
 
-    struct interaction;
-
-    using anim_slot = internal::anim_slot; // src/core/animation.hpp
-
-    using window_state = internal::window_state; // src/core/window_registry.hpp
-
-    using layout_state = internal::layout_state; // src/core/layout_state.hpp
-
-    using popup_stack = internal::popup_stack; // src/popup_state.hpp
-
-    // a run of draw commands and its owner: windows restack / popups lift by reordering runs
-    struct cmd_run;
-
-    struct field_layout;
-
-    static constexpr u32 max_tree_depth    = 16;
-    static constexpr u32 max_table_columns = 16;
-    static constexpr u32 max_table_depth   = 4;
-
-    using tree_frame = internal::tree_frame; // src/table_tree_state.hpp
-    using tree_state = internal::tree_state; // src/table_tree_state.hpp
-
-    using table_state  = internal::table_state;  // src/table_tree_state.hpp
-    using table_column = internal::table_column; // src/table_tree_state.hpp
-    using table_frame  = internal::table_frame;  // src/table_tree_state.hpp
-
-    using child_state = internal::child_state; // src/child_card_state.hpp
-    using child_frame = internal::child_frame; // src/child_card_state.hpp
-    using card_state  = internal::card_state;  // src/child_card_state.hpp
-    using card_frame  = internal::card_frame;  // src/child_card_state.hpp
-
-    // docking state lives in internal::dock_state (src/dock_state.hpp)
-    static constexpr u8 no_node = 0xff;
-
-    // undo history of the focused field
-    using edit_kind    = internal::edit_kind;    // src/edit_state.hpp
-    using edit_op      = internal::edit_op;      // src/edit_state.hpp
-    using edit_history = internal::edit_history; // src/edit_state.hpp
-    using ml_line      = internal::ml_line;      // src/edit_state.hpp
-
-    // rich text layout scratch
-    using rich_run  = internal::rich_run;  // src/rich_text_state.hpp
-    using rich_seg  = internal::rich_seg;  // src/rich_text_state.hpp
-    using rich_line = internal::rich_line; // src/rich_text_state.hpp
-
-    // open popup chain (0 = root context / bar menu, 1.. = submenus)
-    static constexpr u32 max_menu_levels = 4;
-    using menu_level = internal::menu_level; // src/menu_state.hpp
-    using menu_frame = internal::menu_frame; // src/menu_state.hpp
-    using toast_entry = internal::toast_entry; // src/toast_state.hpp -- (toast, button) pressed and not yet read
-
-    static constexpr u32 max_child_depth = 4;
-    static constexpr u32 max_card_depth = 4;
-
-    static constexpr u32 max_windows   = 255; // hard cap on capacity.windows (dock layouts index windows with a u8)
-    static constexpr u32 max_id_depth  = 16;
-    static constexpr u32 max_overrides = 32;
-    static constexpr u32 max_font_depth = 8;
-    static constexpr u32 max_runs      = 256;
-    static constexpr u32 no_z          = 0xffffffffu;
-    static constexpr u32 run_base      = 0xffffffffu;
-    static constexpr u32 run_overlay   = 0xfffffffeu;
-    static constexpr u32 run_foreground = 0xfffffffdu; // above popups
-    static constexpr u32 run_backdrop  = 0xfffffff0u; // + modal level - 1: the dim behind a modal
-
-    [[nodiscard]] id       current_seed() const noexcept;
-    // widget id from a label in the current scope; debug builds also record the label for collision reports
-    [[nodiscard]] id       widget_id(std::string_view label) noexcept;
-    // debug only: records `key` for this frame, counting repeats
-    void                   check_id(id key) noexcept;
-    [[nodiscard]] anim_slot& anim_for(id key) noexcept;            // finds or creates (and keeps alive)
-    [[nodiscard]] anim_slot* anim_find(id key) noexcept;           // finds only
-    struct press_anim;
-    // idle buttons own no animation state
-    [[nodiscard]] press_anim button_anim(id key, const interaction& in) noexcept;
-    [[nodiscard]] f32      approach(f32 current, f32 target, f32 speed = 0.0f) const noexcept;
-    [[nodiscard]] window_state* window_for(id key, vec2 pos, f32 width) noexcept;
-    // report edit state: `session` id, `changed` return value, `engaged` held / typed / popup open now.
-    // feeds item_activated() ... item_deactivated_after_edit()
-    void track_edit(id session, bool changed, bool engaged) noexcept;
-    // a composite reports for its parts: they stay quiet while this lives
-    struct edit_mute;
-    std::expected<void, font_error> build_font_atlas(f32 scale);
-    void                   forget_window(id key) noexcept;
-    // a fixed-size table / stack ran out: counted in frame_stats, reported once per `what`
-    void                   report_limit(const char* what, u32 capacity) noexcept;
-    // sends `message` to the diagnostics hook (or stderr) unless `once_key` was seen
-    void                   diagnose(diagnostic_kind kind, std::string_view message, u64 once_key) noexcept;
-    [[nodiscard]] rect     layout_place(vec2 size) noexcept;
-    // rows outside the clip rect do no work (no hit test, animation, measuring or geometry); layout already advanced,
-    // so scrolling and tree state are unaffected
-    [[nodiscard]] bool     item_culled(const rect& r) noexcept;
-    // bookkeeping for a culled row: it becomes the inert "last item"
-    void                   note_culled_item(id key, const rect& r) noexcept;
-    // non-interactive content: becomes the "last item", no press
-    void                   note_passive_item(id key, const rect& r) noexcept;
-    [[nodiscard]] vec2     measure_cached(font_id f, std::string_view s) noexcept;
-    // nav: every row of an open nav scope registers here, culled or not
-    void                   nav_record(id key, const rect& r, u32 depth, bool node, bool open) noexcept;
-    [[nodiscard]] bool     nav_take(id key) noexcept;   // Enter was pressed with the cursor on this row
-    void                   nav_click(id key) noexcept;  // a click moves the cursor
-    // accessory strip of the row just submitted; false if there is no row
-    [[nodiscard]] bool     accessory_slot(f32 width, rect& out, f32 inset = 0.0f) noexcept;
-    // a row accessories can attach to (see row_anchor_)
-    void                   note_row_anchor(id key, const rect& r) noexcept;
-    void                   allow_item_overlap_at(id key, const rect& r) noexcept;
-    // scroll offset / view of the innermost scrolling region, or nullptr
-    [[nodiscard]] f32*     scroll_slot(rect& view) noexcept;
-    // this frame's wheel scroll for a region: `unit` = one line / row, `page` = visible extent (0 if none), times
-    // style::scroll_speed
-    [[nodiscard]] f32      scroll_step(f32 unit, f32 page) const noexcept;
-    [[nodiscard]] f32      wheel_scroll(f32 unit, f32 page = 0.0f) const noexcept;
-    [[nodiscard]] f32      wheel_scroll_x(f32 unit, f32 page = 0.0f) const noexcept;
-    void                   scroll_reveal_rect(const rect& item, bool center) noexcept;
-    // tree open state, with set_next_item_open / bulk open-close applied
-    [[nodiscard]] bool&    tree_open_resolved(id key, bool default_open, bool& recursive_out) noexcept;
-    void                   tree_set_recursive(id key, bool open) noexcept;
-    void                   tree_set_bulk(id seed, bool open) noexcept;
-    void                   tree_open_set(id key, bool open) noexcept;
-    [[nodiscard]] id       tree_seed_of(id key) const noexcept;
-    [[nodiscard]] bool     tree_under(id node, id root) const noexcept;
-    [[nodiscard]] bool     id_in_scope(id seed) const noexcept;
-    void                   push_id_value(id key) noexcept; // an id that is already hashed (a row's own key)
-    [[nodiscard]] field_layout layout_field(std::string_view shown_label, f32 control_height);
-    [[nodiscard]] interaction interact(id key, const rect& r) noexcept;
-    [[nodiscard]] color&   color_ref(style_color which) noexcept;
-    [[nodiscard]] f32&     var_ref(style_var which) noexcept;
-    [[nodiscard]] shape_style widget_shape(color base, f32 radius) const noexcept;
-    [[nodiscard]] u32      z_index(id key) const noexcept;
-    void                   bring_to_front(id key) noexcept;
-    void                   switch_run(u32 owner) noexcept;
-    void                   apply_layer_order();
-    [[nodiscard]] bool     pointer_over(const rect& r) const noexcept;
-    bool begin_popup_at(id key, const rect& anchor, vec2 size);
-    void end_popup_at();
-    // popup stack: opens `key` above the popup being drawn (from outside every popup: replaces the stack). false when
-    // the stack is full
-    bool popup_push(id key) noexcept;
-    // enters the draw layer of `level` (records its rect as drawn this frame); popup_leave() restores what was before
-    void popup_enter(u32 level, const rect& r, const rect& anchor) noexcept;
-    void popup_leave() noexcept;
-    bool picker_body(id key, color& c, color_flags flags);
-    bool hotkey_field(std::string_view label, key& k, key_chord* chord);
-    // scrollbar thumb drag: the new offset while pressed. `grab` = press point in the thumb (off-thumb presses centre
-    // it), `travel` = thumb range
-    [[nodiscard]] f32 thumb_drag(const interaction& in, f32& grab, f32 thumb_y, f32 thumb_h, f32 track_top, f32 travel,
-                                 f32 max_scroll, f32 scroll) const noexcept;
-    [[nodiscard]] f32 thumb_drag_x(const interaction& in, f32& grab, f32 thumb_x, f32 thumb_w, f32 track_left,
-                                   f32 travel, f32 max_scroll, f32 scroll) const noexcept;
-    [[nodiscard]] f32 thumb_drag_along(f32 along, const interaction& in, f32& grab, f32 thumb_lo, f32 thumb_len,
-                                       f32 track_lo, f32 travel, f32 max_scroll, f32 scroll) const noexcept;
-    // innermost open child_flags::horizontal region (owns the x offset)
-    [[nodiscard]] child_state* horizontal_child() const noexcept;
-    void apply_input_mask();
-    bool edit_indent_lines(bool unindent, int tab_size);
-    void picker_field(id key, const rect& box, const interaction& in, bool open, std::string_view text, int icon);
-    bool pick_cell(id key, const rect& r, std::string_view text, bool selected, bool faded, bool marked);
-    bool calendar_body(date& value, bool close_on_pick);
-    bool time_body(time_of_day& value, bool seconds);
-    void draw_checker(const rect& r, f32 cell);
-    bool row_item(id key, std::string_view shown, bool selected, f32 text_indent, f32 row_height);
-    [[nodiscard]] bool& tree_open_state(id key, bool default_open);
-    [[nodiscard]] table_state* table_for(id key) noexcept;
-    void table_finalize_columns();
-    void table_recompute_x() noexcept;
-    void table_start_body();
-    void table_finish_row();
-    [[nodiscard]] f32 layout_next_y() const noexcept;
-    void draw_tooltip(std::string_view text);
-    void wipe_edit_buffer() noexcept;
-    // all edits of the focused field go through edit_replace (records undo)
-    bool edit_replace(std::size_t pos, std::size_t len, std::string_view with, edit_kind kind);
-    bool edit_delete_selection();
-    bool edit_insert(std::string_view s, bool typed);
-    bool edit_undo();
-    bool edit_redo();
-    bool edit_shortcut(const key_event& ev, bool password, bool multiline); // ctrl+a / c / x / v / z / y
-    void edit_history_clear() noexcept;
-    void edit_history_add(edit_history& h, const edit_op& op, std::string_view removed, std::string_view inserted);
-    bool input_multiline_core(std::string_view label, std::string_view current, vec2 size, input_flags flags,
-                              std::string_view hint, std::size_t max_bytes);
-    void ml_layout(std::string_view text, f32 width, font_id font, bool wrap);
-    [[nodiscard]] std::size_t ml_line_of(std::size_t index) const noexcept;
-    // rich_layout fills rich_lines_ / rich_segs_ and returns the size; rich_draw paints them
-    vec2 rich_layout(std::string_view text, font_id base, color base_col, f32 wrap_width, bool markup);
-    void rich_draw(vec2 pos);
-    [[nodiscard]] vec2 label_size(font_id f, std::string_view s);
-    void               label_draw(vec2 pos, color c, std::string_view s, font_id f);
-    // docking
-    void dock_compute(u8 node, const rect& area) noexcept;
-    void dock_relayout() noexcept;
-    [[nodiscard]] u8   dock_new_node() noexcept;
-    void dock_free_node(u8 node) noexcept;
-    [[nodiscard]] internal::dock_target dock_pick(vec2 pointer, u8 exclude_leaf = no_node, vec2 want = {}) const noexcept; // want: the size the window has
-    void dock_attach(window_state& w, u8 space, u8 node, dock_zone zone, bool outer, f32 size = 0.0f, int tab = -1) noexcept;
-    [[nodiscard]] f32 dock_tab_width(const window_state& w) const noexcept;
-    [[nodiscard]] u32 dock_leaf_tabs(u8 leaf, std::array<u8, max_windows>& out, bool shown_only) const noexcept; // indices into windows_, in tab order
-    void dock_move_tab(window_state& w, u32 index) noexcept;                                  // to that place among its neighbours
-    [[nodiscard]] u32 dock_guides(const internal::dock_space& sp, u8 leaf, std::array<internal::dock_guide, 9>& out) const noexcept;
-    [[nodiscard]] bool dock_double_click(id key) noexcept;                                    // the second press of a quick pair on `key`
-    [[nodiscard]] u8 dock_space_at(id key) noexcept;                 // finds or creates the space with this key
-    [[nodiscard]] static id dock_space_key(std::string_view name) noexcept;
-    void dock_set_space(u8 space, const rect& area, const rect& drop, const rect& panel) noexcept;
-    void dock_detach(window_state& w) noexcept;
-    void dock_prune() noexcept;
-    void dock_end_frame();
-    [[nodiscard]] window_state* window_find(id key) noexcept;
-    [[nodiscard]] const window_state* window_find(id key) const noexcept;
-    void resume_parent_window() noexcept; // ends a nested begin_window: the suspended parent continues
-    [[nodiscard]] interaction interact_impl(id key, const rect& r, bool in_window) noexcept;
-    bool drag_box(std::string_view id_label, const rect& box, f32& value, f32 speed, f32 lo, f32 hi, int decimals,
-                  std::string_view suffix, bool integer);
-    void plot_impl(std::string_view label, std::span<const plot_series> series, vec2 size, plot_kind kind, f32 lo, f32 hi,
-                   u32 offset, std::string_view overlay, bool compact);
-    void draw_tooltip_at(vec2 anchor, std::string_view text);
-    // popup background: the opaque shape, or acrylic when style_.popup_acrylic > 0
-    void popup_panel(const rect& r, const shape_style& body);
-    void draw_mnemonic(vec2 pos, color c, std::string_view text, std::size_t at, std::size_t len, bool underline, font_id f);
-    bool menu_begin_level(u32 level, id key);
-    void menu_end_level();
-    void menu_open_root(id key, vec2 pos, const rect& anchor, bool from_bar);
-    void menu_close_from(u32 level) noexcept;
-    void menu_close_all() noexcept { menu_close_from(0); }
-    void toast_end_frame();
-    void dock_animate();
+    // used by slider<T> above
     bool slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int decimals);
-    bool input_core(std::string_view label, std::string_view current, std::string_view hint, input_flags flags,
-                    std::size_t max_bytes);
-    void draw_combo_popup(id key, const rect& anchor, const item_list& items,
-                          int& current, bool& changed);
-
-    // what set_scale needs to rebuild the atlas (owned strings; font_config views re-pointed)
-    struct font_source;
-    // zoomable chart views (survive between frames)
-    using chart_view = internal::chart_view; // src/chart_state.hpp
-    [[nodiscard]] chart_view& chart_view_for(id key) noexcept;
-    void chart_impl(std::string_view label, std::span<const plot_series> series, const plot_options& o);
-
-    // modals
-    static constexpr u32 max_modals = 4;
-    [[nodiscard]] u32 register_click() noexcept;      // 1 / 2 / 3 = single / double / triple click
-    // caret blink phase (always on when blinking is disabled)
-    [[nodiscard]] bool caret_visible() const noexcept;
-    void ed_prepare_spans(std::size_t text_size, font_id base, f32& line_h, f32& ascent, bool ignore);
-    [[nodiscard]] f32 ed_measure(font_id base, std::string_view t, std::size_t a, std::size_t b) const;
-    [[nodiscard]] font_id ed_font_at(font_id base, std::size_t i) const noexcept;
-    void ed_draw(vec2 pos, f32 line_ascent, color col, std::string_view t, std::size_t a, std::size_t b, font_id base);
-    void draw_ime_chip(vec2 caret_bottom, f32 line_h, font_id f);
-    void apply_pending_scroll(id key, f32& scroll_y, f32* scroll_x) noexcept;
-    [[nodiscard]] static std::string table_layout_text(const table_state& t);
-    using code_mode = internal::code_mode; // src/code_state.hpp
-    using code_state = internal::code_state; // src/code_state.hpp
-    [[nodiscard]] code_state& code_state_for(id key);
-
-    // label_size() cache: direct-mapped (font, string) -> size, cleared when the atlas changes. rich labels skip it.
-    using measure_slot = internal::measure_slot; // src/measure_cache_state.hpp
-    static constexpr u32 measure_cache_size = 4096;
-
-    // right gutter stack (push_right_gutter)
-    static constexpr u32 max_gutter_depth = 8;
-
-    // disabled scopes: depth, whether the outermost pushed the fade, and which scopes counted (keeps end_disabled
-    // balanced)
-    static constexpr u32 max_disabled_depth = 16;
-
-    static constexpr f32 scrollbar_w = 10.0f;
-
-    // edit sessions (track_edit): last widget's flags, the open session and whether it changed, engaged widgets this /
-    // last frame
-    struct edit_flags;     // the item (last_item_key_) the flags belong to
-    struct edit_session;
 
     // private state (src/context_impl.hpp), so changes to it do not touch this header
     struct impl;

@@ -4,10 +4,13 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 
 #include <algorithm>
 
 namespace strata {
+
+using namespace internal;
 
 namespace {
 
@@ -34,7 +37,7 @@ void context::debug_metrics_window(bool& open)
                         window_flags::resizable | window_flags::drag_by_body)) {
         const auto row = [&](std::string_view name, std::string_view value) {
             text_dim(name);
-            same_line_right(label_size(current_font(), value).x);
+            same_line_right(label_size(*this, current_font(), value).x);
             text(value);
         };
         const auto row_num = [&](std::string_view name, u32 value) { row(name, big(value)); };
@@ -71,13 +74,13 @@ void context::debug_metrics_window(bool& open)
             const bool idle = st.unchanged && !st.animating;
             text_dim("can idle");
             const std::string_view v = idle ? "yes" : "no";
-            same_line_right(label_size(current_font(), v).x);
+            same_line_right(label_size(*this, current_font(), v).x);
             text_colored(idle ? kind_color(toast_kind::success, m_->style_) : m_->style_.text, v);
         }
 
         // silent failures; hidden while there are none, so anything here is worth reading.
         const bool trouble = st.draw_overflow != 0 || st.clip_overflows != 0 || st.alpha_overflows != 0 ||
-                             st.id_collisions != 0;
+                             st.id_collisions != 0 || st.limits_hit != 0;
         if (trouble) {
             separator();
             const color bad = kind_color(toast_kind::error, m_->style_);
@@ -90,6 +93,10 @@ void context::debug_metrics_window(bool& open)
             }
             if (st.alpha_overflows != 0) {
                 text_colored(bad, std::format("alpha stack overflowed {}x", st.alpha_overflows));
+            }
+            if (st.limits_hit != 0) {
+                text_colored(bad, std::format("{} fixed limit{} hit", st.limits_hit, st.limits_hit == 1 ? "" : "s"));
+                text_dim("see the diagnostics hook (or stderr); raise context_config::capacity");
             }
             if (st.id_collisions != 0) {
                 text_colored(bad, std::format("{} duplicate widget id{}", st.id_collisions,

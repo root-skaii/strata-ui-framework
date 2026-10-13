@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 
 
@@ -11,6 +12,13 @@
 #include <charconv>
 
 namespace strata {
+
+using namespace internal;
+
+static void draw_mnemonic(context& ui, vec2 pos, color c, std::string_view text, std::size_t at, std::size_t len, bool underline, font_id f);
+static bool menu_begin_level(context& ui, u32 level, id key);
+static void menu_end_level(context& ui);
+static void menu_open_root(context& ui, id key, vec2 pos, const rect& anchor, bool from_bar);
 
 namespace {
 
@@ -208,33 +216,36 @@ bool context::sequence_pressed(const key_sequence& seq) const
     return false;
 }
 
-void context::draw_mnemonic(vec2 pos, color c, std::string_view text, std::size_t at, std::size_t len, bool underline, font_id f)
+static void draw_mnemonic(context& ui, vec2 pos, color c, std::string_view text, std::size_t at, std::size_t len, bool underline, font_id f)
 {
-    if (len == 0 || !underline || m_->rich_.rich_depth_ > 0) {
-        label_draw(pos, c, text, f);
+    auto& m = context_access::of(ui);
+    if (len == 0 || !underline || m.rich_.rich_depth_ > 0) {
+        label_draw(ui, pos, c, text, f);
         return;
     }
     const std::string_view before = text.substr(0, at);
     const std::string_view mid    = text.substr(at, len);
     const std::string_view after  = text.substr(at + len);
-    const f32 x1 = m_->font_.measure(f, before).x;
-    const f32 x2 = x1 + m_->font_.measure(f, mid).x;
-    if (!before.empty()) { m_->dl_.text(pos, c, before, f); }
-    m_->dl_.text({pos.x + x1, pos.y}, c, mid, f, text_flags::underline);
-    if (!after.empty()) { m_->dl_.text({pos.x + x2, pos.y}, c, after, f); }
+    const f32 x1 = m.font_.measure(f, before).x;
+    const f32 x2 = x1 + m.font_.measure(f, mid).x;
+    if (!before.empty()) { m.dl_.text(pos, c, before, f); }
+    m.dl_.text({pos.x + x1, pos.y}, c, mid, f, text_flags::underline);
+    if (!after.empty()) { m.dl_.text({pos.x + x2, pos.y}, c, after, f); }
 }
 
-void context::menu_close_from(u32 level) noexcept
+void internal::menu_close_from(context& ui, u32 level) noexcept
 {
+    auto& m = context_access::of(ui);
     for (u32 i = level; i < max_menu_levels; ++i) {
-        m_->menu_.menu_open_[i] = {};
+        m.menu_.menu_open_[i] = {};
     }
 }
 
-void context::menu_open_root(id key, vec2 pos, const rect& anchor, bool from_bar)
+static void menu_open_root(context& ui, id key, vec2 pos, const rect& anchor, bool from_bar)
 {
-    menu_close_all();
-    menu_level& m = m_->menu_.menu_open_[0];
+    auto& st = context_access::of(ui);
+    menu_close_all(ui);
+    menu_level& m = st.menu_.menu_open_[0];
     m.key      = key;
     m.pos      = pos;
     m.anchor   = anchor;
@@ -245,21 +256,22 @@ void context::menu_open_root(id key, vec2 pos, const rect& anchor, bool from_bar
 }
 
 // draws the popup frame of one level in the overlay layer and redirects the layout into it
-bool context::menu_begin_level(u32 level, id menu_key)
+static bool menu_begin_level(context& ui, u32 level, id menu_key)
 {
-    if (level >= max_menu_levels || m_->menu_.menu_depth_ >= max_menu_levels) {
+    auto& st = context_access::of(ui);
+    if (level >= max_menu_levels || st.menu_.menu_depth_ >= max_menu_levels) {
         return false;
     }
-    menu_level& m = m_->menu_.menu_open_[level];
+    menu_level& m = st.menu_.menu_open_[level];
     if (m.key != menu_key) {
         return false;
     }
     m.seen = true;
 
-    if (level == 0 && m_->focus_id_ == 0) { // Esc closes everything
-        for (u32 i = 0; i < m_->input_.key_count_; ++i) {
-            if (m_->input_.keys_[i].k == key::escape) {
-                menu_close_all();
+    if (level == 0 && st.focus_id_ == 0) { // Esc closes everything
+        for (u32 i = 0; i < st.input_.key_count_; ++i) {
+            if (st.input_.keys_[i].k == key::escape) {
+                menu_close_all(ui);
                 return false;
             }
         }
@@ -267,75 +279,76 @@ bool context::menu_begin_level(u32 level, id menu_key)
 
     const bool measured = m.size.x > 0.0f;
     const vec2 size = measured ? m.size : vec2{160.0f, 40.0f};
-    m.age += m_->dt_; // (the opening fade: an animation, so the capped step)
+    m.age += st.dt_; // (the opening fade: an animation, so the capped step)
 
     vec2 pos = m.pos;
-    if (pos.x + size.x > m_->display_.x - 4.0f) {
-        pos.x = level > 0 ? m.anchor.min.x - size.x + 2.0f : m_->display_.x - 4.0f - size.x; // submenus flip to the left
+    if (pos.x + size.x > st.display_.x - 4.0f) {
+        pos.x = level > 0 ? m.anchor.min.x - size.x + 2.0f : st.display_.x - 4.0f - size.x; // submenus flip to the left
     }
     pos.x = std::max(pos.x, 4.0f);
-    if (pos.y + size.y > m_->display_.y - 4.0f) {
-        pos.y = std::max(4.0f, m_->display_.y - 4.0f - size.y);
+    if (pos.y + size.y > st.display_.y - 4.0f) {
+        pos.y = std::max(4.0f, st.display_.y - 4.0f - size.y);
     }
     m.rect_cur = {pos, pos + size};
     const f32 lin  = std::clamp(m.age / 0.12f, 0.0f, 1.0f);
     const f32 fade = measured ? lin * lin * (3.0f - 2.0f * lin) : 0.0f; // eased at both ends; the first frame only measures
 
-    menu_frame& frame = m_->menu_.menu_stack_[m_->menu_.menu_depth_];
+    menu_frame& frame = st.menu_.menu_stack_[st.menu_.menu_depth_];
     frame = {};
-    frame.saved_layout  = m_->layout_;
-    frame.prev_owner    = m_->run_owner_;
-    frame.saved_spacing = m_->style_.item_spacing;
+    frame.saved_layout  = st.layout_;
+    frame.prev_owner    = st.run_owner_;
+    frame.saved_spacing = st.style_.item_spacing;
     frame.level         = level;
-    frame.saved_overlay = m_->in_overlay_;
+    frame.saved_overlay = st.in_overlay_;
     // letter keys reach the deepest popup that is open (and only once it has been measured)
-    frame.keys_ok = measured && m_->focus_id_ == 0 && !m_->input_.mod_ctrl_ && !m_->input_.mod_alt_ &&
-                    (level + 1 >= max_menu_levels || m_->menu_.menu_open_[level + 1].key == 0);
+    frame.keys_ok = measured && st.focus_id_ == 0 && !st.input_.mod_ctrl_ && !st.input_.mod_alt_ &&
+                    (level + 1 >= max_menu_levels || st.menu_.menu_open_[level + 1].key == 0);
 
-    switch_run(m_->popup_.overlay_run());
-    m_->in_overlay_ = true;
-    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
-    m_->dl_.push_alpha(fade);
+    switch_run(ui, st.popup_.overlay_run());
+    st.in_overlay_ = true;
+    st.dl_.push_clip_absolute({{0.0f, 0.0f}, st.display_});
+    st.dl_.push_alpha(fade);
 
     shape_style body;
-    body.radius        = radii(m_->style_.rounding * 0.8f);
-    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.radius        = radii(st.style_.rounding * 0.8f);
+    body.fill_top      = color{st.style_.window_bg.r, st.style_.window_bg.g, st.style_.window_bg.b, 255};
     body.fill_bottom   = body.fill_top;
-    body.border        = m_->style_.border;
-    body.border_width  = m_->style_.border_width;
-    body.shadow        = m_->style_.shadow;
-    body.shadow_blur   = m_->style_.shadow_blur * 0.7f;
-    body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.25f};
-    popup_panel(m.rect_cur, body);
+    body.border        = st.style_.border;
+    body.border_width  = st.style_.border_width;
+    body.shadow        = st.style_.shadow;
+    body.shadow_blur   = st.style_.shadow_blur * 0.7f;
+    body.shadow_offset = {0.0f, st.style_.shadow_blur * 0.25f};
+    popup_panel(ui, m.rect_cur, body);
 
-    m_->dl_.push_clip({{pos.x + 1.0f, pos.y + 1.0f}, {pos.x + size.x - 1.0f, pos.y + size.y - 1.0f}});
-    m_->style_.item_spacing = 1.0f; // rows touch
-    m_->layout_        = {};
-    m_->layout_.origin = {pos.x + menu_pad, pos.y + menu_pad};
-    m_->layout_.width  = size.x - 2.0f * menu_pad;
-    ++m_->menu_.menu_depth_;
+    st.dl_.push_clip({{pos.x + 1.0f, pos.y + 1.0f}, {pos.x + size.x - 1.0f, pos.y + size.y - 1.0f}});
+    st.style_.item_spacing = 1.0f; // rows touch
+    st.layout_        = {};
+    st.layout_.origin = {pos.x + menu_pad, pos.y + menu_pad};
+    st.layout_.width  = size.x - 2.0f * menu_pad;
+    ++st.menu_.menu_depth_;
     return true;
 }
 
-void context::menu_end_level()
+static void menu_end_level(context& ui)
 {
-    if (m_->menu_.menu_depth_ == 0) {
+    auto& st = context_access::of(ui);
+    if (st.menu_.menu_depth_ == 0) {
         return;
     }
-    const menu_frame frame = m_->menu_.menu_stack_[--m_->menu_.menu_depth_];
-    menu_level& m = m_->menu_.menu_open_[frame.level];
+    const menu_frame frame = st.menu_.menu_stack_[--st.menu_.menu_depth_];
+    menu_level& m = st.menu_.menu_open_[frame.level];
 
     // the size is only known now; it is used from the next frame on
-    const f32 content_h = m_->layout_.first ? 0.0f : m_->layout_.bottom - m_->layout_.origin.y;
+    const f32 content_h = st.layout_.first ? 0.0f : st.layout_.bottom - st.layout_.origin.y;
     m.size = {std::max(frame.content_w + 2.0f * menu_pad, 120.0f), content_h + 2.0f * menu_pad};
 
-    m_->dl_.pop_clip();
-    m_->dl_.pop_alpha();
-    m_->dl_.pop_clip();
-    m_->style_.item_spacing = frame.saved_spacing;
-    m_->layout_             = frame.saved_layout;
-    m_->in_overlay_         = frame.saved_overlay;
-    switch_run(frame.prev_owner);
+    st.dl_.pop_clip();
+    st.dl_.pop_alpha();
+    st.dl_.pop_clip();
+    st.style_.item_spacing = frame.saved_spacing;
+    st.layout_             = frame.saved_layout;
+    st.in_overlay_         = frame.saved_overlay;
+    switch_run(ui, frame.prev_owner);
 }
 
 // rows -------------------------------------------------------------------------------------------------
@@ -356,16 +369,16 @@ bool context::menu_item(std::string_view label, const menu_item_options& o)
     }
     menu_frame& frame = m_->menu_.menu_stack_[m_->menu_.menu_depth_ - 1];
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     const mnemonic_label m = parse_mnemonic(visible_label(label));
 
-    const vec2 ts = label_size(f, m.text);
+    const vec2 ts = label_size(*this, f, m.text);
     const f32  sw = o.shortcut.empty() ? 0.0f : m_->font_.measure(f, o.shortcut).x;
     frame.content_w = std::max(frame.content_w, check_column + ts.x + (o.shortcut.empty() ? 0.0f : 28.0f + sw) + 12.0f);
 
     const f32  row_h = std::max(frame_height() - 2.0f, ts.y + 6.0f);
-    const rect row   = layout_place({m_->layout_.width, row_h});
-    const interaction in = o.enabled ? interact(key, row) : interaction{};
+    const rect row   = layout_place(*this, {m_->layout_.width, row_h});
+    const interaction in = o.enabled ? interact(*this, key, row) : interaction{};
 
     // the mnemonic key: the first enabled row with that letter takes it
     bool by_key = false;
@@ -376,13 +389,13 @@ bool context::menu_item(std::string_view label, const menu_item_options& o)
     }
 
     if (in.hovered) {
-        menu_close_from(frame.level + 1); // a plain row closes a submenu that was open beside it
+        menu_close_from(*this, frame.level + 1); // a plain row closes a submenu that was open beside it
     }
-    anim_slot* a = anim_find(key);
-    if (a == nullptr && in.hovered) { a = &anim_for(key); }
+    anim_slot* a = anim_find(*this, key);
+    if (a == nullptr && in.hovered) { a = &anim_for(*this, key); }
     f32 hover = 0.0f;
     if (a != nullptr) {
-        a->hover = approach(a->hover, in.hovered ? 1.0f : 0.0f, m_->style_.anim_speed * 1.5f);
+        a->hover = approach(*this, a->hover, in.hovered ? 1.0f : 0.0f, m_->style_.anim_speed * 1.5f);
         hover    = a->hover;
         a->last_frame = (hover == 0.0f && !in.hovered) ? 0 : m_->frame_;
     }
@@ -421,7 +434,7 @@ bool context::menu_item(std::string_view label, const menu_item_options& o)
         m_->dl_.line({cc.x - 4.0f, cc.y}, {cc.x - 1.0f, cc.y + 3.5f}, m_->style_.accent_hover, 1.8f);
         m_->dl_.line({cc.x - 1.0f, cc.y + 3.5f}, {cc.x + 5.0f, cc.y - 3.5f}, m_->style_.accent_hover, 1.8f);
     }
-    draw_mnemonic({row.min.x + check_column, row.min.y + (row.height() - ts.y) * 0.5f}, ink, m.text, m.at, m.len, true, f);
+    draw_mnemonic(*this, {row.min.x + check_column, row.min.y + (row.height() - ts.y) * 0.5f}, ink, m.text, m.at, m.len, true, f);
     if (!o.shortcut.empty()) {
         m_->dl_.text({row.max.x - 12.0f - sw, row.min.y + (row.height() - m_->font_.line_height(f)) * 0.5f}, m_->style_.text_dim, o.shortcut, f);
     }
@@ -457,7 +470,7 @@ void context::menu_separator()
     if (m_->menu_.menu_depth_ == 0) {
         return;
     }
-    const rect r = layout_place({m_->layout_.width, 7.0f});
+    const rect r = layout_place(*this, {m_->layout_.width, 7.0f});
     m_->dl_.rect_filled({{r.min.x + 6.0f, r.center().y}, {r.max.x - 6.0f, r.center().y + 1.0f}}, m_->style_.border);
 }
 
@@ -466,21 +479,21 @@ void context::menu_separator()
 bool context::begin_menu(std::string_view label, bool enabled)
 {
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     const mnemonic_label m = parse_mnemonic(visible_label(label));
-    const vec2 ts = label_size(f, m.text);
+    const vec2 ts = label_size(*this, f, m.text);
 
     if (m_->menu_.menu_depth_ > 0) { // a row of the popup that opens a submenu
         menu_frame& frame = m_->menu_.menu_stack_[m_->menu_.menu_depth_ - 1];
         const u32 level = frame.level;
         if (level + 1 >= max_menu_levels) {
-            report_limit("submenu levels (max_menu_levels)", max_menu_levels);
+            report_limit(*this, "submenu levels (max_menu_levels)", max_menu_levels);
             return false;
         }
         frame.content_w = std::max(frame.content_w, check_column + ts.x + arrow_column + 12.0f);
         const f32  row_h = std::max(frame_height() - 2.0f, ts.y + 6.0f);
-        const rect row   = layout_place({m_->layout_.width, row_h});
-        const interaction in = enabled ? interact(key, row) : interaction{};
+        const rect row   = layout_place(*this, {m_->layout_.width, row_h});
+        const interaction in = enabled ? interact(*this, key, row) : interaction{};
 
         bool by_key = false;
         if (frame.keys_ok && enabled && m.key != 0 && m_->input_.typed_len_ > 0 &&
@@ -490,7 +503,7 @@ bool context::begin_menu(std::string_view label, bool enabled)
         }
         bool open = m_->menu_.menu_open_[level + 1].key == key;
         if ((in.hovered || by_key) && !open) {
-            menu_close_from(level + 1);
+            menu_close_from(*this, level + 1);
             menu_level& sub = m_->menu_.menu_open_[level + 1];
             sub.key    = key;
             sub.pos    = {row.max.x - 2.0f, row.min.y - menu_pad};
@@ -507,11 +520,11 @@ bool context::begin_menu(std::string_view label, bool enabled)
             m_->dl_.shape(row, bg);
         }
         const color ink = enabled ? m_->style_.text : m_->style_.text_dim.scaled_alpha(0.6f);
-        draw_mnemonic({row.min.x + check_column, row.min.y + (row.height() - ts.y) * 0.5f}, ink, m.text, m.at, m.len, true, f);
+        draw_mnemonic(*this, {row.min.x + check_column, row.min.y + (row.height() - ts.y) * 0.5f}, ink, m.text, m.at, m.len, true, f);
         const vec2 c{row.max.x - 12.0f, row.center().y};
         m_->dl_.triangle_filled({c.x - 3.0f, c.y - 4.0f}, {c.x + 2.5f, c.y}, {c.x - 3.0f, c.y + 4.0f}, ink);
 
-        if (!open || !menu_begin_level(level + 1, key)) {
+        if (!open || !menu_begin_level(*this, level + 1, key)) {
             return false;
         }
         push_id(label);
@@ -521,22 +534,22 @@ bool context::begin_menu(std::string_view label, bool enabled)
     if (!m_->menu_.in_menu_bar_ || m_->cur_ == nullptr) { // (only the bar has menus outside of popups)
         return false;
     }
-    const rect r = layout_place({ts.x + 22.0f, m_->menu_.menu_bar_h_});
+    const rect r = layout_place(*this, {ts.x + 22.0f, m_->menu_.menu_bar_h_});
     same_line();
-    const interaction in = enabled ? interact(key, r) : interaction{};
+    const interaction in = enabled ? interact(*this, key, r) : interaction{};
     bool open = m_->menu_.menu_open_[0].key == key;
     const bool bar_active = m_->menu_.menu_open_[0].key != 0 && m_->menu_.menu_open_[0].from_bar;
     const bool by_alt = enabled && m.key != 0 && m_->input_.press_alt_ && m_->input_.pressed_key_ == static_cast<strata::key>(std::toupper(static_cast<unsigned char>(m.key)));
     if (in.pressed || by_alt) {
-        if (open) { menu_close_all(); } else { menu_open_root(key, {r.min.x, r.max.y}, r, true); }
+        if (open) { menu_close_all(*this); } else { menu_open_root(*this, key, {r.min.x, r.max.y}, r, true); }
         open = m_->menu_.menu_open_[0].key == key;
     } else if (in.hovered && !open && bar_active) { // while a menu is open, the others open on hover
-        menu_open_root(key, {r.min.x, r.max.y}, r, true);
+        menu_open_root(*this, key, {r.min.x, r.max.y}, r, true);
         open = true;
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered || open ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered || open ? 1.0f : 0.0f);
     if (a.hover > 0.01f) {
         shape_style bg;
         bg.radius      = radii(m_->style_.rounding * 0.6f);
@@ -544,9 +557,9 @@ bool context::begin_menu(std::string_view label, bool enabled)
         bg.fill_bottom = bg.fill_top;
         m_->dl_.shape({{r.min.x + 1.0f, r.min.y + 2.0f}, {r.max.x - 1.0f, r.max.y - 2.0f}}, bg);
     }
-    draw_mnemonic({r.min.x + 11.0f, r.min.y + (r.height() - ts.y) * 0.5f}, enabled ? m_->style_.text : m_->style_.text_dim, m.text, m.at, m.len, m_->input_.mod_alt_, f);
+    draw_mnemonic(*this, {r.min.x + 11.0f, r.min.y + (r.height() - ts.y) * 0.5f}, enabled ? m_->style_.text : m_->style_.text_dim, m.text, m.at, m.len, m_->input_.mod_alt_, f);
 
-    if (!open || !menu_begin_level(0, key)) {
+    if (!open || !menu_begin_level(*this, 0, key)) {
         return false;
     }
     push_id(label);
@@ -556,21 +569,21 @@ bool context::begin_menu(std::string_view label, bool enabled)
 void context::end_menu()
 {
     pop_id();
-    menu_end_level();
+    menu_end_level(*this);
 }
 
 // popup menus and context menus --------------------------------------------------------------------------
 
 void context::open_popup_menu(std::string_view id_label, vec2 pos)
 {
-    const id key = part_id(part::popup_menu, widget_id(id_label));
-    menu_open_root(key, pos, {}, false);
+    const id key = part_id(part::popup_menu, widget_id(*this, id_label));
+    menu_open_root(*this, key, pos, {}, false);
 }
 
 bool context::begin_popup_menu(std::string_view id_label)
 {
-    const id key = part_id(part::popup_menu, widget_id(id_label));
-    if (m_->menu_.menu_open_[0].key != key || !menu_begin_level(0, key)) {
+    const id key = part_id(part::popup_menu, widget_id(*this, id_label));
+    if (m_->menu_.menu_open_[0].key != key || !menu_begin_level(*this, 0, key)) {
         return false;
     }
     push_id(id_label);
@@ -580,7 +593,7 @@ bool context::begin_popup_menu(std::string_view id_label)
 void context::end_popup_menu()
 {
     pop_id();
-    menu_end_level();
+    menu_end_level(*this);
 }
 
 bool context::begin_context_menu(std::string_view id_label)
@@ -593,7 +606,7 @@ bool context::begin_context_menu(std::string_view id_label)
 
 bool context::begin_context_menu(std::string_view id_label, const rect& area)
 {
-    if (m_->cur_ != nullptr && m_->input_.mouse_right_pressed_ && pointer_over(area)) {
+    if (m_->cur_ != nullptr && m_->input_.mouse_right_pressed_ && pointer_over(*this, area)) {
         open_popup_menu(id_label, m_->input_.mouse_);
     }
     return begin_popup_menu(id_label);

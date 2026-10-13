@@ -80,6 +80,15 @@
             }
         },
         {
+            "name": "x64-dev",
+            "displayName": "x64 Release, no LTO (fast iteration)",
+            "inherits": "ninja-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "STRATA_LTO": "OFF"
+            }
+        },
+        {
             "name": "x64-relwithdebinfo",
             "displayName": "x64 RelWithDebInfo",
             "inherits": "ninja-base",
@@ -116,6 +125,10 @@
         {
             "name": "x64-release",
             "configurePreset": "x64-release"
+        },
+        {
+            "name": "x64-dev",
+            "configurePreset": "x64-dev"
         },
         {
             "name": "x64-relwithdebinfo",

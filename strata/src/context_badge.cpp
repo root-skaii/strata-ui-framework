@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 
 #include <algorithm>
@@ -10,13 +11,15 @@
 
 namespace strata {
 
+using namespace internal;
+
 void context::spinner(f32 diameter, color c)
 {
     if (m_->cur_ == nullptr) {
         return;
     }
     const f32  d   = diameter > 0.0f ? diameter : frame_height() - 8.0f;
-    const rect r   = layout_place({d, d});
+    const rect r   = layout_place(*this, {d, d});
     const color col = c.a == 0 ? m_->style_.accent : c;
 
     const f32  thick  = std::max(2.0f, d * 0.12f);
@@ -40,9 +43,9 @@ void context::badge(std::string_view text, color tint)
     }
     const font_id          f     = current_font();
     const std::string_view shown = visible_label(text);
-    const vec2             ts    = label_size(f, shown);
+    const vec2             ts    = label_size(*this, f, shown);
     const f32              h     = ts.y + 4.0f;
-    const rect             r     = layout_place({std::max(ts.x + h, h), h});
+    const rect             r     = layout_place(*this, {std::max(ts.x + h, h), h});
 
     shape_style pill;
     pill.radius       = radii(h * 0.5f);
@@ -51,7 +54,7 @@ void context::badge(std::string_view text, color tint)
     pill.border       = tint.scaled_alpha(0.55f);
     pill.border_width = 1.0f;
     m_->dl_.shape(r, pill);
-    label_draw({r.min.x + (r.width() - ts.x) * 0.5f, r.min.y + (r.height() - ts.y) * 0.5f}, lerp(tint, m_->style_.text, 0.35f), shown, f);
+    label_draw(*this, {r.min.x + (r.width() - ts.x) * 0.5f, r.min.y + (r.height() - ts.y) * 0.5f}, lerp(tint, m_->style_.text, 0.35f), shown, f);
 }
 
 chip_result context::chip(std::string_view label, const chip_options& o)
@@ -61,25 +64,25 @@ chip_result context::chip(std::string_view label, const chip_options& o)
         return res;
     }
     const font_id          f     = current_font();
-    const id               key   = widget_id(label);
+    const id               key   = widget_id(*this, label);
     const std::string_view shown = visible_label(label);
-    const vec2             ts    = label_size(f, shown);
+    const vec2             ts    = label_size(*this, f, shown);
     const f32              h     = frame_height() - 6.0f;
     const f32              side  = h * 0.45f;
     const f32              iw    = o.icon.empty() ? 0.0f : m_->font_.measure(o.icon_font, o.icon).x + 6.0f;
     const f32              cs    = o.closable ? h - 10.0f : 0.0f; // the close button
     const f32              w     = side + iw + ts.x + (o.closable ? 6.0f + cs : 0.0f) + side;
-    const rect             r     = layout_place({w, h});
+    const rect             r     = layout_place(*this, {w, h});
 
     const rect close_r = o.closable ? rect::from_size({r.max.x - side - cs, r.min.y + (h - cs) * 0.5f}, {cs, cs}) : rect{};
     const rect body_r  = o.closable ? rect{r.min, {close_r.min.x - 2.0f, r.max.y}} : r;
 
     interaction close_in;
     if (o.closable) {
-        close_in = interact(part_id(part::chip_close, key), close_r.expanded(2.0f));
+        close_in = interact(*this, part_id(part::chip_close, key), close_r.expanded(2.0f));
         res.closed = close_in.pressed;
     }
-    const interaction in = interact(key, body_r);
+    const interaction in = interact(*this, key, body_r);
     if (in.pressed) {
         res.clicked = true;
         if (o.selected != nullptr) { *o.selected = !*o.selected; }
@@ -87,9 +90,9 @@ chip_result context::chip(std::string_view label, const chip_options& o)
 
     const bool  on   = o.selected != nullptr && *o.selected;
     const color tint = o.tint.a == 0 ? m_->style_.accent : o.tint;
-    anim_slot&  a    = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, on ? 1.0f : 0.0f);
+    anim_slot&  a    = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, on ? 1.0f : 0.0f);
 
     shape_style pill;
     pill.radius       = radii(h * 0.5f);
@@ -105,7 +108,7 @@ chip_result context::chip(std::string_view label, const chip_options& o)
         m_->dl_.text({x, r.min.y + (h - ih) * 0.5f}, lerp(m_->style_.text_dim, tint, a.toggle), o.icon, o.icon_font);
         x += iw;
     }
-    label_draw({x, r.min.y + (h - ts.y) * 0.5f}, lerp(m_->style_.text_dim, m_->style_.text, std::max(a.toggle, a.hover)), shown, f);
+    label_draw(*this, {x, r.min.y + (h - ts.y) * 0.5f}, lerp(m_->style_.text_dim, m_->style_.text, std::max(a.toggle, a.hover)), shown, f);
 
     if (o.closable) {
         const f32   hover = close_in.hovered ? 1.0f : 0.0f;

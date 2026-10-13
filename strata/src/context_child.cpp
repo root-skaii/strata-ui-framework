@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 #include "text_util.hpp"
 #include "widget_util.hpp"
@@ -18,6 +19,7 @@
 namespace strata {
 
 using namespace text;
+using namespace internal;
 
 child_scope::~child_scope()
 {
@@ -32,16 +34,16 @@ card_scope::~card_scope()
 bool context::begin_child(std::string_view id_label, vec2 size, child_flags flags)
 {
     if (m_->cur_ != nullptr && m_->children_cards_.child_depth_ >= max_child_depth) {
-        report_limit("child regions inside child regions (max_child_depth)", max_child_depth);
+        report_limit(*this, "child regions inside child regions (max_child_depth)", max_child_depth);
     }
     if (m_->cur_ == nullptr || m_->children_cards_.child_depth_ >= max_child_depth) {
         return false;
     }
-    const id key = widget_id(id_label);
+    const id key = widget_id(*this, id_label);
     bool full = false;
     child_state* st = internal::state_for(std::span{m_->children_cards_.children_}, key, m_->frame_, full);
-    if (full) { report_limit("child regions with state (context_config::capacity.children)", static_cast<u32>(m_->children_cards_.children_.size())); }
-    if (st->content_h > 0.0f) { apply_pending_scroll(key, st->scroll, &st->scroll_x); } // (once its content has been measured)
+    if (full) { report_limit(*this, "child regions with state (context_config::capacity.children)", static_cast<u32>(m_->children_cards_.children_.size())); }
+    if (st->content_h > 0.0f) { apply_pending_scroll(*this, key, st->scroll, &st->scroll_x); } // (once its content has been measured)
 
     // width: rest of the line; height: down to the window bottom
     f32 w = size.x;
@@ -54,12 +56,12 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
     m_->layout_.next_width = 0.0f;
     f32 h = size.y;
     if (h <= 0.0f) {
-        h = m_->layout_.bound_bottom > 0.0f ? m_->layout_.bound_bottom - layout_next_y() : 240.0f;
+        h = m_->layout_.bound_bottom > 0.0f ? m_->layout_.bound_bottom - layout_next_y(*this) : 240.0f;
     }
     w = std::max(w, 24.0f);
     h = std::max(h, 24.0f);
 
-    const rect r = layout_place({w, h});
+    const rect r = layout_place(*this, {w, h});
 
     if (has_flag(flags, child_flags::acrylic)) {
         m_->dl_.backdrop(r, m_->style_.blur_radius, darken(m_->style_.window_bg, 0.25f).scaled_alpha(m_->style_.acrylic_alpha * 0.8f),
@@ -131,28 +133,18 @@ void context::end_child()
     if (st.overflow_x) {
         const f32 max_x = st.content_w - f.inner.width();
         // tilt wheel, or Shift + wheel (the Windows convention)
-        const bool over = pointer_over(f.bounds);
+        const bool over = pointer_over(*this, f.bounds);
         if (m_->input_.wheel_x_ != 0.0f && !m_->wheel_x_consumed_ && over) {
-            st.scroll_x = std::clamp(st.scroll_x + wheel_scroll_x(m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
+            st.scroll_x = std::clamp(st.scroll_x + wheel_scroll_x(*this, m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
             m_->wheel_x_consumed_ = true;
         } else if (m_->input_.mod_shift_ && m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && over) {
-            st.scroll_x = std::clamp(st.scroll_x - wheel_scroll(m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
+            st.scroll_x = std::clamp(st.scroll_x - wheel_scroll(*this, m_->font_.line_height(0), f.inner.width()), 0.0f, max_x);
             m_->wheel_consumed_ = true;
         }
         if (bars) {
-            const f32 track_x0 = f.bounds.min.x + 5.0f;
-            const f32 track_w  = f.bounds.width() - 10.0f - (st.overflow ? 10.0f : 0.0f);
-            const f32 thumb_w  = std::max(20.0f, track_w * f.inner.width() / st.content_w);
-            const f32 y0       = f.bounds.max.y - 9.0f;
-            f32 thumb_x = track_x0 + (track_w - thumb_w) * (st.scroll_x / max_x);
-            const interaction in = interact(part_id(part::child_scrollbar_x, current_seed()), {{track_x0, y0 - 3.0f}, {track_x0 + track_w, y0 + 8.0f}});
-            st.scroll_x = thumb_drag_x(in, st.grab_x, thumb_x, thumb_w, track_x0, track_w - thumb_w, max_x, st.scroll_x);
-            thumb_x     = track_x0 + (track_w - thumb_w) * (st.scroll_x / max_x);
-            shape_style bar;
-            bar.radius      = radii(2.5f);
-            bar.fill_top    = m_->style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.4f);
-            bar.fill_bottom = bar.fill_top;
-            m_->dl_.shape({{thumb_x, y0}, {thumb_x + thumb_w, f.bounds.max.y - 4.0f}}, bar);
+            const f32 x0 = f.bounds.min.x + 5.0f;
+            const rect track = {{x0, f.bounds.max.y - 12.0f}, {f.bounds.max.x - 5.0f - (st.overflow ? 10.0f : 0.0f), f.bounds.max.y - 1.0f}};
+            st.scroll_x = scrollbar(*this, part_id(part::child_scrollbar_x, current_seed(*this)), track, true, f.inner.width(), st.content_w, st.scroll_x, st.grab_x);
         }
     } else {
         st.scroll_x = 0.0f;
@@ -160,26 +152,14 @@ void context::end_child()
 
     if (st.overflow) {
         const f32 max_scroll = st.content_h - view_h;
-        if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(f.bounds)) {
-            st.scroll = std::clamp(st.scroll - wheel_scroll(m_->font_.line_height(0), view_h), 0.0f, max_scroll);
+        if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(*this, f.bounds)) {
+            st.scroll = std::clamp(st.scroll - wheel_scroll(*this, m_->font_.line_height(0), view_h), 0.0f, max_scroll);
             m_->wheel_consumed_ = true;
         }
         if (bars) {
-            const f32  track_top = f.bounds.min.y + 5.0f;
-            const f32  track_h = f.bounds.height() - 10.0f - hbar; // room for the horizontal bar, when there is one
-            const f32  thumb_h = std::max(20.0f, track_h * view_h / st.content_h);
-            const f32  x0      = f.bounds.max.x - 9.0f;
-            // the whole track takes the press: clicking beside the thumb jumps there, dragging works from anywhere
-            f32 thumb_y = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
-            const interaction in = interact(part_id(part::child_scrollbar, current_seed()), {{x0 - 3.0f, track_top}, {x0 + 8.0f, track_top + track_h}});
-            st.scroll = thumb_drag(in, st.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, st.scroll);
-            thumb_y   = track_top + (track_h - thumb_h) * (st.scroll / max_scroll);
-            const rect thumb = {{x0, thumb_y}, {f.bounds.max.x - 4.0f, thumb_y + thumb_h}};
-            shape_style bar;
-            bar.radius      = radii(2.5f);
-            bar.fill_top    = m_->style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.4f);
-            bar.fill_bottom = bar.fill_top;
-            m_->dl_.shape(thumb, bar);
+            const f32 y0 = f.bounds.min.y + 5.0f;
+            const rect track = {{f.bounds.max.x - 12.0f, y0}, {f.bounds.max.x - 1.0f, f.bounds.max.y - 5.0f - hbar}}; // (room for the horizontal bar)
+            st.scroll = scrollbar(*this, part_id(part::child_scrollbar, current_seed(*this)), track, false, view_h, st.content_h, st.scroll, st.grab);
         }
     } else {
         st.scroll = 0.0f;
@@ -193,16 +173,16 @@ void context::end_child()
 bool context::begin_card(std::string_view title, std::string_view icon, font_id icon_font)
 {
     if (m_->cur_ != nullptr && m_->children_cards_.card_depth_ >= max_card_depth) {
-        report_limit("cards inside cards (max_card_depth)", max_card_depth);
+        report_limit(*this, "cards inside cards (max_card_depth)", max_card_depth);
     }
     if (m_->cur_ == nullptr || m_->children_cards_.card_depth_ >= max_card_depth) {
         return false;
     }
     const font_id f = current_font();
-    const id key    = widget_id(title);
+    const id key    = widget_id(*this, title);
     bool full = false;
     card_state* st  = internal::state_for(std::span{m_->children_cards_.cards_}, key, m_->frame_, full);
-    if (full) { report_limit("cards with state (context_config::capacity.cards)", static_cast<u32>(m_->children_cards_.cards_.size())); }
+    if (full) { report_limit(*this, "cards with state (context_config::capacity.cards)", static_cast<u32>(m_->children_cards_.cards_.size())); }
 
     const std::string_view shown = visible_label(title);
     const bool has_head = !shown.empty() || !icon.empty();
@@ -213,7 +193,7 @@ bool context::begin_card(std::string_view title, std::string_view icon, font_id 
     const f32 w = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
     m_->layout_.next_width = 0.0f;
     // the height comes from last frame's content; the very first frame shows just the header
-    const rect r = layout_place({w, head_h + pad + st->content_h + pad});
+    const rect r = layout_place(*this, {w, head_h + pad + st->content_h + pad});
 
     shape_style bg;
     bg.radius       = radii(m_->style_.rounding);
@@ -237,8 +217,8 @@ bool context::begin_card(std::string_view title, std::string_view icon, font_id 
             m_->dl_.text({x, r.min.y + (head_h - isize.y) * 0.5f}, m_->style_.accent_hover, icon, icon_font);
             x += isize.x + 8.0f;
         }
-        const f32 title_h = shown.empty() ? lh : label_size(f, shown).y;
-        label_draw({x, r.min.y + (head_h - title_h) * 0.5f}, m_->style_.text, shown, f);
+        const f32 title_h = shown.empty() ? lh : label_size(*this, f, shown).y;
+        label_draw(*this, {x, r.min.y + (head_h - title_h) * 0.5f}, m_->style_.text, shown, f);
     }
 
     m_->children_cards_.card_stack_[m_->children_cards_.card_depth_++] = {st, m_->layout_};

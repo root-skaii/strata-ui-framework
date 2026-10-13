@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 #include "text_util.hpp"
 #include "widget_util.hpp"
@@ -18,6 +19,10 @@
 namespace strata {
 
 using namespace text;
+using namespace internal;
+
+static bool picker_body(context& ui, id key, color& c, color_flags flags);
+static void draw_checker(context& ui, const rect& r, f32 cell);
 
 namespace {
 
@@ -111,80 +116,82 @@ struct hsv {
 
 } // namespace
 
-void context::draw_checker(const rect& r, f32 cell)
+static void draw_checker(context& ui, const rect& r, f32 cell)
 {
-    m_->dl_.rect_filled(r, color{204, 204, 204, 255});
+    auto& m = context_access::of(ui);
+    m.dl_.rect_filled(r, color{204, 204, 204, 255});
     const color dark{150, 150, 150, 255};
     int row = 0;
     for (f32 y = r.min.y; y < r.max.y; y += cell, ++row) {
         int col = 0;
         for (f32 x = r.min.x; x < r.max.x; x += cell, ++col) {
             if (((row + col) & 1) != 0) {
-                m_->dl_.rect_filled({{x, y}, {std::min(x + cell, r.max.x), std::min(y + cell, r.max.y)}}, dark);
+                m.dl_.rect_filled({{x, y}, {std::min(x + cell, r.max.x), std::min(y + cell, r.max.y)}}, dark);
             }
         }
     }
 }
 
-bool context::picker_body(id key, color& c, color_flags flags)
+static bool picker_body(context& ui, id key, color& c, color_flags flags)
 {
+    auto& m = context_access::of(ui);
     const bool with_alpha = !has_flag(flags, color_flags::no_alpha);
 
     // keep the hsv the user is dragging; only reload when the color was changed from outside
-    if (m_->pick_.pick_key_ != key || m_->pick_.pick_last_ != c) {
+    if (m.pick_.pick_key_ != key || m.pick_.pick_last_ != c) {
         const hsv h = to_hsv(c);
         // hue / saturation are undefined for grays and black: keep what the user last had
-        if (m_->pick_.pick_key_ == key && (c.r == c.g && c.g == c.b)) {
-            m_->pick_.pick_v_ = h.v;
-            m_->pick_.pick_s_ = 0.0f;
+        if (m.pick_.pick_key_ == key && (c.r == c.g && c.g == c.b)) {
+            m.pick_.pick_v_ = h.v;
+            m.pick_.pick_s_ = 0.0f;
         } else {
-            m_->pick_.pick_h_ = h.s > 0.0f ? h.h : (m_->pick_.pick_key_ == key ? m_->pick_.pick_h_ : 0.0f);
-            m_->pick_.pick_s_ = h.s;
-            m_->pick_.pick_v_ = h.v;
+            m.pick_.pick_h_ = h.s > 0.0f ? h.h : (m.pick_.pick_key_ == key ? m.pick_.pick_h_ : 0.0f);
+            m.pick_.pick_s_ = h.s;
+            m.pick_.pick_v_ = h.v;
         }
-        m_->pick_.pick_key_  = key;
-        m_->pick_.pick_last_ = c;
+        m.pick_.pick_key_  = key;
+        m.pick_.pick_last_ = c;
     }
 
     bool changed = false;
-    const f32 w        = m_->layout_.width;
+    const f32 w        = m.layout_.width;
     const f32 sv_h     = 150.0f;
     const f32 bar_h    = 14.0f;
-    const id  seed     = current_seed();
+    const id  seed     = current_seed(ui);
     u8 alpha           = c.a;
 
     {
-        const rect r = layout_place({w, sv_h});
-        const interaction in = interact(part_id(part::sat_value, seed), r);
+        const rect r = layout_place(ui, {w, sv_h});
+        const interaction in = interact(ui, part_id(part::sat_value, seed), r);
         if (in.held) {
-            m_->pick_.pick_s_ = std::clamp((m_->input_.mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f);
-            m_->pick_.pick_v_ = 1.0f - std::clamp((m_->input_.mouse_.y - r.min.y) / r.height(), 0.0f, 1.0f);
+            m.pick_.pick_s_ = std::clamp((m.input_.mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f);
+            m.pick_.pick_v_ = 1.0f - std::clamp((m.input_.mouse_.y - r.min.y) / r.height(), 0.0f, 1.0f);
             changed = true;
         }
-        const color hue = from_hsv({m_->pick_.pick_h_, 1.0f, 1.0f}, 255);
-        m_->dl_.rect_gradient(r, color{255, 255, 255, 255}, hue, hue, color{255, 255, 255, 255});
-        m_->dl_.rect_gradient(r, color{0, 0, 0, 0}, color{0, 0, 0, 0}, color{0, 0, 0, 255}, color{0, 0, 0, 255});
-        m_->dl_.rect_outline(r, m_->style_.border, 0.0f, 1.0f);
+        const color hue = from_hsv({m.pick_.pick_h_, 1.0f, 1.0f}, 255);
+        m.dl_.rect_gradient(r, color{255, 255, 255, 255}, hue, hue, color{255, 255, 255, 255});
+        m.dl_.rect_gradient(r, color{0, 0, 0, 0}, color{0, 0, 0, 0}, color{0, 0, 0, 255}, color{0, 0, 0, 255});
+        m.dl_.rect_outline(r, m.style_.border, 0.0f, 1.0f);
 
-        const vec2 p{r.min.x + m_->pick_.pick_s_ * r.width(), r.min.y + (1.0f - m_->pick_.pick_v_) * r.height()};
+        const vec2 p{r.min.x + m.pick_.pick_s_ * r.width(), r.min.y + (1.0f - m.pick_.pick_v_) * r.height()};
         shape_style ring;
         ring.radius       = radii(6.0f);
-        ring.fill_top     = from_hsv({m_->pick_.pick_h_, m_->pick_.pick_s_, m_->pick_.pick_v_}, 255);
+        ring.fill_top     = from_hsv({m.pick_.pick_h_, m.pick_.pick_s_, m.pick_.pick_v_}, 255);
         ring.fill_bottom  = ring.fill_top;
         ring.border       = color{255, 255, 255, 255};
         ring.border_width = 2.0f;
         ring.shadow       = color{0, 0, 0, 150};
         ring.shadow_blur  = 3.0f;
-        m_->dl_.push_clip(r.expanded(6.0f));
-        m_->dl_.shape({{p.x - 6.0f, p.y - 6.0f}, {p.x + 6.0f, p.y + 6.0f}}, ring);
-        m_->dl_.pop_clip();
+        m.dl_.push_clip(r.expanded(6.0f));
+        m.dl_.shape({{p.x - 6.0f, p.y - 6.0f}, {p.x + 6.0f, p.y + 6.0f}}, ring);
+        m.dl_.pop_clip();
     }
 
     {
-        const rect r = layout_place({w, bar_h});
-        const interaction in = interact(part_id(part::hue_bar, seed), r);
+        const rect r = layout_place(ui, {w, bar_h});
+        const interaction in = interact(ui, part_id(part::hue_bar, seed), r);
         if (in.held) {
-            m_->pick_.pick_h_ = std::clamp((m_->input_.mouse_.x - r.min.x) / r.width(), 0.0f, 0.9999f);
+            m.pick_.pick_h_ = std::clamp((m.input_.mouse_.x - r.min.x) / r.width(), 0.0f, 0.9999f);
             changed = true;
         }
         static constexpr std::array<u32, 7> stops = {0xff0000ffu, 0xffff00ffu, 0x00ff00ffu, 0x00ffffffu,
@@ -194,36 +201,36 @@ bool context::picker_body(id key, color& c, color_flags flags)
             const f32 x1 = r.min.x + r.width() * static_cast<f32>(i + 1) / 6.0f;
             const color a = color::from_hex(stops[i]);
             const color b = color::from_hex(stops[i + 1]);
-            m_->dl_.rect_gradient({{x0, r.min.y}, {x1, r.max.y}}, a, b, b, a);
+            m.dl_.rect_gradient({{x0, r.min.y}, {x1, r.max.y}}, a, b, b, a);
         }
-        m_->dl_.rect_outline(r, m_->style_.border, 0.0f, 1.0f);
+        m.dl_.rect_outline(r, m.style_.border, 0.0f, 1.0f);
 
-        const f32 x = r.min.x + m_->pick_.pick_h_ * r.width();
+        const f32 x = r.min.x + m.pick_.pick_h_ * r.width();
         shape_style knob;
         knob.radius       = radii(3.0f);
-        knob.fill_top     = from_hsv({m_->pick_.pick_h_, 1.0f, 1.0f}, 255);
+        knob.fill_top     = from_hsv({m.pick_.pick_h_, 1.0f, 1.0f}, 255);
         knob.fill_bottom  = knob.fill_top;
         knob.border       = color{255, 255, 255, 255};
         knob.border_width = 2.0f;
         knob.shadow       = color{0, 0, 0, 140};
         knob.shadow_blur  = 3.0f;
-        m_->dl_.push_clip(r.expanded(6.0f));
-        m_->dl_.shape({{x - 3.5f, r.min.y - 2.0f}, {x + 3.5f, r.max.y + 2.0f}}, knob);
-        m_->dl_.pop_clip();
+        m.dl_.push_clip(r.expanded(6.0f));
+        m.dl_.shape({{x - 3.5f, r.min.y - 2.0f}, {x + 3.5f, r.max.y + 2.0f}}, knob);
+        m.dl_.pop_clip();
     }
 
     if (with_alpha) {
-        const rect r = layout_place({w, bar_h});
-        const interaction in = interact(part_id(part::alpha_bar, seed), r);
+        const rect r = layout_place(ui, {w, bar_h});
+        const interaction in = interact(ui, part_id(part::alpha_bar, seed), r);
         if (in.held) {
-            alpha   = static_cast<u8>(std::clamp((m_->input_.mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f) * 255.0f + 0.5f);
+            alpha   = static_cast<u8>(std::clamp((m.input_.mouse_.x - r.min.x) / r.width(), 0.0f, 1.0f) * 255.0f + 0.5f);
             changed = true;
         }
-        draw_checker(r, 7.0f);
-        const color solid = from_hsv({m_->pick_.pick_h_, m_->pick_.pick_s_, m_->pick_.pick_v_}, 255);
+        draw_checker(ui, r, 7.0f);
+        const color solid = from_hsv({m.pick_.pick_h_, m.pick_.pick_s_, m.pick_.pick_v_}, 255);
         const color clear{solid.r, solid.g, solid.b, 0};
-        m_->dl_.rect_gradient(r, clear, solid, solid, clear);
-        m_->dl_.rect_outline(r, m_->style_.border, 0.0f, 1.0f);
+        m.dl_.rect_gradient(r, clear, solid, solid, clear);
+        m.dl_.rect_outline(r, m.style_.border, 0.0f, 1.0f);
 
         const f32 x = r.min.x + static_cast<f32>(alpha) / 255.0f * r.width();
         shape_style knob;
@@ -234,40 +241,40 @@ bool context::picker_body(id key, color& c, color_flags flags)
         knob.border_width = 2.0f;
         knob.shadow       = color{0, 0, 0, 140};
         knob.shadow_blur  = 3.0f;
-        m_->dl_.push_clip(r.expanded(6.0f));
-        m_->dl_.shape({{x - 3.5f, r.min.y - 2.0f}, {x + 3.5f, r.max.y + 2.0f}}, knob);
-        m_->dl_.pop_clip();
+        m.dl_.push_clip(r.expanded(6.0f));
+        m.dl_.shape({{x - 3.5f, r.min.y - 2.0f}, {x + 3.5f, r.max.y + 2.0f}}, knob);
+        m.dl_.pop_clip();
     }
 
     if (changed) {
-        c          = from_hsv({m_->pick_.pick_h_, m_->pick_.pick_s_, m_->pick_.pick_v_}, with_alpha ? alpha : c.a);
-        m_->pick_.pick_last_ = c;
+        c          = from_hsv({m.pick_.pick_h_, m.pick_.pick_s_, m.pick_.pick_v_}, with_alpha ? alpha : c.a);
+        m.pick_.pick_last_ = c;
     }
 
     {
-        const f32  fh = frame_height();
-        const rect sw = layout_place({fh, fh});
-        if (c.a != 255) { draw_checker(sw, 6.0f); }
+        const f32  fh = ui.frame_height();
+        const rect sw = layout_place(ui, {fh, fh});
+        if (c.a != 255) { draw_checker(ui, sw, 6.0f); }
         shape_style chip;
-        chip.radius       = radii(m_->style_.rounding * 0.6f);
+        chip.radius       = radii(m.style_.rounding * 0.6f);
         chip.fill_top     = c;
         chip.fill_bottom  = c;
-        chip.border       = m_->style_.widget_border;
-        chip.border_width = m_->style_.border_width;
-        m_->dl_.shape(sw, chip);
+        chip.border       = m.style_.widget_border;
+        chip.border_width = m.style_.border_width;
+        m.dl_.shape(sw, chip);
 
-        same_line();
-        set_next_item_width(w - fh - m_->style_.item_spacing);
+        ui.same_line();
+        ui.set_next_item_width(w - fh - m.style_.item_spacing);
         std::string hex = format_hex(c, with_alpha);
-        if (input_text("##hex", hex, "#rrggbb")) {
+        if (ui.input_text("##hex", hex, "#rrggbb")) {
             if (const auto parsed = parse_hex(hex)) {
                 c = *parsed;
-                if (!with_alpha) { c.a = m_->pick_.pick_last_.a; }
+                if (!with_alpha) { c.a = m.pick_.pick_last_.a; }
                 const hsv h = to_hsv(c);
-                m_->pick_.pick_h_     = h.s > 0.0f ? h.h : m_->pick_.pick_h_;
-                m_->pick_.pick_s_     = h.s;
-                m_->pick_.pick_v_     = h.v;
-                m_->pick_.pick_last_  = c;
+                m.pick_.pick_h_     = h.s > 0.0f ? h.h : m.pick_.pick_h_;
+                m.pick_.pick_s_     = h.s;
+                m.pick_.pick_v_     = h.v;
+                m.pick_.pick_last_  = c;
                 changed     = true;
             }
         }
@@ -280,20 +287,20 @@ bool context::color_picker(std::string_view label, color& c, color_flags flags)
     if (m_->cur_ == nullptr) {
         return false;
     }
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     const std::string_view shown = visible_label(label);
     if (!shown.empty()) {
         text_dim(shown);
     }
     push_id(label);
-    const bool changed = picker_body(key, c, flags);
+    const bool changed = picker_body(*this, key, c, flags);
     // being edited: a part is held or the hex field has the keyboard (parts are keyed in this scope)
-    const id   seed    = current_seed();
+    const id   seed    = current_seed(*this);
     const bool engaged = (m_->active_ != 0 && (m_->active_ == part_id(part::sat_value, seed) || m_->active_ == part_id(part::hue_bar, seed) ||
                                            m_->active_ == part_id(part::alpha_bar, seed))) ||
                          (m_->focus_id_ != 0 && m_->focus_id_ == hash_id("##hex", seed));
     pop_id();
-    track_edit(key, changed, engaged);
+    track_edit(*this, key, changed, engaged);
     return changed;
 }
 
@@ -303,12 +310,12 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     const bool with_alpha = !has_flag(flags, color_flags::no_alpha);
 
-    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const field_layout fl  = layout_field(*this, visible_label(label), frame_height());
     const rect         box = fl.control;
-    const interaction  in  = interact(key, box);
+    const interaction  in  = interact(*this, key, box);
 
     bool open = m_->popup_.popup_has(key);
     if (in.pressed) {
@@ -316,21 +323,21 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
             m_->popup_.popup_close(key);
             open = false;
         } else {
-            open = popup_push(key);
+            open = popup_push(*this, key);
         }
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, open ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, open ? 1.0f : 0.0f);
 
-    shape_style field = widget_shape(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
+    shape_style field = widget_shape(*this, lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
     field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
     m_->dl_.shape(box, field);
 
     const f32  inset = 4.0f;
     const rect chip  = {{box.min.x + inset, box.min.y + inset}, {box.min.x + inset + (box.height() - 2.0f * inset) * 1.6f, box.max.y - inset}};
-    if (c.a != 255) { draw_checker(chip, 6.0f); }
+    if (c.a != 255) { draw_checker(*this, chip, 6.0f); }
     shape_style swatch;
     swatch.radius       = radii(m_->style_.rounding * 0.5f);
     swatch.fill_top     = c;
@@ -350,14 +357,14 @@ bool context::color_edit(std::string_view label, color& c, color_flags flags)
         h += m_->style_.item_spacing;
         if (with_alpha) { h += 14.0f + m_->style_.item_spacing; }
         const f32 popup_w = std::max(box.width(), 250.0f);
-        if (begin_popup_at(key, box, {popup_w, h})) {
+        if (begin_popup_at(*this, key, box, {popup_w, h})) {
             push_id(label);
-            changed = picker_body(key, c, flags);
+            changed = picker_body(*this, key, c, flags);
             pop_id();
-            end_popup_at();
+            end_popup_at(*this);
         }
     }
-    track_edit(key, changed, m_->popup_.popup_has(key));
+    track_edit(*this, key, changed, m_->popup_.popup_has(key));
     return changed;
 }
 

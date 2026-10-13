@@ -22,6 +22,11 @@ struct window_state {
     f32  content_h{};
     f32  scroll{};
     f32  grab{};        // scrollbar: where in the thumb it was pressed
+    f32  scroll_x{};    // window_flags::horizontal
+    f32  content_w{};
+    f32  max_scroll_x{}; // last frame's range, for scroll_max_x()
+    f32  grab_x{};
+    bool overflow_x{};
     bool collapsed{};
     bool resizable{};
     bool size_set{};
@@ -44,9 +49,9 @@ struct window_state {
 };
 
 struct window_registry {
-    // hard cap on context_config::capacity.windows: dock layouts index windows with a u8 (context::max_windows)
+    // hard cap on context_config::capacity.windows: dock layouts index windows with a u8 (internal::max_windows)
     static constexpr u32 max_windows = 255;
-    static constexpr u32 no_z        = 0xffffffffu;  // (context::no_z is the same)
+    static constexpr u32 no_z        = 0xffffffffu;  // (internal::no_z is the same)
 
     // all three hold capacity.windows entries, sized once at create
     std::vector<window_state> windows_;

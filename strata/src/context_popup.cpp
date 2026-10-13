@@ -3,10 +3,13 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 
 #include <algorithm>
 
 namespace strata {
+
+using namespace internal;
 
 popup_scope::~popup_scope()
 {
@@ -24,59 +27,62 @@ drag_source_scope::~drag_source_scope()
 
 // popups -----------------------------------------------------------------------------------
 
-bool context::popup_push(id key) noexcept
+bool internal::popup_push(context& ui, id key) noexcept
 {
+    auto& m = context_access::of(ui);
     // above the popup being drawn; a popup already in the stack reopens at its own level
-    const u32 drawing = m_->popup_.popup_drawing();
+    const u32 drawing = m.popup_.popup_drawing();
     u32 level = drawing == popup_stack::no_popup ? 0u : drawing + 1;
-    const u32 existing = m_->popup_.popup_level_of(key);
+    const u32 existing = m.popup_.popup_level_of(key);
     if (existing != popup_stack::no_popup && existing < level) {
         level = existing;
     }
     if (level >= popup_stack::max_popup_levels) {
-        report_limit("nested popups (max_popup_levels)", popup_stack::max_popup_levels);
+        report_limit(ui, "nested popups (max_popup_levels)", popup_stack::max_popup_levels);
         return false;
     }
-    m_->popup_.popup_close_from(level);
-    m_->popup_.popups_[level].key = key;
-    m_->popup_.popup_count_       = level + 1;
+    m.popup_.popup_close_from(level);
+    m.popup_.popups_[level].key = key;
+    m.popup_.popup_count_       = level + 1;
     return true;
 }
 
-void context::popup_enter(u32 level, const rect& r, const rect& anchor) noexcept
+void internal::popup_enter(context& ui, u32 level, const rect& r, const rect& anchor) noexcept
 {
-    if (level < m_->popup_.popup_count_) {
-        internal::popup_level& p = m_->popup_.popups_[level];
+    auto& m = context_access::of(ui);
+    if (level < m.popup_.popup_count_) {
+        internal::popup_level& p = m.popup_.popups_[level];
         p.open_cur   = true;
         p.rect_cur   = r;
         p.anchor_cur = anchor;
     }
-    ++m_->popup_.popup_depth_;
-    internal::popup_frame& f = m_->popup_.popup_frame_top();
+    ++m.popup_.popup_depth_;
+    internal::popup_frame& f = m.popup_.popup_frame_top();
     f.level         = level;
-    f.prev_owner    = m_->run_owner_;
-    f.saved_overlay = m_->in_overlay_;
+    f.prev_owner    = m.run_owner_;
+    f.saved_overlay = m.in_overlay_;
     f.outer_hidden  = false;
-    f.saved_layout  = m_->layout_;
-    switch_run(popup_stack::popup_run(level));
-    m_->in_overlay_ = true;
+    f.saved_layout  = m.layout_;
+    switch_run(ui, popup_stack::popup_run(level));
+    m.in_overlay_ = true;
 }
 
-void context::popup_leave() noexcept
+void internal::popup_leave(context& ui) noexcept
 {
-    if (m_->popup_.popup_depth_ == 0) {
+    auto& m = context_access::of(ui);
+    if (m.popup_.popup_depth_ == 0) {
         return;
     }
-    const internal::popup_frame f = m_->popup_.popup_frame_top();
-    --m_->popup_.popup_depth_;
-    m_->layout_     = f.saved_layout;
-    m_->in_overlay_ = f.saved_overlay;
-    switch_run(f.prev_owner);
+    const internal::popup_frame f = m.popup_.popup_frame_top();
+    --m.popup_.popup_depth_;
+    m.layout_     = f.saved_layout;
+    m.in_overlay_ = f.saved_overlay;
+    switch_run(ui, f.prev_owner);
 }
 
 void context::open_popup(std::string_view label)
 {
-    if (!popup_push(widget_id(label))) {
+    if (!popup_push(*this, widget_id(*this, label))) {
         return;
     }
     internal::popup_level& p = m_->popup_.popups_[m_->popup_.popup_count_ - 1];
@@ -112,7 +118,7 @@ bool context::popup_open(std::string_view label) const noexcept
 
 bool context::begin_popup(std::string_view label, f32 width)
 {
-    const id  key   = widget_id(label);
+    const id  key   = widget_id(*this, label);
     const u32 level = m_->popup_.popup_level_of(key);
     if (level == popup_stack::no_popup) {
         return false;
@@ -126,7 +132,7 @@ bool context::begin_popup(std::string_view label, f32 width)
     const bool outer_hidden = m_->gpopup_hidden_;
     m_->gpopup_hidden_ = !measured;
     if (m_->gpopup_hidden_) { m_->dl_.push_alpha(0.0f); }
-    if (!begin_popup_at(key, p.opener, {w, h})) {
+    if (!begin_popup_at(*this, key, p.opener, {w, h})) {
         if (m_->gpopup_hidden_) { m_->dl_.pop_alpha(); }
         m_->gpopup_hidden_ = outer_hidden;
         return false;
@@ -148,7 +154,7 @@ void context::end_popup()
         p.measured = p.key;
     }
     const bool outer_hidden = m_->popup_.popup_depth_ > 0 && m_->popup_.popup_frame_top().outer_hidden;
-    end_popup_at();
+    end_popup_at(*this);
     if (m_->gpopup_hidden_) { m_->dl_.pop_alpha(); }
     m_->gpopup_hidden_ = outer_hidden;
 }
@@ -195,7 +201,7 @@ bool context::begin_drag_source()
     m_->dnd_.dd_saved_overlay_ = m_->in_overlay_;
     m_->dnd_.dd_saved_layout_  = m_->layout_;
     m_->dnd_.dd_prev_owner_    = m_->run_owner_;
-    switch_run(m_->popup_.overlay_run());
+    switch_run(*this, m_->popup_.overlay_run());
     m_->in_overlay_ = true;
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
@@ -247,7 +253,7 @@ void context::end_drag_source()
     m_->dl_.pop_clip();
     if (m_->dnd_.dd_hidden_) { m_->dl_.pop_alpha(); }
     m_->in_overlay_ = m_->dnd_.dd_saved_overlay_;
-    switch_run(m_->dnd_.dd_prev_owner_);
+    switch_run(*this, m_->dnd_.dd_prev_owner_);
 }
 
 drop_result context::drop_target(std::string_view type, drop_flags flags)
@@ -257,7 +263,7 @@ drop_result context::drop_target(std::string_view type, drop_flags flags)
         return r;
     }
     const rect target = m_->last_item_rect_;
-    if (!pointer_over(target)) {
+    if (!pointer_over(*this, target)) {
         return r;
     }
     r.hovering = true;
@@ -278,73 +284,77 @@ drop_result context::drop_target(std::string_view type, drop_flags flags)
     return r;
 }
 
-bool context::pointer_over(const rect& r) const noexcept
+bool internal::pointer_over(const context& ui, const rect& r) noexcept
 {
-    const bool in_window = m_->in_overlay_ || (m_->cur_window_ != 0 && m_->win_.hovered_window_prev_ == m_->cur_window_);
-    return in_window && !m_->pointer_blocked() && m_->dl_.clip().contains(m_->input_.mouse_) && r.contains(m_->input_.mouse_);
+    auto& m = context_access::of(ui);
+    const bool in_window = m.in_overlay_ || (m.cur_window_ != 0 && m.win_.hovered_window_prev_ == m.cur_window_);
+    return in_window && !m.pointer_blocked() && m.dl_.clip().contains(m.input_.mouse_) && r.contains(m.input_.mouse_);
 }
 
 // draws the popup frame in its overlay layer and redirects layout into it until end_popup(). false while closed.
-bool context::begin_popup_at(id key, const rect& anchor, vec2 size)
+bool internal::begin_popup_at(context& ui, id key, const rect& anchor, vec2 size)
 {
-    const u32 level = m_->popup_.popup_level_of(key);
+    auto& m = context_access::of(ui);
+    const u32 level = m.popup_.popup_level_of(key);
     if (level == popup_stack::no_popup) {
         return false;
     }
     // Esc closes the top level only, and not while a text field or a menu (opened from here) has the keyboard
-    if (level + 1 == m_->popup_.popup_count_ && m_->focus_id_ == 0 && m_->menu_.menu_open_[0].key == 0 && !m_->popup_.popup_esc_used_) {
-        for (u32 i = 0; i < m_->input_.key_count_; ++i) {
-            if (m_->input_.keys_[i].k == key::escape) {
-                m_->popup_.popup_close_from(level);
-                m_->popup_.popup_esc_used_ = true;
+    if (level + 1 == m.popup_.popup_count_ && m.focus_id_ == 0 && m.menu_.menu_open_[0].key == 0 && !m.popup_.popup_esc_used_) {
+        for (u32 i = 0; i < m.input_.key_count_; ++i) {
+            if (m.input_.keys_[i].k == key::escape) {
+                m.popup_.popup_close_from(level);
+                m.popup_.popup_esc_used_ = true;
                 return false;
             }
         }
     }
 
     rect list = {{anchor.min.x, anchor.max.y + 4.0f}, {anchor.min.x + size.x, anchor.max.y + 4.0f + size.y}};
-    if (list.max.y > m_->display_.y - 4.0f && anchor.min.y - 4.0f - size.y >= 4.0f) {
+    if (list.max.y > m.display_.y - 4.0f && anchor.min.y - 4.0f - size.y >= 4.0f) {
         list = {{anchor.min.x, anchor.min.y - 4.0f - size.y}, {anchor.min.x + size.x, anchor.min.y - 4.0f}};
     }
-    if (list.max.x > m_->display_.x - 4.0f) { // keep it on screen horizontally
-        const f32 shift = list.max.x - (m_->display_.x - 4.0f);
+    if (list.max.x > m.display_.x - 4.0f) { // keep it on screen horizontally
+        const f32 shift = list.max.x - (m.display_.x - 4.0f);
         list = {{list.min.x - shift, list.min.y}, {list.max.x - shift, list.max.y}};
     }
 
-    popup_enter(level, list, anchor);
-    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+    popup_enter(ui, level, list, anchor);
+    m.dl_.push_clip_absolute({{0.0f, 0.0f}, m.display_});
 
     shape_style body;
-    body.radius        = radii(m_->style_.rounding * 0.8f);
-    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
-    body.fill_bottom   = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
-    body.border        = m_->style_.border;
-    body.border_width  = m_->style_.border_width;
-    body.shadow        = m_->style_.shadow;
-    body.shadow_blur   = m_->style_.shadow_blur * 0.8f;
-    body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.3f};
-    popup_panel(list, body);
+    body.radius        = radii(m.style_.rounding * 0.8f);
+    body.fill_top      = color{m.style_.window_bg.r, m.style_.window_bg.g, m.style_.window_bg.b, 255};
+    body.fill_bottom   = color{m.style_.window_bg.r, m.style_.window_bg.g, m.style_.window_bg.b, 255};
+    body.border        = m.style_.border;
+    body.border_width  = m.style_.border_width;
+    body.shadow        = m.style_.shadow;
+    body.shadow_blur   = m.style_.shadow_blur * 0.8f;
+    body.shadow_offset = {0.0f, m.style_.shadow_blur * 0.3f};
+    popup_panel(ui, list, body);
 
-    m_->dl_.push_clip({{list.min.x + 1.0f, list.min.y + 1.0f}, {list.max.x - 1.0f, list.max.y - 1.0f}});
+    m.dl_.push_clip({{list.min.x + 1.0f, list.min.y + 1.0f}, {list.max.x - 1.0f, list.max.y - 1.0f}});
 
-    m_->layout_        = {};
-    m_->layout_.origin = {list.min.x + m_->style_.padding, list.min.y + m_->style_.padding};
-    m_->layout_.width  = size.x - 2.0f * m_->style_.padding;
+    m.layout_        = {};
+    m.layout_.origin = {list.min.x + m.style_.padding, list.min.y + m.style_.padding};
+    m.layout_.width  = size.x - 2.0f * m.style_.padding;
     return true;
 }
 
-void context::end_popup_at()
+void internal::end_popup_at(context& ui)
 {
-    m_->dl_.pop_clip();
-    m_->dl_.pop_clip();
-    popup_leave(); // (restores the layout)
+    auto& m = context_access::of(ui);
+    m.dl_.pop_clip();
+    m.dl_.pop_clip();
+    popup_leave(ui); // (restores the layout)
 }
 
-void context::popup_panel(const rect& r, const shape_style& body)
+void internal::popup_panel(context& ui, const rect& r, const shape_style& body)
 {
-    const f32 k = std::clamp(m_->style_.popup_acrylic, 0.0f, 1.0f);
-    if (k <= 0.0f || m_->dl_.alpha() < 0.99f) { // (a popup that is still fading in is drawn opaque: the blur has no fade)
-        m_->dl_.shape(r, body);
+    auto& m = context_access::of(ui);
+    const f32 k = std::clamp(m.style_.popup_acrylic, 0.0f, 1.0f);
+    if (k <= 0.0f || m.dl_.alpha() < 0.99f) { // (a popup that is still fading in is drawn opaque: the blur has no fade)
+        m.dl_.shape(r, body);
         return;
     }
     const color clear{0, 0, 0, 0};
@@ -352,62 +362,63 @@ void context::popup_panel(const rect& r, const shape_style& body)
     shadow_only.fill_top = shadow_only.fill_bottom = clear;
     shadow_only.border = clear;
     shadow_only.border_width = 0.0f;
-    m_->dl_.shape(r, shadow_only);
+    m.dl_.shape(r, shadow_only);
 
-    const color tint = body.fill_top.scaled_alpha(1.0f + (m_->style_.acrylic_alpha - 1.0f) * k);
-    m_->dl_.backdrop(r, m_->style_.blur_radius, tint, body.radius, m_->style_.acrylic_noise, m_->style_.acrylic_saturation, m_->style_.acrylic_brightness);
+    const color tint = body.fill_top.scaled_alpha(1.0f + (m.style_.acrylic_alpha - 1.0f) * k);
+    m.dl_.backdrop(r, m.style_.blur_radius, tint, body.radius, m.style_.acrylic_noise, m.style_.acrylic_saturation, m.style_.acrylic_brightness);
 
     shape_style edge = body;
     edge.fill_top = edge.fill_bottom = clear;
     edge.shadow = clear;
     edge.shadow_blur = 0.0f;
-    m_->dl_.shape(r, edge);
+    m.dl_.shape(r, edge);
 }
 
-void context::draw_tooltip(std::string_view text)
+void internal::draw_tooltip(context& ui, std::string_view text)
 {
-    if (m_->in_overlay_ || text.empty()) {
+    auto& m = context_access::of(ui);
+    if (m.in_overlay_ || text.empty()) {
         return;
     }
-    const font_id f  = current_font();
-    const vec2 ts    = label_size(f, text);
+    const font_id f  = ui.current_font();
+    const vec2 ts    = label_size(ui, f, text);
     const f32  padx  = 9.0f;
     const f32  pady  = 6.0f;
     const vec2 size{ts.x + 2.0f * padx, ts.y + 2.0f * pady};
 
-    vec2 pos = m_->input_.mouse_ + vec2{14.0f, 20.0f};
-    if (pos.x + size.x > m_->display_.x - 4.0f) { pos.x = m_->display_.x - 4.0f - size.x; }
-    if (pos.y + size.y > m_->display_.y - 4.0f) { pos.y = m_->input_.mouse_.y - size.y - 10.0f; }
+    vec2 pos = m.input_.mouse_ + vec2{14.0f, 20.0f};
+    if (pos.x + size.x > m.display_.x - 4.0f) { pos.x = m.display_.x - 4.0f - size.x; }
+    if (pos.y + size.y > m.display_.y - 4.0f) { pos.y = m.input_.mouse_.y - size.y - 10.0f; }
     pos.x = std::max(pos.x, 4.0f);
     pos.y = std::max(pos.y, 4.0f);
 
-    const f32 fade = std::clamp((m_->hover_time_ - 0.35f) / 0.12f, 0.0f, 1.0f);
-    const u32 previous_owner = m_->run_owner_;
-    switch_run(m_->popup_.overlay_run());
-    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
-    m_->dl_.push_alpha(fade);
+    const f32 fade = std::clamp((m.hover_time_ - 0.35f) / 0.12f, 0.0f, 1.0f);
+    const u32 previous_owner = m.run_owner_;
+    switch_run(ui, m.popup_.overlay_run());
+    m.dl_.push_clip_absolute({{0.0f, 0.0f}, m.display_});
+    m.dl_.push_alpha(fade);
 
     shape_style body;
-    body.radius        = radii(m_->style_.rounding * 0.6f);
-    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.radius        = radii(m.style_.rounding * 0.6f);
+    body.fill_top      = color{m.style_.window_bg.r, m.style_.window_bg.g, m.style_.window_bg.b, 255};
     body.fill_bottom   = body.fill_top;
-    body.border        = m_->style_.border;
-    body.border_width  = m_->style_.border_width;
-    body.shadow        = m_->style_.shadow;
-    body.shadow_blur   = m_->style_.shadow_blur * 0.5f;
+    body.border        = m.style_.border;
+    body.border_width  = m.style_.border_width;
+    body.shadow        = m.style_.shadow;
+    body.shadow_blur   = m.style_.shadow_blur * 0.5f;
     body.shadow_offset = {0.0f, 3.0f};
-    popup_panel(rect::from_size(pos, size), body);
-    label_draw({pos.x + padx, pos.y + pady}, m_->style_.text, text, f);
+    popup_panel(ui, rect::from_size(pos, size), body);
+    label_draw(ui, {pos.x + padx, pos.y + pady}, m.style_.text, text, f);
 
-    m_->dl_.pop_alpha();
-    m_->dl_.pop_clip();
-    switch_run(previous_owner);
+    m.dl_.pop_alpha();
+    m.dl_.pop_clip();
+    switch_run(ui, previous_owner);
 }
 
 void context::tooltip(std::string_view text)
 {
     if (m_->last_item_hovered_ && m_->last_item_key_ == m_->hover_key_cur_ && m_->hover_time_ > 0.4f) {
-        draw_tooltip(text);
+        draw_tooltip(*this, text);
     }
 }
 

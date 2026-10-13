@@ -35,7 +35,7 @@ struct menu_frame { // a popup being built
 };
 
 struct menu_state {
-    static constexpr u32 max_menu_levels = 4; // (context::max_menu_levels is the same)
+    static constexpr u32 max_menu_levels = 4; // (internal::max_menu_levels is the same)
 
     std::array<menu_level, max_menu_levels> menu_open_{};
     std::array<menu_frame, max_menu_levels> menu_stack_{};

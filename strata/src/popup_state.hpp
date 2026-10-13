@@ -32,7 +32,7 @@ struct popup_level {
 // a popup being drawn: what its end restores
 struct popup_frame {
     u32          level{};
-    u32          prev_owner{0xffffffffu}; // (context::run_base is the same)
+    u32          prev_owner{0xffffffffu}; // (internal::run_base is the same)
     bool         saved_overlay{};
     bool         outer_hidden{};  // begin_popup: gpopup_hidden_ of the popup around this one
     layout_state saved_layout{};
@@ -43,8 +43,8 @@ public:
     static constexpr u32 max_popup_levels = 4;
     static constexpr u32 run_popup        = 0xfffffff8u; // + level (1..): the draw layer of a nested popup
     static constexpr u32 no_popup         = 0xffffffffu;
-    static constexpr u32 run_overlay      = 0xfffffffeu; // (context::run_overlay is the same)
-    static constexpr u32 run_base         = 0xffffffffu; // (context::run_base is the same)
+    static constexpr u32 run_overlay      = 0xfffffffeu; // (internal::run_overlay is the same)
+    static constexpr u32 run_base         = 0xffffffffu; // (internal::run_base is the same)
 
     std::array<popup_level, max_popup_levels> popups_{};
     u32  popup_count_{};       // open levels

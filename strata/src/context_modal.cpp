@@ -3,12 +3,15 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 
 
 #include <algorithm>
 
 namespace strata {
+
+using namespace internal;
 
 void context::open_modal(std::string_view title)
 {
@@ -17,15 +20,15 @@ void context::open_modal(std::string_view title)
         if (m_->modal_.modal_stack_[i] == wid) { return; } // already open
     }
     if (m_->modal_.modal_count_ >= max_modals) {
-        report_limit("modals open at once (max_modals)", max_modals);
+        report_limit(*this, "modals open at once (max_modals)", max_modals);
         return;
     }
     m_->modal_.modal_stack_[m_->modal_.modal_count_++] = wid;
-    anim_for(part_id(part::modal_fade, wid)).toggle = 0.0f; // fades in from nothing
+    anim_for(*this, part_id(part::modal_fade, wid)).toggle = 0.0f; // fades in from nothing
     // whatever had the keyboard or a popup open gives way
     m_->focus_id_ = 0;
     m_->popup_.popup_close_from(0);
-    menu_close_all();
+    menu_close_all(*this);
 }
 
 void context::close_modal()
@@ -50,8 +53,8 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     }
     const bool top = level == m_->modal_.modal_count_;
 
-    anim_slot& a = anim_for(part_id(part::modal_fade, wid));
-    a.toggle = approach(a.toggle, 1.0f, m_->style_.anim_speed * 0.9f);
+    anim_slot& a = anim_for(*this, part_id(part::modal_fade, wid));
+    a.toggle = approach(*this, a.toggle, 1.0f, m_->style_.anim_speed * 0.9f);
     const f32 t = std::clamp(a.toggle, 0.0f, 1.0f);
 
     // Esc or a click on the dim closes it (unless something inside uses the key / click)
@@ -76,18 +79,18 @@ bool context::begin_modal(std::string_view title, vec2 size, modal_flags flags)
     // the dimmed area, in its own layer right below this modal
     {
         const u32 previous_owner = m_->run_owner_;
-        switch_run(run_backdrop + level - 1);
+        switch_run(*this, run_backdrop + level - 1);
         m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
         m_->dl_.rect_filled({{0.0f, 0.0f}, m_->display_}, m_->style_.modal_dim.scaled_alpha(t));
         m_->dl_.pop_clip();
-        switch_run(previous_owner);
+        switch_run(*this, previous_owner);
     }
 
     // centred using last frame's size (the first frame is invisible anyway)
     const vec2 win{prev.width() > 0.0f ? prev.width() : size.x, prev.height() > 0.0f ? prev.height() : (size.y > 0.0f ? size.y : 160.0f)};
     // rest on whole pixels for crisp text; the slide-in stays unrounded to avoid one-pixel jumps and a final snap
     const vec2 pos{std::round((m_->display_.x - win.x) * 0.5f), std::round((m_->display_.y - win.y) * 0.42f) + (1.0f - t) * 12.0f};
-    if (window_state* st = window_for(wid, pos, size.x)) {
+    if (window_state* st = window_for(*this, wid, pos, size.x)) {
         st->pos = pos;
     }
 
@@ -139,11 +142,11 @@ int context::dialog(std::string_view title, std::string_view message, std::initi
     std::size_t k = 0;
     for (const std::string_view label : buttons) {
         if (k >= count) { break; }
-        widths[k] = std::max(label_size(current_font(), visible_label(label)).x + 2.0f * m_->style_.frame_padding.x, 84.0f);
+        widths[k] = std::max(label_size(*this, current_font(), visible_label(label)).x + 2.0f * m_->style_.frame_padding.x, 84.0f);
         total += widths[k] + (k > 0 ? m_->style_.item_spacing : 0.0f);
         ++k;
     }
-    (void)layout_place({0.0f, frame_height()}); // a fresh line, then start the row at the right place
+    (void)layout_place(*this, {0.0f, frame_height()}); // a fresh line, then start the row at the right place
     m_->layout_.same_line = true;
     m_->layout_.cursor_x  = m_->layout_.origin.x + m_->layout_.width - total - m_->style_.item_spacing;
     k = 0;
@@ -227,11 +230,11 @@ int context::confirm(std::string_view id_label, std::initializer_list<std::strin
     std::size_t k = 0;
     for (const std::string_view label : buttons) {
         if (k >= count) { break; }
-        widths[k] = std::max(label_size(current_font(), visible_label(label)).x + 2.0f * m_->style_.frame_padding.x, 84.0f);
+        widths[k] = std::max(label_size(*this, current_font(), visible_label(label)).x + 2.0f * m_->style_.frame_padding.x, 84.0f);
         total += widths[k] + (k > 0 ? m_->style_.item_spacing : 0.0f);
         ++k;
     }
-    (void)layout_place({0.0f, frame_height()});
+    (void)layout_place(*this, {0.0f, frame_height()});
     m_->layout_.same_line = true;
     m_->layout_.cursor_x  = m_->layout_.origin.x + m_->layout_.width - total - m_->style_.item_spacing;
     k = 0;

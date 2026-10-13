@@ -79,6 +79,9 @@ target_sources(strata PUBLIC
 target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp src/core/part_id.hpp src/widget_util.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
+if(STRATA_PCH)
+    target_precompile_headers(strata PRIVATE <strata/context.hpp>) # nearly every src/ file includes it
+endif()
 # skipped for clang-cl: see the matching guard + comment in cmake/strata_options.cmake --
 # this would otherwise inject -clang:-std=c++23 ahead of /std:c++latest and win.
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

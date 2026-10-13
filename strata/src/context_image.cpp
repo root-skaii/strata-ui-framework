@@ -3,10 +3,13 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 
 #include <algorithm>
 
 namespace strata {
+
+using namespace internal;
 
 void context::image(texture_id tex, vec2 size, vec2 uv0, vec2 uv1, color tint, f32 rounding)
 {
@@ -20,7 +23,7 @@ void context::image(texture_id tex, vec2 size, vec2 uv0, vec2 uv1, color tint, f
     if (size.y <= 0.0f) {
         size.y = size.x;
     }
-    const rect r = layout_place(size);
+    const rect r = layout_place(*this, size);
     m_->dl_.image(r, tex, uv0, uv1, tint, radii(rounding));
 }
 
@@ -37,10 +40,10 @@ bool context::image_button(std::string_view label, texture_id tex, vec2 size, ve
         size.y = size.x;
     }
 
-    const id   key = hash_id(label, hash_id({reinterpret_cast<const char*>(&tex), sizeof(tex)}, current_seed()));
-    const rect r   = layout_place(size);
-    const interaction in = interact(key, r);
-    const press_anim  a  = button_anim(key, in);
+    const id   key = hash_id(label, hash_id({reinterpret_cast<const char*>(&tex), sizeof(tex)}, current_seed(*this)));
+    const rect r   = layout_place(*this, size);
+    const interaction in = interact(*this, key, r);
+    const press_anim  a  = button_anim(*this, key, in);
 
     const f32 round = m_->style_.rounding * 0.8f;
     const color shown = lerp(tint, color{static_cast<u8>(tint.r * 0.75f), static_cast<u8>(tint.g * 0.75f), static_cast<u8>(tint.b * 0.75f), tint.a}, a.active);

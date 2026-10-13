@@ -1,11 +1,14 @@
 // formerly inline members of strata::context that read its state, now in context::impl (context_impl.hpp)
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 
 #include <cassert>
 #include <cmath>
 
 namespace strata {
+
+using namespace internal;
 
 draw_data context::render_data() const noexcept
 {
@@ -210,7 +213,7 @@ void context::set_scroll_smoothing(bool on) noexcept
 
 void context::request_text_focus(std::string_view label) noexcept
 {
-    const id key = hash_id(label, current_seed());
+    const id key = hash_id(label, current_seed(*this));
     if (m_->focus_id_ != key) { m_->focus_request_ = key; }
 }
 
@@ -219,7 +222,7 @@ id context::focused_field() const noexcept
 
 bool context::field_focused(std::string_view label) const noexcept
 {
-    return m_->focus_id_ != 0 && m_->focus_id_ == hash_id(label, current_seed());
+    return m_->focus_id_ != 0 && m_->focus_id_ == hash_id(label, current_seed(*this));
 }
 
 bool context::ctrl_down() const noexcept
@@ -245,7 +248,7 @@ void context::begin_layer(strata::layer which)
     assert(!m_->in_layer_ && "layers do not nest");
     m_->in_layer_          = true;
     m_->layer_saved_owner_ = m_->run_owner_;
-    switch_run(which == strata::layer::foreground ? run_foreground : run_base);
+    switch_run(*this, which == strata::layer::foreground ? run_foreground : run_base);
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 }
 
@@ -254,7 +257,7 @@ void context::end_layer()
     if (!m_->in_layer_) { return; }
     m_->in_layer_ = false;
     m_->dl_.pop_clip();
-    switch_run(m_->layer_saved_owner_);
+    switch_run(*this, m_->layer_saved_owner_);
 }
 
 const frame_stats& context::stats() const noexcept
@@ -334,18 +337,20 @@ f64 context::time() const noexcept
 void context::release_font_pixels() noexcept
 { m_->font_.discard_pixels(); }
 
-id context::current_seed() const noexcept
-{ return m_->ids_.current(); }
+id internal::current_seed(const context& ui) noexcept
+{ return context_access::of(ui).ids_.current(); }
 
-void context::note_row_anchor(id key, const rect& r) noexcept
+void internal::note_row_anchor(context& ui, id key, const rect& r) noexcept
 {
-    m_->accessory_.row_anchor_      = key;
-    m_->accessory_.row_anchor_rect_ = r;
+    auto& m = context_access::of(ui);
+    m.accessory_.row_anchor_      = key;
+    m.accessory_.row_anchor_rect_ = r;
 }
 
-bool context::caret_visible() const noexcept
+bool internal::caret_visible(const context& ui) noexcept
 {
-    return m_->caret_blink_ <= 0.0f || std::fmod(m_->time_ - m_->edit_.caret_time_, 2.0 * m_->caret_blink_) < m_->caret_blink_;
+    auto& m = context_access::of(ui);
+    return m.caret_blink_ <= 0.0f || std::fmod(m.time_ - m.edit_.caret_time_, 2.0 * m.caret_blink_) < m.caret_blink_;
 }
 
 } // namespace strata

@@ -294,6 +294,9 @@ int app::run(const std::function<void(app&, context&)>& frame)
     ::ShowWindow(s.hwnd, SW_SHOW);
     ::UpdateWindow(s.hwnd);
 
+    // the latency waitable is a semaphore that only a completed Present() signals: waiting after an idle frame
+    // that presented nothing found it empty and stalled for the whole timeout (input handled at ~9 fps)
+    bool presented = true;
     while (!s.quitting) {
         MSG msg;
         while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -314,11 +317,12 @@ int app::run(const std::function<void(app&, context&)>& frame)
         if (s.cfg.follow_system_theme && s.platform.appearance_changed()) { s.apply_theme(); }
 
         // start the frame when the swap chain can take one, so its input is as fresh as possible
-        if (s.latency_wait != nullptr) { ::WaitForSingleObjectEx(s.latency_wait, 100, TRUE); }
+        if (s.latency_wait != nullptr && presented) { ::WaitForSingleObjectEx(s.latency_wait, 100, TRUE); }
 
         // nothing changed: what is on the screen is right. (idling off: every frame is drawn)
         const bool changed = run_frame(*s.ui, s.platform, [&](context& ui) { frame(*this, ui); }, s.cfg.idle);
         ++s.frames;
+        presented = changed;
         if (changed) {
             if (!s.present()) { // the device is gone: a new one, and the frame again
                 if (!s.reset_device()) { s.exit_code = -1; break; }

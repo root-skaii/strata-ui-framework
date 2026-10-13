@@ -9,7 +9,7 @@ namespace strata::internal {
 
 inline constexpr u32 max_dock_nodes  = 32;
 inline constexpr u32 max_dock_spaces = 8;
-inline constexpr u8  no_node         = 0xff; // (context::no_node is the same)
+inline constexpr u8  no_node         = 0xff;
 
 // dock tree: leaves hold tabbed windows, splits divide their area between two children
 struct dock_node {

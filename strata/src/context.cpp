@@ -1,6 +1,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 #include "widget_util.hpp"
 
@@ -22,6 +23,24 @@
 namespace strata {
 
 using namespace text;
+using namespace internal;
+
+// debug only: records `key` for this frame, counting repeats
+static void check_id(context& ui, id key) noexcept;
+static std::expected<void, font_error> build_font_atlas(context& ui, f32 scale);
+// sends `message` to the diagnostics hook (or stderr) unless `once_key` was seen
+static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key) noexcept;
+// non-interactive content: becomes the "last item", no press
+static void note_passive_item(context& ui, id key, const rect& r) noexcept;
+// accessory strip of the row just submitted; false if there is no row
+[[nodiscard]] static bool accessory_slot(context& ui, f32 width, rect& out, f32 inset = 0.0f) noexcept;
+static void allow_item_overlap_at(context& ui, id key, const rect& r) noexcept;
+// this frame's wheel scroll for a region: `unit` = one line / row, `page` = visible extent (0 if none), times
+// style::scroll_speed
+[[nodiscard]] static f32 scroll_step(const context& ui, f32 unit, f32 page) noexcept;
+[[nodiscard]] static color& color_ref(context& ui, style_color which) noexcept;
+[[nodiscard]] static f32& var_ref(context& ui, style_var which) noexcept;
+static void apply_layer_order(context& ui);
 
 namespace {
 
@@ -131,34 +150,35 @@ std::expected<void, font_error> context::set_scale(f32 scale)
     if (scale == m_->scale_) {
         return {};
     }
-    return build_font_atlas(scale);
+    return build_font_atlas(*this, scale);
 }
 
 std::expected<void, font_error> context::rebuild_font_atlas()
 {
-    return build_font_atlas(m_->scale_);
+    return build_font_atlas(*this, m_->scale_);
 }
 
-std::expected<void, font_error> context::build_font_atlas(f32 scale)
+static std::expected<void, font_error> build_font_atlas(context& ui, f32 scale)
 {
-    if (m_->font_sources_.empty()) {
+    auto& m = context_access::of(ui);
+    if (m.font_sources_.empty()) {
         return std::unexpected{font_error::no_fonts};
     }
     std::vector<font_config> configs;
-    configs.reserve(m_->font_sources_.size());
-    for (const font_source& src : m_->font_sources_) {
+    configs.reserve(m.font_sources_.size());
+    for (const font_source& src : m.font_sources_) {
         font_config c = src.cfg;
         c.face = src.face; // (the views in the stored config may dangle after a move of the context)
         c.file = src.file;
         configs.push_back(c);
     }
-    auto atlas = font_atlas::build(configs, m_->max_atlas_size_, scale);
+    auto atlas = font_atlas::build(configs, m.max_atlas_size_, scale);
     if (!atlas) {
         return std::unexpected{atlas.error()};
     }
-    m_->font_ = std::move(*atlas);
-    m_->scale_ = scale;
-    ++m_->font_generation_;
+    m.font_ = std::move(*atlas);
+    m.scale_ = scale;
+    ++m.font_generation_;
     return {};
 }
 
@@ -191,21 +211,22 @@ context::~context()
     if (m_ == nullptr) {
         return; // (moved from)
     }
-    wipe_edit_buffer();
+    wipe_edit_buffer(*this);
     detail::secure_wipe(m_->input_.typed_.data(), m_->input_.typed_.size());
 }
 
-void context::wipe_edit_buffer() noexcept
+void internal::wipe_edit_buffer(context& ui) noexcept
 {
+    auto& m = context_access::of(ui);
     // also clears the bytes beyond size() that an earlier, longer text left in the buffer
-    m_->edit_.edit_buf_.resize(m_->edit_.edit_buf_.capacity());
-    detail::secure_wipe(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
-    m_->edit_.edit_buf_.clear();
-    m_->edit_.edit_cursor_ = 0;
-    m_->edit_.edit_anchor_ = 0;
-    m_->edit_.edit_pref_x_ = -1.0f;
-    m_->edit_.ml_cache_key_ = 0;
-    edit_history_clear(); // the undo history holds typed text as well
+    m.edit_.edit_buf_.resize(m.edit_.edit_buf_.capacity());
+    detail::secure_wipe(m.edit_.edit_buf_.data(), m.edit_.edit_buf_.size());
+    m.edit_.edit_buf_.clear();
+    m.edit_.edit_cursor_ = 0;
+    m.edit_.edit_anchor_ = 0;
+    m.edit_.edit_pref_x_ = -1.0f;
+    m.edit_.ml_cache_key_ = 0;
+    edit_history_clear(ui); // the undo history holds typed text as well
 }
 
 void context::begin_frame(input_state&& in)
@@ -424,7 +445,7 @@ void context::begin_frame(const input_state& in)
     }
     m_->menu_.menu_depth_ = 0;
     if (menu_any && (m_->input_.mouse_pressed_ || m_->input_.mouse_right_pressed_) && !m_->menu_.menu_hit_prev_ && !m_->menu_.menu_open_[0].anchor.contains(m_->input_.mouse_)) {
-        menu_close_all();
+        menu_close_all(*this);
         m_->menu_.menu_hit_prev_ = false;
         m_->swallow_press_ = true;
     }
@@ -469,7 +490,7 @@ void context::end_frame()
         if (depth == 0) { return; }
         char buf[128];
         const int n = std::snprintf(buf, sizeof buf, "%s missing at end_frame (%u open)", missing, depth);
-        diagnose(diagnostic_kind::misuse, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
+        diagnose(*this, diagnostic_kind::misuse, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
                  hash_id(missing));
     };
     unbalanced(m_->popup_.popup_depth_, "end_popup()");
@@ -489,20 +510,21 @@ void context::end_frame()
     unbalanced(m_->ids_.depth(), "pop_id()");
     m_->tree_table_.tree_depth_ = 0;
     m_->popup_.popup_depth_     = 0;
-    dock_end_frame();
-    toast_end_frame();
+    dock_end_frame(*this);
+    toast_end_frame(*this);
     // a menu level not built this frame closes along with everything above it
     for (u32 i = 0; i < max_menu_levels; ++i) {
         if (m_->menu_.menu_open_[i].key != 0 && !m_->menu_.menu_open_[i].seen) {
-            menu_close_from(i);
+            menu_close_from(*this, i);
             break;
         }
     }
     if (m_->menu_.menu_close_all_) {
-        menu_close_all();
+        menu_close_all(*this);
         m_->menu_.menu_close_all_ = false;
     }
-    apply_layer_order();
+    apply_layer_order(*this);
+    m_->dl_.merge_commands();
 
     if (!m_->input_.mouse_down_) {
         m_->active_       = 0; // a widget that vanished mid-drag must not stay active forever
@@ -515,7 +537,7 @@ void context::end_frame()
         m_->focus_id_ = 0;
     }
     if (m_->focus_id_ == 0 && !m_->edit_.edit_buf_.empty()) {
-        wipe_edit_buffer();
+        wipe_edit_buffer(*this);
     }
     detail::secure_wipe(m_->input_.typed_.data(), m_->input_.typed_.size());
     m_->input_.typed_len_ = 0;
@@ -586,10 +608,10 @@ void context::end_frame()
     m_->stats_cur_.clip_overflows   = m_->dl_.clip_stack_overflows();
     m_->stats_cur_.alpha_overflows  = m_->dl_.alpha_stack_overflows();
     if (m_->stats_cur_.draw_overflow != 0) {
-        diagnose(diagnostic_kind::draw_overflow, "the draw list ran out of room: geometry was dropped (raise context_config::limits)", 1);
+        diagnose(*this, diagnostic_kind::draw_overflow, "the draw list ran out of room: geometry was dropped (raise context_config::limits)", 1);
     }
     if (m_->stats_cur_.clip_overflows != 0 || m_->stats_cur_.alpha_overflows != 0) {
-        diagnose(diagnostic_kind::draw_overflow, "clip / alpha nesting deeper than the draw list holds: inner levels were not clipped / faded", 2);
+        diagnose(*this, diagnostic_kind::draw_overflow, "clip / alpha nesting deeper than the draw list holds: inner levels were not clipped / faded", 2);
     }
     m_->stats_cur_.unchanged        = m_->frame_unchanged_;
     m_->stats_cur_.animating        = m_->anim_settling_;
@@ -603,101 +625,109 @@ void context::end_frame()
 // animation state: m_->anim_ is an open-addressing table keyed by widget id (src/core/animation.hpp). slots
 // untouched for a couple of frames are stale and reusable; a full table grows, dropping stale ones.
 
-context::anim_slot* context::anim_find(id key) noexcept
+anim_slot* internal::anim_find(context& ui, id key) noexcept
 {
-    return m_->anim_.find(key);
+    auto& m = context_access::of(ui);
+    return m.anim_.find(key);
 }
 
-context::press_anim context::button_anim(id key, const interaction& in) noexcept
+press_anim internal::button_anim(context& ui, id key, const interaction& in) noexcept
 {
-    anim_slot* a = anim_find(key);
+    auto& m = context_access::of(ui);
+    anim_slot* a = anim_find(ui, key);
     if (a == nullptr) {
         if (!in.hovered && !in.held) {
             return {}; // idle and untracked: costs nothing
         }
-        a = &anim_for(key);
+        a = &anim_for(ui, key);
     }
-    a->hover  = approach(a->hover, in.hovered ? 1.0f : 0.0f);
-    a->active = approach(a->active, in.held ? 1.0f : 0.0f);
+    a->hover  = approach(ui, a->hover, in.hovered ? 1.0f : 0.0f);
+    a->active = approach(ui, a->active, in.held ? 1.0f : 0.0f);
 
     const press_anim out{a->hover, a->active};
     // back to rest: let the slot go stale so the table doesn't fill up with idle buttons
-    a->last_frame = (out.hover == 0.0f && out.active == 0.0f && !in.hovered && !in.held) ? 0 : m_->frame_;
+    a->last_frame = (out.hover == 0.0f && out.active == 0.0f && !in.hovered && !in.held) ? 0 : m.frame_;
     return out;
 }
 
-context::anim_slot& context::anim_for(id key) noexcept
+anim_slot& internal::anim_for(context& ui, id key) noexcept
 {
-    return m_->anim_.for_key(key, m_->frame_);
+    auto& m = context_access::of(ui);
+    return m.anim_.for_key(key, m.frame_);
 }
 
-f32 context::approach(f32 current, f32 target, f32 speed) const noexcept
+f32 internal::approach(const context& ui, f32 current, f32 target, f32 speed) noexcept
 {
-    const f32 k = 1.0f - std::exp(-(speed > 0.0f ? speed : m_->style_.anim_speed) * m_->dt_);
+    auto& m = context_access::of(ui);
+    const f32 k = 1.0f - std::exp(-(speed > 0.0f ? speed : m.style_.anim_speed) * m.dt_);
     const f32 v = current + (target - current) * k;
     if (std::abs(target - v) < 0.002f) {
         return target; // close enough: snap, so a settled animation stops producing new geometry
     }
-    m_->anim_moved_ = true; // still moving (see animations_settling)
+    m.anim_moved_ = true; // still moving (see animations_settling)
     return v;
 }
 
 f32 context::animate(std::string_view key, f32 target, f32 speed)
 {
-    anim_slot& a = anim_for(widget_id(key));
+    anim_slot& a = anim_for(*this, widget_id(*this, key));
     if (!a.custom_init) {
         a.custom      = target;
         a.custom_init = true;
     } else {
-        a.custom = approach(a.custom, target, speed);
+        a.custom = approach(*this, a.custom, target, speed);
     }
     return a.custom;
 }
 
-f32 context::scroll_step(f32 unit, f32 page) const noexcept
+static f32 scroll_step(const context& ui, f32 unit, f32 page) noexcept
 {
-    const f32 lines = m_->input_.wheel_lines_;
+    auto& m = context_access::of(ui);
+    const f32 lines = m.input_.wheel_lines_;
     const f32 step  = lines > 0.0f ? lines * unit : (page > 0.0f ? page * 0.9f : unit * 10.0f);
-    return step * std::max(m_->style_.scroll_speed, 0.0f);
+    return step * std::max(m.style_.scroll_speed, 0.0f);
 }
 
-f32 context::wheel_scroll(f32 unit, f32 page) const noexcept { return m_->input_.wheel_ * scroll_step(unit, page); }
-f32 context::wheel_scroll_x(f32 unit, f32 page) const noexcept { return m_->input_.wheel_x_ * scroll_step(unit, page); }
+f32 internal::wheel_scroll(const context& ui, f32 unit, f32 page) noexcept { return context_access::of(ui).input_.wheel_ * scroll_step(ui, unit, page); }
+f32 internal::wheel_scroll_x(const context& ui, f32 unit, f32 page) noexcept { return context_access::of(ui).input_.wheel_x_ * scroll_step(ui, unit, page); }
 
-void context::report_limit(const char* what, u32 capacity) noexcept
+void internal::report_limit(context& ui, const char* what, u32 capacity) noexcept
 {
-    ++m_->stats_cur_.limits_hit;
+    auto& m = context_access::of(ui);
+    ++m.stats_cur_.limits_hit;
     char buf[192];
     const int n = std::snprintf(buf, sizeof buf, "limit reached: %s (capacity %u) - what does not fit is dropped", what, capacity);
-    diagnose(diagnostic_kind::limit, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
+    diagnose(ui, diagnostic_kind::limit, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
              hash_id(what));
 }
 
-void context::diagnose(diagnostic_kind kind, std::string_view message, u64 once_key) noexcept
+static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key) noexcept
 {
+    auto& m = context_access::of(ui);
     const u64 key = once_key ^ (static_cast<u64>(kind) << 56);
-    if (std::ranges::find(m_->diag_seen_, key) != m_->diag_seen_.end()) {
+    if (std::ranges::find(m.diag_seen_, key) != m.diag_seen_.end()) {
         return;
     }
-    if (m_->diag_seen_.size() < 256) { // (past that, a program has bigger problems than a repeated line)
-        m_->diag_seen_.push_back(key);
+    if (m.diag_seen_.size() < 256) { // (past that, a program has bigger problems than a repeated line)
+        m.diag_seen_.push_back(key);
     }
-    if (m_->diag_.report != nullptr) {
-        m_->diag_.report(m_->diag_.user, diagnostic{kind, message});
+    if (m.diag_.report != nullptr) {
+        m.diag_.report(m.diag_.user, diagnostic{kind, message});
     } else {
         internal::print_diagnostic(message);
     }
 }
 
-void context::track_edit(id session, bool changed, bool engaged) noexcept
+void internal::track_edit(context& ui, id session, bool changed, bool engaged) noexcept
 {
-    if (m_->edit_muted_ > 0) {
+    auto& m = context_access::of(ui);
+    if (m.edit_muted_ > 0) {
         return;
     }
-    const bool was = std::find(m_->engaged_prev_.begin(), m_->engaged_prev_.begin() + m_->engaged_prev_count_, session) !=
-                     m_->engaged_prev_.begin() + m_->engaged_prev_count_;
-    if (engaged && m_->engaged_cur_count_ < m_->engaged_cur_.size()) {
-        m_->engaged_cur_[m_->engaged_cur_count_++] = session;
+    const bool was = std::find(m.engaged_prev_.begin(), m.engaged_prev_.begin() + m.engaged_prev_count_, session) !=
+                     m.engaged_prev_.begin() + m.engaged_prev_count_;
+    if (engaged && m.engaged_cur_count_ < m.engaged_cur_.size()) {
+        m.engaged_cur_[m.engaged_cur_count_++] = session;
     }
     edit_flags f;
     f.active      = engaged;
@@ -705,13 +735,13 @@ void context::track_edit(id session, bool changed, bool engaged) noexcept
     f.deactivated = !engaged && was;
     f.edited      = changed;
     edit_session* open = nullptr;
-    for (edit_session& s : m_->edit_sessions_) {
+    for (edit_session& s : m.edit_sessions_) {
         if (s.key == session) { open = &s; }
     }
     if (f.activated) { // a session starts (a stale one with this key starts over)
         if (open == nullptr) {
-            open = &m_->edit_sessions_[0];
-            for (edit_session& s : m_->edit_sessions_) {
+            open = &m.edit_sessions_[0];
+            for (edit_session& s : m.edit_sessions_) {
                 if (s.key == 0) { open = &s; break; }
             }
         }
@@ -721,14 +751,14 @@ void context::track_edit(id session, bool changed, bool engaged) noexcept
     // over: a session that changed something, or a sessionless change (started and ended at once)
     f.after_edit = !engaged && (open != nullptr && was ? open->changed : changed);
     if (!engaged && open != nullptr) { *open = {}; }
-    m_->edit_flags_ = f;
-    m_->edit_item_  = m_->last_item_key_;
+    m.edit_flags_ = f;
+    m.edit_item_  = m.last_item_key_;
 }
 
 void context::push_id(std::string_view s) noexcept
 {
     if (!m_->ids_.push(s)) {
-        report_limit("push_id nesting (max_id_depth): ids will collide", max_id_depth);
+        report_limit(*this, "push_id nesting (max_id_depth): ids will collide", max_id_depth);
     }
 }
 
@@ -740,7 +770,7 @@ void context::push_id(const void* p) noexcept
 void context::push_id(u64 value) noexcept
 {
     if (!m_->ids_.push(value)) {
-        report_limit("push_id nesting (max_id_depth): ids will collide", max_id_depth);
+        report_limit(*this, "push_id nesting (max_id_depth): ids will collide", max_id_depth);
     }
 }
 
@@ -752,7 +782,7 @@ void context::pop_id() noexcept
 void context::push_font(font_id f) noexcept
 {
     if (f < m_->font_.font_count() && !m_->style_stack_.push_font(f)) {
-        report_limit("push_font nesting (max_font_depth)", max_font_depth);
+        report_limit(*this, "push_font nesting (max_font_depth)", max_font_depth);
     }
 }
 
@@ -764,29 +794,31 @@ void context::pop_font() noexcept
 // layers: window stacking and popups ---------------------------------------------
 
 // closes the current run of draw commands (if it produced any) and starts a new one
-void context::switch_run(u32 owner) noexcept
+void internal::switch_run(context& ui, u32 owner) noexcept
 {
-    m_->dl_.break_command();
-    const u32 now = m_->dl_.command_count();
-    if (now > m_->run_start_) {
-        if (m_->run_count_ < max_runs) {
-            m_->runs_[m_->run_count_++] = {m_->run_start_, now - m_->run_start_, m_->run_owner_};
+    auto& m = context_access::of(ui);
+    m.dl_.break_command();
+    const u32 now = m.dl_.command_count();
+    if (now > m.run_start_) {
+        if (m.run_count_ < max_runs) {
+            m.runs_[m.run_count_++] = {m.run_start_, now - m.run_start_, m.run_owner_};
         } else {
-            m_->runs_overflow_ = true;
-            report_limit("draw runs per frame (max_runs): windows will not stack correctly", max_runs);
+            m.runs_overflow_ = true;
+            report_limit(ui, "draw runs per frame (max_runs): windows will not stack correctly", max_runs);
         }
     }
-    m_->run_owner_ = owner;
-    m_->run_start_ = now;
+    m.run_owner_ = owner;
+    m.run_start_ = now;
 }
 
 // draw order: outside-window drawing, then windows by stacking order (runs in emission order), then popups.
-void context::apply_layer_order()
+static void apply_layer_order(context& ui)
 {
-    switch_run(run_base);
+    auto& m = context_access::of(ui);
+    switch_run(ui, run_base);
 
-    const u32 n = m_->win_.frame_window_count_;
-    m_->win_.focused_window_ = 0;
+    const u32 n = m.win_.frame_window_count_;
+    m.win_.focused_window_ = 0;
 
     std::array<u32, max_windows> order{};
     for (u32 i = 0; i < n; ++i) { order[i] = i; }
@@ -797,40 +829,40 @@ void context::apply_layer_order()
         return w.docked_now && w.dock_owner == 0 ? 0u : 1u;
     };
     // a window docked in a floating dock stacks with that dock, right above it
-    const auto stack_z = [this](const window_state& w) -> u32 {
-        const u32 z = z_index(w.docked_now && w.dock_owner != 0 ? w.dock_owner : w.key);
+    const auto stack_z = [&ui](const window_state& w) -> u32 {
+        const u32 z = z_index(ui, w.docked_now && w.dock_owner != 0 ? w.dock_owner : w.key);
         return z == no_z ? 0u : z;
     };
     std::sort(order.begin(), order.begin() + n, [&](u32 a, u32 b) {
-        const window_state& wa = *m_->win_.frame_windows_[a];
-        const window_state& wb = *m_->win_.frame_windows_[b];
+        const window_state& wa = *m.win_.frame_windows_[a];
+        const window_state& wb = *m.win_.frame_windows_[b];
         if (rank(wa) != rank(wb)) { return rank(wa) < rank(wb); }
         if (stack_z(wa) != stack_z(wb)) { return stack_z(wa) < stack_z(wb); }
         return (wa.dock_owner != 0 && wa.docked_now ? 1 : 0) < (wb.dock_owner != 0 && wb.docked_now ? 1 : 0);
     });
     for (u32 i = n; i-- > 0;) { // topmost window; the menu bar does not take focus from windows below
-        if (!m_->win_.frame_windows_[order[i]]->menubar && !m_->win_.frame_windows_[order[i]]->passive) {
-            m_->win_.focused_window_ = m_->win_.frame_windows_[order[i]]->key;
+        if (!m.win_.frame_windows_[order[i]]->menubar && !m.win_.frame_windows_[order[i]]->passive) {
+            m.win_.focused_window_ = m.win_.frame_windows_[order[i]]->key;
             break;
         }
     }
-    if (m_->runs_overflow_ || m_->run_count_ == 0) {
+    if (m.runs_overflow_ || m.run_count_ == 0) {
         return;
     }
 
     std::array<draw_list::command_range, max_runs> ranges;
     u32 count = 0;
     const auto add_owner = [&](u32 owner) {
-        for (u32 i = 0; i < m_->run_count_; ++i) {
-            if (m_->runs_[i].owner == owner) {
-                ranges[count++] = {m_->runs_[i].first, m_->runs_[i].count};
+        for (u32 i = 0; i < m.run_count_; ++i) {
+            if (m.runs_[i].owner == owner) {
+                ranges[count++] = {m.runs_[i].first, m.runs_[i].count};
             }
         }
     };
     add_owner(run_base);
     u32 backdrops_done = 0;
     for (u32 i = 0; i < n; ++i) {
-        const u32 level = m_->win_.frame_windows_[order[i]]->modal_level;
+        const u32 level = m.win_.frame_windows_[order[i]]->modal_level;
         while (level > backdrops_done) { // the dimmed area goes right below the first window of its level
             ++backdrops_done;
             add_owner(run_backdrop + backdrops_done - 1);
@@ -851,65 +883,67 @@ void context::apply_layer_order()
         cursor  += ranges[i].count;
     }
     if (!identity) {
-        m_->dl_.reorder_commands({ranges.data(), count});
+        m.dl_.reorder_commands({ranges.data(), count});
     }
 }
 
 // style overrides ----------------------------------------------------------
 
-color& context::color_ref(style_color which) noexcept
+static color& color_ref(context& ui, style_color which) noexcept
 {
+    auto& m = context_access::of(ui);
     switch (which) {
-    case style_color::window_bg:     return m_->style_.window_bg;
-    case style_color::title_bg:      return m_->style_.title_bg;
-    case style_color::border:        return m_->style_.border;
-    case style_color::widget_bg:     return m_->style_.widget_bg;
-    case style_color::widget_hover:  return m_->style_.widget_hover;
-    case style_color::widget_active: return m_->style_.widget_active;
-    case style_color::widget_border: return m_->style_.widget_border;
-    case style_color::accent:        return m_->style_.accent;
-    case style_color::accent_hover:  return m_->style_.accent_hover;
-    case style_color::text:          return m_->style_.text;
-    case style_color::text_dim:      return m_->style_.text_dim;
-    case style_color::shadow:        return m_->style_.shadow;
-    case style_color::modal_dim:     return m_->style_.modal_dim;
-    case style_color::success:       return m_->style_.success;
-    case style_color::warning:       return m_->style_.warning;
-    case style_color::error:         return m_->style_.error;
-    default:                         return m_->style_.text;
+    case style_color::window_bg:     return m.style_.window_bg;
+    case style_color::title_bg:      return m.style_.title_bg;
+    case style_color::border:        return m.style_.border;
+    case style_color::widget_bg:     return m.style_.widget_bg;
+    case style_color::widget_hover:  return m.style_.widget_hover;
+    case style_color::widget_active: return m.style_.widget_active;
+    case style_color::widget_border: return m.style_.widget_border;
+    case style_color::accent:        return m.style_.accent;
+    case style_color::accent_hover:  return m.style_.accent_hover;
+    case style_color::text:          return m.style_.text;
+    case style_color::text_dim:      return m.style_.text_dim;
+    case style_color::shadow:        return m.style_.shadow;
+    case style_color::modal_dim:     return m.style_.modal_dim;
+    case style_color::success:       return m.style_.success;
+    case style_color::warning:       return m.style_.warning;
+    case style_color::error:         return m.style_.error;
+    default:                         return m.style_.text;
     }
 }
 
-f32& context::var_ref(style_var which) noexcept
+static f32& var_ref(context& ui, style_var which) noexcept
 {
+    auto& m = context_access::of(ui);
     switch (which) {
-    case style_var::padding:         return m_->style_.padding;
-    case style_var::item_spacing:    return m_->style_.item_spacing;
-    case style_var::rounding:        return m_->style_.rounding;
-    case style_var::border_width:    return m_->style_.border_width;
-    case style_var::shadow_blur:     return m_->style_.shadow_blur;
-    case style_var::gradient:        return m_->style_.gradient;
-    case style_var::anim_speed:      return m_->style_.anim_speed;
-    case style_var::frame_padding_x: return m_->style_.frame_padding.x;
-    case style_var::frame_padding_y: return m_->style_.frame_padding.y;
-    case style_var::blur_radius:     return m_->style_.blur_radius;
-    case style_var::acrylic_alpha:   return m_->style_.acrylic_alpha;
-    case style_var::acrylic_noise:   return m_->style_.acrylic_noise;
-    case style_var::acrylic_saturation: return m_->style_.acrylic_saturation;
-    case style_var::acrylic_brightness: return m_->style_.acrylic_brightness;
-    case style_var::popup_acrylic:   return m_->style_.popup_acrylic;
-    case style_var::tooltip_delay:   return m_->style_.tooltip_delay_s;
-    case style_var::text_contrast:   return m_->style_.text_contrast;
-    case style_var::scroll_speed:    return m_->style_.scroll_speed;
-    default:                         return m_->style_.rounding;
+    case style_var::padding:         return m.style_.padding;
+    case style_var::item_spacing:    return m.style_.item_spacing;
+    case style_var::rounding:        return m.style_.rounding;
+    case style_var::border_width:    return m.style_.border_width;
+    case style_var::shadow_blur:     return m.style_.shadow_blur;
+    case style_var::gradient:        return m.style_.gradient;
+    case style_var::anim_speed:      return m.style_.anim_speed;
+    case style_var::frame_padding_x: return m.style_.frame_padding.x;
+    case style_var::frame_padding_y: return m.style_.frame_padding.y;
+    case style_var::blur_radius:     return m.style_.blur_radius;
+    case style_var::acrylic_alpha:   return m.style_.acrylic_alpha;
+    case style_var::acrylic_noise:   return m.style_.acrylic_noise;
+    case style_var::acrylic_saturation: return m.style_.acrylic_saturation;
+    case style_var::acrylic_brightness: return m.style_.acrylic_brightness;
+    case style_var::popup_acrylic:   return m.style_.popup_acrylic;
+    case style_var::tooltip_delay:   return m.style_.tooltip_delay_s;
+    case style_var::text_contrast:   return m.style_.text_contrast;
+    case style_var::scroll_speed:    return m.style_.scroll_speed;
+    default:                         return m.style_.rounding;
     }
 }
 
 void context::push_color(style_color which, color c) noexcept
 {
-    color& slot = color_ref(which);
+    color& slot = color_ref(*this, which);
     if (!m_->style_stack_.push_color(which, slot)) {
-        report_limit("push_color nesting (max_overrides)", max_overrides);
+        report_limit(*this, "push_color nesting (max_overrides)", max_overrides);
         return;
     }
     slot = c;
@@ -919,15 +953,15 @@ void context::pop_color(u32 count) noexcept
 {
     style_stack::saved_color s;
     while (count-- > 0 && m_->style_stack_.pop_color(s)) {
-        color_ref(s.which) = s.previous;
+        color_ref(*this, s.which) = s.previous;
     }
 }
 
 void context::push_var(style_var which, f32 value) noexcept
 {
-    f32& slot = var_ref(which);
+    f32& slot = var_ref(*this, which);
     if (!m_->style_stack_.push_var(which, slot)) {
-        report_limit("push_var nesting (max_overrides)", max_overrides);
+        report_limit(*this, "push_var nesting (max_overrides)", max_overrides);
         return;
     }
     slot = value;
@@ -937,7 +971,7 @@ void context::pop_var(u32 count) noexcept
 {
     style_stack::saved_var s;
     while (count-- > 0 && m_->style_stack_.pop_var(s)) {
-        var_ref(s.which) = s.previous;
+        var_ref(*this, s.which) = s.previous;
     }
 }
 
@@ -959,33 +993,35 @@ style_scope context::style_overrides(std::initializer_list<style_override> list)
     return {*this, colors, vars};
 }
 
-shape_style context::widget_shape(color base, f32 radius) const noexcept
+shape_style internal::widget_shape(const context& ui, color base, f32 radius) noexcept
 {
+    auto& m = context_access::of(ui);
     shape_style s;
     s.radius       = radii(radius);
-    s.fill_top     = lighten(base, m_->style_.gradient);
-    s.fill_bottom  = darken(base, m_->style_.gradient * 0.6f);
-    s.border       = m_->style_.widget_border;
-    s.border_width = m_->style_.border_width;
+    s.fill_top     = lighten(base, m.style_.gradient);
+    s.fill_bottom  = darken(base, m.style_.gradient * 0.6f);
+    s.border       = m.style_.widget_border;
+    s.border_width = m.style_.border_width;
     return s;
 }
 
 // layout & input -----------------------------------------------------------
 
-rect context::layout_place(vec2 size) noexcept
+rect internal::layout_place(context& ui, vec2 size) noexcept
 {
-    layout_state& l = m_->layout_;
+    auto& m = context_access::of(ui);
+    layout_state& l = m.layout_;
     const bool first_item = l.first;
     vec2 pos;
     f32  target_h; // the height to center this item against: siblings already placed on this line, or (for a
                     // line's first item) a caller-supplied expectation such as a table row's known height. Purely
                     // cosmetic: it nudges where the item is *drawn*, never how much room the line is deemed to take.
     if (l.same_line && !l.first) {
-        pos      = {l.cursor_x + m_->style_.item_spacing, l.line_top};
+        pos      = {l.cursor_x + m.style_.item_spacing, l.line_top};
         target_h = l.line_h;
         l.line_h = std::max(l.line_h, size.y);
     } else {
-        pos        = {l.origin.x, l.first ? l.origin.y : l.line_top + l.line_h + m_->style_.item_spacing};
+        pos        = {l.origin.x, l.first ? l.origin.y : l.line_top + l.line_h + m.style_.item_spacing};
         l.line_top = pos.y;
         target_h   = l.line_h_seed;
         l.line_h   = size.y; // the line's real height starts at this item's own; a seed only ever centers, it
@@ -1011,166 +1047,174 @@ rect context::layout_place(vec2 size) noexcept
 // rows are submitted whether visible or not (the caller does not know the view), so culled rows skip all their
 // work: hit test, animation slot, text measuring, geometry. the layout was already advanced, so positions do not
 // change. the margin keeps half-visible rows alive.
-bool context::item_culled(const rect& r) noexcept
+bool internal::item_culled(context& ui, const rect& r) noexcept
 {
-    ++m_->stats_cur_.items_submitted;
+    auto& m = context_access::of(ui);
+    ++m.stats_cur_.items_submitted;
     // off-screen measuring passes (popup / drag previews) need every item's size: no culling
-    if (m_->dnd_.dd_hidden_ || m_->gpopup_hidden_) {
+    if (m.dnd_.dd_hidden_ || m.gpopup_hidden_) {
         return false;
     }
     constexpr f32 margin = 2.0f;
-    const rect&   view   = m_->dl_.clip();
+    const rect&   view   = m.dl_.clip();
     const bool    out    = r.max.y < view.min.y - margin || r.min.y > view.max.y + margin ||
                            r.max.x < view.min.x - margin || r.min.x > view.max.x + margin;
-    m_->stats_cur_.items_culled += out ? 1u : 0u;
+    m.stats_cur_.items_culled += out ? 1u : 0u;
     return out;
 }
 
-void context::note_culled_item(id key, const rect& r) noexcept
+void internal::note_culled_item(context& ui, id key, const rect& r) noexcept
 {
-    m_->last_item_key_     = key;
-    m_->last_item_rect_    = r;
-    m_->last_item_hovered_ = false;
-    m_->last_item_focused_ = m_->nav_.scope != 0 && m_->nav_.cursor == key; // it is still the row the cursor is on
-    m_->last_item_pressed_ = false;
-    m_->last_item_double_  = false;
-    m_->tree_table_.item_pressed_      = false;
+    auto& m = context_access::of(ui);
+    m.last_item_key_     = key;
+    m.last_item_rect_    = r;
+    m.last_item_hovered_ = false;
+    m.last_item_focused_ = m.nav_.scope != 0 && m.nav_.cursor == key; // it is still the row the cursor is on
+    m.last_item_pressed_ = false;
+    m.last_item_double_  = false;
+    m.tree_table_.item_pressed_      = false;
 }
 
 // the same labels are measured every frame: a direct-mapped (font, text) -> size cache. collisions overwrite, so it
 // never grows or needs sweeping.
-vec2 context::measure_cached(font_id f, std::string_view s) noexcept
+vec2 internal::measure_cached(context& ui, font_id f, std::string_view s) noexcept
 {
+    auto& m = context_access::of(ui);
     if (s.empty()) {
-        return m_->font_.measure(f, s);
+        return m.font_.measure(f, s);
     }
-    if (m_->measure_.measure_cache_.size() != measure_cache_size || m_->measure_.measure_cache_gen_ != m_->font_generation_) {
-        m_->measure_.measure_cache_.assign(measure_cache_size, measure_slot{});
-        m_->measure_.measure_cache_gen_ = m_->font_generation_;
+    if (m.measure_.measure_cache_.size() != measure_cache_size || m.measure_.measure_cache_gen_ != m.font_generation_) {
+        m.measure_.measure_cache_.assign(measure_cache_size, measure_slot{});
+        m.measure_.measure_cache_gen_ = m.font_generation_;
     }
     u64 h = 0xcbf29ce484222325ull ^ (static_cast<u64>(f) << 56);
     for (const char c : s) {
         h = (h ^ static_cast<u8>(c)) * 0x100000001b3ull;
     }
     h |= 1ull; // 0 marks an empty slot
-    measure_slot& slot = m_->measure_.measure_cache_[static_cast<u32>(h >> 20) & (measure_cache_size - 1)];
+    measure_slot& slot = m.measure_.measure_cache_[static_cast<u32>(h >> 20) & (measure_cache_size - 1)];
     if (slot.key == h) {
-        ++m_->stats_cur_.measure_hits;
+        ++m.stats_cur_.measure_hits;
         return slot.size;
     }
-    ++m_->stats_cur_.text_measures;
+    ++m.stats_cur_.text_measures;
     slot.key  = h;
-    slot.size = m_->font_.measure(f, s);
+    slot.size = m.font_.measure(f, s);
     return slot.size;
 }
 
 // a control with an optional caption above it; the caption is drawn here
-context::field_layout context::layout_field(std::string_view shown, f32 control_height)
+field_layout internal::layout_field(context& ui, std::string_view shown, f32 control_height)
 {
-    const font_id f = current_font();
-    const f32 w = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
-    m_->layout_.next_width = 0.0f;
+    auto& m = context_access::of(ui);
+    const font_id f = ui.current_font();
+    const f32 w = m.layout_.next_width > 0.0f ? m.layout_.next_width : m.layout_.width;
+    m.layout_.next_width = 0.0f;
 
-    const f32  lh      = shown.empty() ? m_->font_.line_height(f) : label_size(f, shown).y;
+    const f32  lh      = shown.empty() ? m.font_.line_height(f) : label_size(ui, f, shown).y;
     const f32  label_h = shown.empty() ? 0.0f : lh + 3.0f;
-    const rect all     = layout_place({w, label_h + control_height});
+    const rect all     = layout_place(ui, {w, label_h + control_height});
 
     field_layout out;
     out.has_label = !shown.empty();
     out.label_row = {all.min, {all.max.x, all.min.y + lh}};
     out.control   = {{all.min.x, all.min.y + label_h}, all.max};
     if (out.has_label) {
-        label_draw({all.min.x + 1.0f, all.min.y}, m_->style_.text_dim, shown, f);
+        label_draw(ui, {all.min.x + 1.0f, all.min.y}, m.style_.text_dim, shown, f);
     }
     return out;
 }
 
 // widget ids ---------------------------------------------------------------
 
-id context::widget_id(std::string_view label) noexcept
+id internal::widget_id(context& ui, std::string_view label) noexcept
 {
-    return m_->ids_.widget_id(label);
+    auto& m = context_access::of(ui);
+    return m.ids_.widget_id(label);
 }
 
-void context::check_id([[maybe_unused]] id key) noexcept
+static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key) noexcept
 {
 #ifndef NDEBUG
-    const auto dup = m_->ids_.check_duplicate(key);
+    auto& m = context_access::of(ui);
+    const auto dup = m.ids_.check_duplicate(key);
     if (dup.is_duplicate) {
-        ++m_->stats_cur_.id_collisions;
-        const std::string message = std::format("duplicate widget id \"{}\": give one of them a \"##suffix\" or push_id() around it", dup.label);
-        diagnose(diagnostic_kind::id_collision, message, key);
+        ++m.stats_cur_.id_collisions;
+        const std::string message = std::format("duplicate widget id \"{}\": give one of them a \"##suffix\" or ui.push_id() around it", dup.label);
+        diagnose(ui, diagnostic_kind::id_collision, message, key);
     }
 #endif
 }
 
-context::interaction context::interact(id key, const rect& r) noexcept
+interaction internal::interact(context& ui, id key, const rect& r) noexcept
 {
+    auto& m = context_access::of(ui);
     // popup content ignores window hover (it extends past the window)
-    return interact_impl(key, r, m_->in_overlay_ || (m_->cur_window_ != 0 && m_->win_.hovered_window_prev_ == m_->cur_window_));
+    return interact_impl(ui, key, r, m.in_overlay_ || (m.cur_window_ != 0 && m.win_.hovered_window_prev_ == m.cur_window_));
 }
 
-context::interaction context::interact_impl(id key, const rect& r, bool in_window) noexcept
+interaction internal::interact_impl(context& ui, id key, const rect& r, bool in_window) noexcept
 {
+    auto& m = context_access::of(ui);
     interaction out;
-    check_id(key); // before the early-out: a hidden widget still owns its id
-    if (m_->dl_.alpha() < 0.1f) {
+    check_id(ui, key); // before the early-out: a hidden widget still owns its id
+    if (m.dl_.alpha() < 0.1f) {
         return out; // (nearly) invisible content, e.g. mid page transition
     }
 
     // what lies under an open popup (or a popup level above this one, or a menu) gets no pointer
-    const bool over      = in_window && !m_->pointer_blocked() && m_->dl_.clip().contains(m_->input_.mouse_) && r.contains(m_->input_.mouse_);
+    const bool over      = in_window && !m.pointer_blocked() && m.dl_.clip().contains(m.input_.mouse_) && r.contains(m.input_.mouse_);
 
     // an allow_item_overlap() item loses the press to anything submitted over it. the press is resolved this frame;
     // the hover can only be removed a frame late (the covering item is submitted after), so it uses last frame's cover.
-    const bool ceded = m_->overlap_key_ != 0 && key != m_->overlap_key_ && m_->overlap_rect_.contains(m_->input_.mouse_);
+    const bool ceded = m.overlap_key_ != 0 && key != m.overlap_key_ && m.overlap_rect_.contains(m.input_.mouse_);
     if (ceded && over) {
-        m_->overlap_taken_cur_ = m_->overlap_key_;
+        m.overlap_taken_cur_ = m.overlap_key_;
     }
-    const bool suppressed = key != 0 && key == m_->overlap_taken_prev_;
+    const bool suppressed = key != 0 && key == m.overlap_taken_prev_;
 
     // a disabled item is still "under the pointer" (for a tooltip explaining why), but gets no hover, press or keyboard
-    if (m_->disabled_depth_ > 0) {
-        m_->last_item_key_       = key;
-        m_->last_item_rect_      = r;
-        m_->last_item_hovered_   = over;
-        m_->last_item_pressed_   = false;
-        m_->last_item_double_    = false;
-        m_->last_item_focused_   = false;
+    if (m.disabled_depth_ > 0) {
+        m.last_item_key_       = key;
+        m.last_item_rect_      = r;
+        m.last_item_hovered_   = over;
+        m.last_item_pressed_   = false;
+        m.last_item_double_    = false;
+        m.last_item_focused_   = false;
         // and a not-allowed cursor, so it does not look broken
-        if (over) { m_->cursor_ = cursor_kind::not_allowed; }
-        if (over) { m_->hover_key_cur_ = key; }
+        if (over) { m.cursor_ = cursor_kind::not_allowed; }
+        if (over) { m.hover_key_cur_ = key; }
         return out;
     }
 
-    out.hovered = over && !suppressed && (m_->active_ == 0 || m_->active_ == key || (ceded && m_->active_ == m_->overlap_key_));
-    if (out.hovered && m_->input_.mouse_pressed_ && !m_->swallow_press_ && (m_->active_ == 0 || (ceded && m_->active_ == m_->overlap_key_))) {
-        if (m_->active_ != 0) { m_->overlap_stolen_ = true; }
-        m_->active_ = key;
+    out.hovered = over && !suppressed && (m.active_ == 0 || m.active_ == key || (ceded && m.active_ == m.overlap_key_));
+    if (out.hovered && m.input_.mouse_pressed_ && !m.swallow_press_ && (m.active_ == 0 || (ceded && m.active_ == m.overlap_key_))) {
+        if (m.active_ != 0) { m.overlap_stolen_ = true; }
+        m.active_ = key;
         // a second press on the same spot within the double-click time, reported on completion below. separate from
         // register_click(), whose 1 / 2 / 3 run belongs to the focused text field
-        const vec2 moved  = m_->input_.mouse_ - m_->item_click_pos_;
-        m_->item_dbl_pending_ = key == m_->item_click_key_ && m_->time_ - m_->item_click_time_ < m_->double_click_ && dot(moved, moved) < 25.0f;
-        m_->item_click_key_   = key;
-        m_->item_click_time_  = m_->time_;
-        m_->item_click_pos_   = m_->input_.mouse_;
+        const vec2 moved  = m.input_.mouse_ - m.item_click_pos_;
+        m.item_dbl_pending_ = key == m.item_click_key_ && m.time_ - m.item_click_time_ < m.double_click_ && dot(moved, moved) < 25.0f;
+        m.item_click_key_   = key;
+        m.item_click_time_  = m.time_;
+        m.item_click_pos_   = m.input_.mouse_;
     }
-    if (m_->active_ == key) {
-        out.held = m_->input_.mouse_down_;
-        if (m_->input_.mouse_released_) {
-            out.pressed = over && !(m_->dnd_.dd_active_ && m_->dnd_.dd_source_ == key); // the release that ends a drag is not a click
+    if (m.active_ == key) {
+        out.held = m.input_.mouse_down_;
+        if (m.input_.mouse_released_) {
+            out.pressed = over && !(m.dnd_.dd_active_ && m.dnd_.dd_source_ == key); // the release that ends a drag is not a click
             out.held    = false;
-            m_->active_     = 0;
+            m.active_     = 0;
         }
     }
-    m_->last_item_key_     = key;
-    m_->last_item_rect_    = r;
-    m_->last_item_hovered_ = out.hovered;
-    m_->last_item_pressed_ = out.pressed;
-    m_->last_item_double_  = out.pressed && m_->item_dbl_pending_;
-    m_->last_item_focused_ = m_->nav_.scope != 0 && m_->nav_.cursor == key;
+    m.last_item_key_     = key;
+    m.last_item_rect_    = r;
+    m.last_item_hovered_ = out.hovered;
+    m.last_item_pressed_ = out.pressed;
+    m.last_item_double_  = out.pressed && m.item_dbl_pending_;
+    m.last_item_focused_ = m.nav_.scope != 0 && m.nav_.cursor == key;
     if (out.hovered) {
-        m_->hover_key_cur_ = key;
+        m.hover_key_cur_ = key;
     }
     return out;
 }
@@ -1283,7 +1327,7 @@ rect context::content_rect() const noexcept
 {
     context& self = *const_cast<context*>(this); // the lookup only reads
     rect     view;
-    if (self.scroll_slot(view) != nullptr) {
+    if (scroll_slot(self, view) != nullptr) {
         return view;
     }
     return m_->dl_.clip();
@@ -1305,40 +1349,42 @@ bool context::paste_text(std::string& out) const
 
 // slot for the next accessory of the row just submitted, right to left inside the scrollbar inset. false with no
 // row or no room.
-bool context::accessory_slot(f32 width, rect& out, f32 inset) noexcept
+static bool accessory_slot(context& ui, f32 width, rect& out, f32 inset) noexcept
 {
-    if (m_->cur_ == nullptr || m_->accessory_.row_anchor_ == 0) {
+    auto& m = context_access::of(ui);
+    if (m.cur_ == nullptr || m.accessory_.row_anchor_ == 0) {
         return false;
     }
-    if (m_->accessory_.accessory_row_ != m_->accessory_.row_anchor_) { // the first accessory of this row
-        m_->accessory_.accessory_row_      = m_->accessory_.row_anchor_;
-        m_->accessory_.accessory_row_rect_ = m_->accessory_.row_anchor_rect_;
-        m_->accessory_.accessory_x_        = std::min(m_->accessory_.row_anchor_rect_.max.x, m_->layout_.origin.x + m_->layout_.width + m_->layout_.gutter);
-        allow_item_overlap_at(m_->accessory_.row_anchor_, m_->accessory_.row_anchor_rect_); // the row lets go of the press where they sit
-        m_->accessory_.accessory_x_ -= inset; // (the first control only: the others follow it)
+    if (m.accessory_.accessory_row_ != m.accessory_.row_anchor_) { // the first accessory of this row
+        m.accessory_.accessory_row_      = m.accessory_.row_anchor_;
+        m.accessory_.accessory_row_rect_ = m.accessory_.row_anchor_rect_;
+        m.accessory_.accessory_x_        = std::min(m.accessory_.row_anchor_rect_.max.x, m.layout_.origin.x + m.layout_.width + m.layout_.gutter);
+        allow_item_overlap_at(ui, m.accessory_.row_anchor_, m.accessory_.row_anchor_rect_); // the row lets go of the press where they sit
+        m.accessory_.accessory_x_ -= inset; // (the first control only: the others follow it)
     }
-    const rect& row = m_->accessory_.accessory_row_rect_;
+    const rect& row = m.accessory_.accessory_row_rect_;
     const f32   h   = std::min(width, std::max(row.height() - 4.0f, 4.0f));
-    const f32   x1  = m_->accessory_.accessory_x_ - 2.0f;
+    const f32   x1  = m.accessory_.accessory_x_ - 2.0f;
     const f32   x0  = x1 - width;
     if (x0 < row.min.x) {
         return false; // the row is too narrow for one more
     }
-    m_->accessory_.accessory_x_ = x0;
+    m.accessory_.accessory_x_ = x0;
     out = {{x0, row.min.y + (row.height() - h) * 0.5f}, {x1, row.min.y + (row.height() + h) * 0.5f}};
     return true;
 }
 
 void context::allow_item_overlap() noexcept
 {
-    allow_item_overlap_at(m_->last_item_key_, m_->last_item_rect_);
+    allow_item_overlap_at(*this, m_->last_item_key_, m_->last_item_rect_);
 }
 
-void context::allow_item_overlap_at(id key, const rect& r) noexcept
+static void allow_item_overlap_at(context& ui, id key, const rect& r) noexcept
 {
-    m_->overlap_key_    = key;
-    m_->overlap_rect_   = r;
-    m_->overlap_stolen_ = false;
+    auto& m = context_access::of(ui);
+    m.overlap_key_    = key;
+    m.overlap_rect_   = r;
+    m.overlap_stolen_ = false;
 }
 
 bool context::item_clicked(mouse_button b) const noexcept
@@ -1353,7 +1399,7 @@ bool context::item_clicked(mouse_button b) const noexcept
 void context::push_right_gutter(f32 w) noexcept
 {
     if (m_->gutter_depth_ >= max_gutter_depth) {
-        report_limit("push_right_gutter nesting (max_gutter_depth)", max_gutter_depth);
+        report_limit(*this, "push_right_gutter nesting (max_gutter_depth)", max_gutter_depth);
         return;
     }
     w = std::clamp(w, 0.0f, std::max(m_->layout_.width - 16.0f, 0.0f));
@@ -1377,12 +1423,12 @@ bool context::row_accessory_button(font_id icon_font, std::string_view icon, std
 {
     rect box;
     const f32 side = frame_height() - 6.0f;
-    if (!accessory_slot(side, box)) {
+    if (!accessory_slot(*this, side, box)) {
         return false;
     }
     const id key = hash_id(icon, hash_id(id_extra, part_id(part::accessory_button, m_->accessory_.accessory_row_)));
-    const interaction in = interact(key, box);
-    const press_anim  a  = button_anim(key, in);
+    const interaction in = interact(*this, key, box);
+    const press_anim  a  = button_anim(*this, key, in);
     if (a.hover > 0.01f || a.active > 0.01f) {
         shape_style hot;
         hot.radius      = radii(m_->style_.rounding * 0.6f);
@@ -1402,18 +1448,18 @@ bool context::row_accessory_checkbox(std::string_view id_extra, bool& value, f32
 {
     rect box;
     const f32 side = std::min(frame_height() - 8.0f, 16.0f);
-    if (!accessory_slot(side, box, inset)) {
+    if (!accessory_slot(*this, side, box, inset)) {
         return false;
     }
     const id key = hash_id(id_extra, part_id(part::accessory_checkbox, m_->accessory_.accessory_row_));
-    const interaction in = interact(key, box);
+    const interaction in = interact(*this, key, box);
     if (in.pressed) { value = !value; }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, value ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, value ? 1.0f : 0.0f);
 
-    shape_style bx = widget_shape(lerp(m_->style_.widget_bg, m_->style_.accent, a.toggle), m_->style_.rounding * 0.5f);
+    shape_style bx = widget_shape(*this, lerp(m_->style_.widget_bg, m_->style_.accent, a.toggle), m_->style_.rounding * 0.5f);
     bx.border = lerp(m_->style_.widget_border, m_->style_.accent_hover, std::max(a.hover, a.toggle));
     m_->dl_.shape(box, bx);
     if (a.toggle > 0.05f) { // the tick, drawn as it appears
@@ -1423,7 +1469,7 @@ bool context::row_accessory_checkbox(std::string_view id_extra, bool& value, f32
         m_->dl_.line({c.x - k * 0.45f, c.y}, {c.x - k * 0.1f, c.y + k * 0.35f}, m_->style_.text.scaled_alpha(t), 1.8f);
         m_->dl_.line({c.x - k * 0.1f, c.y + k * 0.35f}, {c.x + k * 0.5f, c.y - k * 0.4f}, m_->style_.text.scaled_alpha(t), 1.8f);
     }
-    track_edit(key, in.pressed, m_->active_ == key);
+    track_edit(*this, key, in.pressed, m_->active_ == key);
     return in.pressed;
 }
 
@@ -1431,16 +1477,16 @@ bool context::row_accessory_toggle(std::string_view id_extra, bool& value)
 {
     rect box;
     const f32 h = std::min(frame_height() - 10.0f, 15.0f);
-    if (!accessory_slot(h * 1.9f, box)) {
+    if (!accessory_slot(*this, h * 1.9f, box)) {
         return false;
     }
     const id key = hash_id(id_extra, part_id(part::accessory_toggle, m_->accessory_.accessory_row_));
-    const interaction in = interact(key, box);
+    const interaction in = interact(*this, key, box);
     if (in.pressed) { value = !value; }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, value ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, value ? 1.0f : 0.0f);
 
     const f32   r  = box.height() * 0.5f;
     shape_style tr;
@@ -1452,7 +1498,7 @@ bool context::row_accessory_toggle(std::string_view id_extra, bool& value)
     m_->dl_.shape(box, tr);
     const f32 kx = box.min.x + r + (box.width() - 2.0f * r) * a.toggle;
     m_->dl_.circle_filled({kx, box.center().y}, r - 2.5f, m_->style_.text);
-    track_edit(key, in.pressed, m_->active_ == key);
+    track_edit(*this, key, in.pressed, m_->active_ == key);
     return in.pressed;
 }
 
@@ -1461,7 +1507,7 @@ void context::skip_item(f32 height)
     if (m_->cur_ == nullptr || height <= 0.0f) {
         return;
     }
-    (void)layout_place({0.0f, height});
+    (void)layout_place(*this, {0.0f, height});
 }
 
 void context::skip_items(int count, f32 item_height)
@@ -1470,7 +1516,7 @@ void context::skip_items(int count, f32 item_height)
         return;
     }
     const f32 pitch = (item_height > 0.0f ? item_height : m_->font_.line_height(current_font())) + m_->style_.item_spacing;
-    (void)layout_place({0.0f, static_cast<f32>(count) * pitch - m_->style_.item_spacing});
+    (void)layout_place(*this, {0.0f, static_cast<f32>(count) * pitch - m_->style_.item_spacing});
 }
 
 item_result context::custom_item(std::string_view label, vec2 size)
@@ -1486,15 +1532,15 @@ item_result context::custom_item(std::string_view label, std::string_view id_ext
     if (size.x <= 0.0f) {
         size.x = m_->layout_.width;
     }
-    const id   key = id_extra.empty() ? widget_id(label) : hash_id(id_extra, widget_id(label));
-    const rect r   = layout_place(size);
-    if (item_culled(r)) {
-        note_culled_item(key, r);
-        note_row_anchor(key, r);
+    const id   key = id_extra.empty() ? widget_id(*this, label) : hash_id(id_extra, widget_id(*this, label));
+    const rect r   = layout_place(*this, size);
+    if (item_culled(*this, r)) {
+        note_culled_item(*this, key, r);
+        note_row_anchor(*this, key, r);
         return {r, false, false, false};
     }
-    const interaction in = interact(key, r);
-    note_row_anchor(key, r);
+    const interaction in = interact(*this, key, r);
+    note_row_anchor(*this, key, r);
     return {r, in.hovered, in.held, in.pressed};
 }
 
@@ -1505,21 +1551,21 @@ f32 context::label_clipped(vec2 pos, f32 max_width, color c, std::string_view s,
         return 0.0f;
     }
     if (m_->rich_.rich_depth_ > 0) { // markup cannot be cut safely: clip it instead
-        const vec2 size = label_size(f, s);
+        const vec2 size = label_size(*this, f, s);
         m_->dl_.push_clip({pos, {pos.x + max_width, pos.y + size.y}});
-        label_draw(pos, c, s, f);
+        label_draw(*this, pos, c, s, f);
         m_->dl_.pop_clip();
         return std::min(size.x, max_width);
     }
-    const f32 full = measure_cached(f, s).x;
+    const f32 full = measure_cached(*this, f, s).x;
     if (full <= max_width) {
-        label_draw(pos, c, s, f);
+        label_draw(*this, pos, c, s, f);
         return full;
     }
     m_->last_item_truncated_ = true;
 
     constexpr std::string_view dots = "...";
-    const f32 budget = max_width - measure_cached(f, dots).x;
+    const f32 budget = max_width - measure_cached(*this, f, dots).x;
     std::string_view rest = s;
     f32 used = 0.0f;
     std::size_t taken = 0;
@@ -1536,37 +1582,56 @@ f32 context::label_clipped(vec2 pos, f32 max_width, color c, std::string_view s,
     std::memcpy(buf.data(), s.data(), n);
     std::memcpy(buf.data() + n, dots.data(), dots.size());
     const std::string_view cut{buf.data(), n + dots.size()};
-    label_draw(pos, c, cut, f);
+    label_draw(*this, pos, c, cut, f);
     return used + (max_width - budget);
 }
 
 // scrollbar thumbs ---------------------------------------------------------
 
-// one axis of a scrollbar thumb; `along` and everything else are measured on the track's axis.
-// the wrappers below are all that differs between vertical and horizontal.
-f32 context::thumb_drag_along(f32 along, const interaction& in, f32& grab, f32 thumb_lo, f32 thumb_len, f32 track_lo,
-                              f32 travel, f32 max_scroll, f32 scroll) const noexcept
+namespace {
+
+// one axis of a thumb drag, measured along the track: the new offset while pressed. `grab` = press point in the
+// thumb (a press beside it centres it there), `travel` = the thumb's range
+[[nodiscard]] f32 thumb_drag_along(f32 along, bool pressed_now, bool held, f32& grab, f32 thumb_lo,
+                                   f32 thumb_len, f32 track_lo, f32 travel, f32 max_scroll, f32 scroll) noexcept
 {
-    if (!in.held || travel <= 0.0f) {
+    if (!held || travel <= 0.0f) {
         return scroll;
     }
-    if (m_->input_.mouse_pressed_) {
+    if (pressed_now) {
         const bool on_thumb = along >= thumb_lo && along <= thumb_lo + thumb_len;
         grab = on_thumb ? along - thumb_lo : thumb_len * 0.5f;
     }
     return std::clamp((along - grab - track_lo) / travel, 0.0f, 1.0f) * max_scroll;
 }
 
-f32 context::thumb_drag(const interaction& in, f32& grab, f32 thumb_y, f32 thumb_h, f32 track_top, f32 travel,
-                        f32 max_scroll, f32 scroll) const noexcept
-{
-    return thumb_drag_along(m_->input_.mouse_.y, in, grab, thumb_y, thumb_h, track_top, travel, max_scroll, scroll);
-}
+} // namespace
 
-f32 context::thumb_drag_x(const interaction& in, f32& grab, f32 thumb_x, f32 thumb_w, f32 track_left, f32 travel,
-                          f32 max_scroll, f32 scroll) const noexcept
+// the whole track takes the press, so a click beside the thumb jumps there and a drag works from anywhere. the thumb
+// is 5 px thick, 3 px in from the track's top / left edge
+f32 internal::scrollbar(context& ui, id key, const rect& track, bool horizontal, f32 view, f32 content, f32 scroll, f32& grab)
 {
-    return thumb_drag_along(m_->input_.mouse_.x, in, grab, thumb_x, thumb_w, track_left, travel, max_scroll, scroll);
+    auto& m = context_access::of(ui);
+    const f32 max_scroll = content - view;
+    if (max_scroll <= 0.0f || content <= 0.0f) {
+        return 0.0f;
+    }
+    const f32 lo    = horizontal ? track.min.x : track.min.y;
+    const f32 len   = horizontal ? track.width() : track.height();
+    const f32 thumb = std::max(20.0f, len * view / content);
+    const interaction in = interact(ui, key, track);
+    const f32 pos0 = lo + (len - thumb) * (scroll / max_scroll);
+    scroll = thumb_drag_along(horizontal ? m.input_.mouse_.x : m.input_.mouse_.y, m.input_.mouse_pressed_, in.held, grab,
+                              pos0, thumb, lo, len - thumb, max_scroll, scroll);
+    const f32 pos = lo + (len - thumb) * (scroll / max_scroll);
+    shape_style bar;
+    bar.radius      = radii(2.5f);
+    bar.fill_top    = m.style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.45f);
+    bar.fill_bottom = bar.fill_top;
+    m.dl_.shape(horizontal ? rect{{pos, track.min.y + 3.0f}, {pos + thumb, track.min.y + 8.0f}}
+                             : rect{{track.min.x + 3.0f, pos}, {track.min.x + 8.0f, pos + thumb}},
+                  bar);
+    return scroll;
 }
 
 // basic widgets ------------------------------------------------------------
@@ -1582,29 +1647,30 @@ void context::text_colored(color c, std::string_view s)
         return;
     }
     const font_id f = current_font();
-    const vec2 size = label_size(f, s);
-    const rect r    = layout_place(size); // centered on the line by layout_place itself
-    label_draw(r.min, c, s, f);
+    const vec2 size = label_size(*this, f, s);
+    const rect r    = layout_place(*this, size); // centered on the line by layout_place itself
+    label_draw(*this, r.min, c, s, f);
     // plain text is an item too, so item_hovered(), item_rect(), tooltip() and context_menu() work after it. it takes
     // no press.
-    note_passive_item(widget_id(s), r);
+    note_passive_item(*this, widget_id(*this, s), r);
 }
 
 // makes a rect "the last item" without taking the press
-void context::note_passive_item(id key, const rect& r) noexcept
+static void note_passive_item(context& ui, id key, const rect& r) noexcept
 {
-    const bool over = m_->cur_window_ != 0 && m_->win_.hovered_window_prev_ == m_->cur_window_ && m_->active_ == 0 &&
-                      !m_->popup_.popup_covers(m_->input_.mouse_) && !m_->menu_.menu_hit_prev_ &&
-                      m_->dl_.clip().contains(m_->input_.mouse_) && r.contains(m_->input_.mouse_);
-    m_->last_item_key_       = key;
-    m_->last_item_rect_      = r;
-    m_->last_item_hovered_   = over && m_->dl_.alpha() >= 0.1f;
-    m_->last_item_pressed_   = false;
-    m_->last_item_double_    = false;
-    m_->last_item_focused_   = false;
-    m_->last_item_arrow_     = false;
-    m_->last_item_truncated_ = false;
-    if (m_->last_item_hovered_) { m_->hover_key_cur_ = key; }
+    auto& m = context_access::of(ui);
+    const bool over = m.cur_window_ != 0 && m.win_.hovered_window_prev_ == m.cur_window_ && m.active_ == 0 &&
+                      !m.popup_.popup_covers(m.input_.mouse_) && !m.menu_.menu_hit_prev_ &&
+                      m.dl_.clip().contains(m.input_.mouse_) && r.contains(m.input_.mouse_);
+    m.last_item_key_       = key;
+    m.last_item_rect_      = r;
+    m.last_item_hovered_   = over && m.dl_.alpha() >= 0.1f;
+    m.last_item_pressed_   = false;
+    m.last_item_double_    = false;
+    m.last_item_focused_   = false;
+    m.last_item_arrow_     = false;
+    m.last_item_truncated_ = false;
+    if (m.last_item_hovered_) { m.hover_key_cur_ = key; }
 }
 
 bool context::button(std::string_view label)
@@ -1618,26 +1684,26 @@ bool context::button(std::string_view label, std::string_view id_extra)
         return false;
     }
     const font_id f = current_font();
-    const id key = id_extra.empty() ? widget_id(label) : hash_id(id_extra, widget_id(label));
+    const id key = id_extra.empty() ? widget_id(*this, label) : hash_id(id_extra, widget_id(*this, label));
     const std::string_view shown = visible_label(label);
 
-    const vec2 tsize = label_size(f, shown);
+    const vec2 tsize = label_size(*this, f, shown);
     f32 w = tsize.x + m_->style_.frame_padding.x * 2.0f;
     if (m_->layout_.next_width > 0.0f) {
         w = m_->layout_.next_width;
         m_->layout_.next_width = 0.0f;
     }
 
-    const rect r = layout_place({w, std::max(frame_height(), tsize.y + m_->style_.frame_padding.y * 2.0f)});
-    const interaction in = interact(key, r);
+    const rect r = layout_place(*this, {w, std::max(frame_height(), tsize.y + m_->style_.frame_padding.y * 2.0f)});
+    const interaction in = interact(*this, key, r);
 
-    const press_anim a = button_anim(key, in);
+    const press_anim a = button_anim(*this, key, in);
 
     const color base = lerp(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.accent, a.active);
-    shape_style s = widget_shape(base, m_->style_.rounding * 0.8f);
+    shape_style s = widget_shape(*this, base, m_->style_.rounding * 0.8f);
     s.border = lerp(m_->style_.widget_border, m_->style_.accent_hover, std::max(a.hover * 0.55f, a.active));
     m_->dl_.shape(r, s);
-    label_draw({r.min.x + (r.width() - tsize.x) * 0.5f, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
+    label_draw(*this, {r.min.x + (r.width() - tsize.x) * 0.5f, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
     return in.pressed;
 }
 
@@ -1647,11 +1713,11 @@ bool context::icon_button(font_id icon_font, std::string_view icon, std::string_
         return false;
     }
     const font_id f = current_font();
-    const id key = hash_id(icon, widget_id(label));
+    const id key = hash_id(icon, widget_id(*this, label));
     const std::string_view shown = visible_label(label);
 
     const vec2 isize = m_->font_.measure(icon_font, icon);
-    const vec2 tsize = shown.empty() ? vec2{} : label_size(f, shown);
+    const vec2 tsize = shown.empty() ? vec2{} : label_size(*this, f, shown);
     const f32  gap   = shown.empty() ? 0.0f : 7.0f;
     const f32  inner = isize.x + gap + tsize.x;
 
@@ -1660,20 +1726,20 @@ bool context::icon_button(font_id icon_font, std::string_view icon, std::string_
         w = m_->layout_.next_width;
         m_->layout_.next_width = 0.0f;
     }
-    const rect r = layout_place({w, frame_height()});
-    const interaction in = interact(key, r);
+    const rect r = layout_place(*this, {w, frame_height()});
+    const interaction in = interact(*this, key, r);
 
-    const press_anim a = button_anim(key, in);
+    const press_anim a = button_anim(*this, key, in);
 
     const color base = lerp(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.accent, a.active);
-    shape_style s = widget_shape(base, m_->style_.rounding * 0.8f);
+    shape_style s = widget_shape(*this, base, m_->style_.rounding * 0.8f);
     s.border = lerp(m_->style_.widget_border, m_->style_.accent_hover, std::max(a.hover * 0.55f, a.active));
     m_->dl_.shape(r, s);
 
     const f32 x = r.min.x + (r.width() - inner) * 0.5f;
     m_->dl_.text({x, r.min.y + (r.height() - isize.y) * 0.5f}, lerp(m_->style_.text, m_->style_.accent_hover, a.hover * 0.6f), icon, icon_font);
     if (!shown.empty()) {
-        label_draw({x + isize.x + gap, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
+        label_draw(*this, {x + isize.x + gap, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
     }
     return in.pressed;
 }
@@ -1685,12 +1751,12 @@ void context::icon_label(font_id icon_font, std::string_view icon, std::string_v
     }
     const font_id f = current_font();
     const vec2 isize = m_->font_.measure(icon_font, icon);
-    const vec2 tsize = label_size(f, label);
+    const vec2 tsize = label_size(*this, f, label);
     const f32  gap   = 7.0f;
     const f32  h     = std::max(isize.y, tsize.y);
-    const rect r     = layout_place({isize.x + gap + tsize.x, h});
+    const rect r     = layout_place(*this, {isize.x + gap + tsize.x, h});
     m_->dl_.text({r.min.x, r.min.y + (h - isize.y) * 0.5f}, m_->style_.accent_hover, icon, icon_font);
-    label_draw({r.min.x + isize.x + gap, r.min.y + (h - tsize.y) * 0.5f}, m_->style_.text, label, f);
+    label_draw(*this, {r.min.x + isize.x + gap, r.min.y + (h - tsize.y) * 0.5f}, m_->style_.text, label, f);
 }
 
 bool context::checkbox(std::string_view label, bool& value)
@@ -1699,16 +1765,16 @@ bool context::checkbox(std::string_view label, bool& value)
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     const std::string_view shown = visible_label(label);
 
     const f32  box  = frame_height() - 6.0f;
-    const vec2 tsize = label_size(f, shown);
+    const vec2 tsize = label_size(*this, f, shown);
     const f32  gap  = shown.empty() ? 0.0f : m_->style_.item_spacing + 2.0f;
 
-    const rect r   = layout_place({box + gap + tsize.x, std::max(frame_height(), tsize.y)});
+    const rect r   = layout_place(*this, {box + gap + tsize.x, std::max(frame_height(), tsize.y)});
     const rect bx  = rect::from_size({r.min.x, r.min.y + (r.height() - box) * 0.5f}, {box, box});
-    const interaction in = interact(key, r);
+    const interaction in = interact(*this, key, r);
 
     bool changed = false;
     if (in.pressed) {
@@ -1716,12 +1782,12 @@ bool context::checkbox(std::string_view label, bool& value)
         changed = true;
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, value ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, value ? 1.0f : 0.0f);
 
     const color idle = lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover);
-    shape_style s = widget_shape(lerp(idle, m_->style_.accent, a.toggle), m_->style_.rounding * 0.6f);
+    shape_style s = widget_shape(*this, lerp(idle, m_->style_.accent, a.toggle), m_->style_.rounding * 0.6f);
     s.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.5f), m_->style_.accent_hover, a.toggle);
     m_->dl_.shape(bx, s);
 
@@ -1734,8 +1800,8 @@ bool context::checkbox(std::string_view label, bool& value)
         m_->dl_.line(p1, p2, mark, 2.0f);
     }
 
-    label_draw({bx.max.x + gap, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
-    track_edit(key, changed, m_->active_ == key);
+    label_draw(*this, {bx.max.x + gap, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
+    track_edit(*this, key, changed, m_->active_ == key);
     return changed;
 }
 
@@ -1745,17 +1811,17 @@ bool context::toggle(std::string_view label, bool& value)
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     const std::string_view shown = visible_label(label);
 
     const f32  track_h = frame_height() - 6.0f;
     const f32  track_w = track_h * 1.85f;
-    const vec2 tsize   = label_size(f, shown);
+    const vec2 tsize   = label_size(*this, f, shown);
     const f32  gap     = shown.empty() ? 0.0f : m_->style_.item_spacing + 2.0f;
 
-    const rect r     = layout_place({track_w + gap + tsize.x, std::max(frame_height(), tsize.y)});
+    const rect r     = layout_place(*this, {track_w + gap + tsize.x, std::max(frame_height(), tsize.y)});
     const rect track = rect::from_size({r.min.x, r.min.y + (r.height() - track_h) * 0.5f}, {track_w, track_h});
-    const interaction in = interact(key, r);
+    const interaction in = interact(*this, key, r);
 
     bool changed = false;
     if (in.pressed) {
@@ -1763,13 +1829,13 @@ bool context::toggle(std::string_view label, bool& value)
         changed = true;
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, value ? 1.0f : 0.0f, m_->style_.anim_speed * 0.75f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, value ? 1.0f : 0.0f, m_->style_.anim_speed * 0.75f);
 
     const f32   t    = smooth(std::clamp(a.toggle, 0.0f, 1.0f));
     const color idle = lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover);
-    shape_style ts = widget_shape(lerp(idle, m_->style_.accent, t), track_h * 0.5f);
+    shape_style ts = widget_shape(*this, lerp(idle, m_->style_.accent, t), track_h * 0.5f);
     ts.border = lerp(m_->style_.widget_border, m_->style_.accent_hover, std::max(t, a.hover * 0.5f));
     m_->dl_.shape(track, ts);
 
@@ -1786,8 +1852,8 @@ bool context::toggle(std::string_view label, bool& value)
     ks.shadow_offset = {0.0f, 1.5f};
     m_->dl_.shape({{kc.x - knob_r, kc.y - knob_r}, {kc.x + knob_r, kc.y + knob_r}}, ks);
 
-    label_draw({track.max.x + gap, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
-    track_edit(key, changed, m_->active_ == key);
+    label_draw(*this, {track.max.x + gap, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
+    track_edit(*this, key, changed, m_->active_ == key);
     return changed;
 }
 
@@ -1797,11 +1863,11 @@ bool context::slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     const std::string_view shown = visible_label(label);
 
     constexpr f32 knob_r = 8.0f;
-    const field_layout fl = layout_field(shown, knob_r * 2.0f + 6.0f);
+    const field_layout fl = layout_field(*this, shown, knob_r * 2.0f + 6.0f);
 
     std::array<char, 32> buf;
     const std::string_view vtext = format_fixed(buf, value, decimals);
@@ -1816,7 +1882,7 @@ bool context::slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int
     const f32 x0 = area.min.x + knob_r;
     const f32 x1 = area.max.x - knob_r;
     const f32 cy = area.center().y;
-    const interaction in = interact(key, area);
+    const interaction in = interact(*this, key, area);
 
     bool changed = false;
     if (in.held && hi > lo && x1 > x0) {
@@ -1829,9 +1895,9 @@ bool context::slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int
     }
     value = std::clamp(value, lo, hi);
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered || in.held ? 1.0f : 0.0f);
-    a.active = approach(a.active, in.held ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered || in.held ? 1.0f : 0.0f);
+    a.active = approach(*this, a.active, in.held ? 1.0f : 0.0f);
 
     const f32 t  = hi > lo ? (value - lo) / (hi - lo) : 0.0f;
     const f32 kx = x0 + t * (x1 - x0);
@@ -1872,7 +1938,7 @@ bool context::slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int
     } else {
         m_->dl_.text({fl.control.max.x - vsize.x, cy - vsize.y * 0.5f}, vcolor, vtext, f);
     }
-    track_edit(key, changed, m_->active_ == key);
+    track_edit(*this, key, changed, m_->active_ == key);
     return changed;
 }
 
@@ -1887,9 +1953,9 @@ void context::progress_bar(f32 fraction, std::string_view overlay)
     const f32  w = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
     m_->layout_.next_width = 0.0f;
     const f32  h = m_->font_.line_height(f) + 6.0f;
-    const rect r = layout_place({w, h});
+    const rect r = layout_place(*this, {w, h});
 
-    m_->dl_.shape(r, widget_shape(m_->style_.widget_bg, h * 0.5f));
+    m_->dl_.shape(r, widget_shape(*this, m_->style_.widget_bg, h * 0.5f));
 
     if (fraction > 0.0f) {
         shape_style fill;
@@ -1908,8 +1974,8 @@ void context::progress_bar(f32 fraction, std::string_view overlay)
         *res.ptr = '%';
         label = {buf.data(), res.ptr + 1};
     }
-    const vec2 tsize = label_size(f, label);
-    label_draw({r.min.x + (r.width() - tsize.x) * 0.5f, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, label, f);
+    const vec2 tsize = label_size(*this, f, label);
+    label_draw(*this, {r.min.x + (r.width() - tsize.x) * 0.5f, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, label, f);
 }
 
 void context::separator()
@@ -1917,7 +1983,7 @@ void context::separator()
     if (m_->cur_ == nullptr) {
         return;
     }
-    const rect r = layout_place({m_->layout_.width, 1.0f});
+    const rect r = layout_place(*this, {m_->layout_.width, 1.0f});
     m_->dl_.rect_filled(r, m_->style_.border);
 }
 
@@ -1926,7 +1992,7 @@ void context::spacing(f32 height)
     if (m_->cur_ == nullptr) {
         return;
     }
-    (void)layout_place({0.0f, height > 0.0f ? height : m_->style_.item_spacing});
+    (void)layout_place(*this, {0.0f, height > 0.0f ? height : m_->style_.item_spacing});
 }
 
 // page transitions -------------------------------------------------------
@@ -1936,18 +2002,19 @@ transition_scope::~transition_scope()
     ctx_->pop_alpha();
 }
 
-f32 context::layout_next_y() const noexcept
+f32 internal::layout_next_y(const context& ui) noexcept
 {
-    const layout_state& l = m_->layout_;
+    auto& m = context_access::of(ui);
+    const layout_state& l = m.layout_;
     if (l.same_line && !l.first) {
         return l.line_top;
     }
-    return l.first ? l.origin.y : l.line_top + l.line_h + m_->style_.item_spacing;
+    return l.first ? l.origin.y : l.line_top + l.line_h + m.style_.item_spacing;
 }
 
 transition_scope context::page_transition(std::string_view key, int page, f32 slide)
 {
-    anim_slot& a = anim_for(widget_id(key));
+    anim_slot& a = anim_for(*this, widget_id(*this, key));
     const f32 pf = static_cast<f32>(page);
     if (!a.custom_init) {
         a.custom_init = true;
@@ -1957,7 +2024,7 @@ transition_scope context::page_transition(std::string_view key, int page, f32 sl
         a.custom = pf; // a new page: start the fade over
         a.toggle = 0.0f;
     } else {
-        a.toggle = approach(a.toggle, 1.0f, m_->style_.anim_speed * 0.65f);
+        a.toggle = approach(*this, a.toggle, 1.0f, m_->style_.anim_speed * 0.65f);
     }
     const f32 t = smooth(std::clamp(a.toggle, 0.0f, 1.0f));
 

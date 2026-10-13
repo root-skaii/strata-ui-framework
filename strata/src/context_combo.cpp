@@ -3,11 +3,17 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 
 #include <algorithm>
 #include <cctype>
 
 namespace strata {
+
+using namespace internal;
+
+static void draw_combo_popup(context& ui, id key, const rect& anchor, const item_list& items,
+    int& current, bool& changed);
 
 namespace {
 
@@ -39,19 +45,19 @@ bool context::combo_filtered(std::string_view label, int& current, const item_li
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     current = std::clamp(current, 0, static_cast<int>(count) - 1);
 
-    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const field_layout fl  = layout_field(*this, visible_label(label), frame_height());
     const rect         box = fl.control;
-    const interaction  in  = interact(key, box);
+    const interaction  in  = interact(*this, key, box);
 
     bool open = m_->popup_.popup_has(key);
     if (in.pressed) {
         if (open) {
             m_->popup_.popup_close(key);
             open = false;
-        } else if (popup_push(key)) {
+        } else if (popup_push(*this, key)) {
             open = true;
             m_->combo_.combo_filter_.clear();
             m_->combo_.combo_filter_hover_ = 0;
@@ -59,18 +65,18 @@ bool context::combo_filtered(std::string_view label, int& current, const item_li
         }
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, open ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, open ? 1.0f : 0.0f);
 
-    shape_style field = widget_shape(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
+    shape_style field = widget_shape(*this, lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
     field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
     m_->dl_.shape(box, field);
 
     const std::string_view shown = items[static_cast<std::size_t>(current)];
-    const vec2 tsize = label_size(f, shown);
+    const vec2 tsize = label_size(*this, f, shown);
     m_->dl_.push_clip({{box.min.x, box.min.y}, {box.max.x - m_->style_.frame_padding.x - 14.0f, box.max.y}});
-    label_draw({box.min.x + m_->style_.frame_padding.x, box.min.y + (box.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
+    label_draw(*this, {box.min.x + m_->style_.frame_padding.x, box.min.y + (box.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
     m_->dl_.pop_clip();
 
     const vec2  c{box.max.x - m_->style_.frame_padding.x - 4.0f, box.center().y};
@@ -117,7 +123,7 @@ bool context::combo_filtered(std::string_view label, int& current, const item_li
     const f32 width   = std::max(box.width(), 220.0f);
     const f32 height  = frame_height() + m_->style_.item_spacing + list_h + 2.0f * m_->style_.padding;
 
-    if (begin_popup_at(key, box, {width, height})) {
+    if (begin_popup_at(*this, key, box, {width, height})) {
         push_id(label);
         if (m_->combo_.combo_filter_focus_) {
             request_text_focus("##filter");
@@ -146,7 +152,7 @@ bool context::combo_filtered(std::string_view label, int& current, const item_li
             }
         }
         pop_id();
-        end_popup_at();
+        end_popup_at(*this);
     } else {
         close_now = true; // Esc closed it
     }
@@ -159,7 +165,7 @@ bool context::combo_filtered(std::string_view label, int& current, const item_li
     } else if (close_now) {
         m_->focus_id_ = 0;
     }
-    track_edit(key, changed, m_->popup_.popup_has(key));
+    track_edit(*this, key, changed, m_->popup_.popup_has(key));
     return changed;
 }
 
@@ -171,29 +177,29 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
 
-    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const field_layout fl  = layout_field(*this, visible_label(label), frame_height());
     const rect         box = fl.control;
-    const interaction  in  = interact(key, box);
+    const interaction  in  = interact(*this, key, box);
 
     bool open = m_->popup_.popup_has(key);
     if (in.pressed) {
         if (open) {
             m_->popup_.popup_close(key);
             open = false;
-        } else if (popup_push(key)) {
+        } else if (popup_push(*this, key)) {
             m_->popup_.popup_scroll_ = 0.0f;
             m_->popup_.popup_hover_  = 0;
             open = true;
         }
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, open ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, open ? 1.0f : 0.0f);
 
-    shape_style field = widget_shape(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
+    shape_style field = widget_shape(*this, lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
     field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
     m_->dl_.shape(box, field);
 
@@ -250,7 +256,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
     const f32 view_h     = static_cast<f32>(visible) * item_h;
     const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
     if (list.contains(m_->input_.mouse_) && m_->input_.wheel_ != 0.0f) {
-        m_->popup_.popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
+        m_->popup_.popup_scroll_ -= wheel_scroll(*this, item_h * 0.5f, list.height());
         m_->wheel_consumed_ = true;
     }
     for (u32 i = 0; i < m_->input_.key_count_; ++i) { // keyboard: Up / Down move, Enter toggles, Esc closes
@@ -275,7 +281,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
     }
     m_->popup_.popup_scroll_ = std::clamp(m_->popup_.popup_scroll_, 0.0f, max_scroll);
 
-    popup_enter(level, list, box);
+    popup_enter(*this, level, list, box);
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
 
     shape_style body;
@@ -287,7 +293,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
     body.shadow        = m_->style_.shadow;
     body.shadow_blur   = m_->style_.shadow_blur * 0.8f;
     body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.3f};
-    popup_panel(list, body);
+    popup_panel(*this, list, body);
 
     m_->dl_.push_clip({{list.min.x, list.min.y + 1.0f}, {list.max.x, list.max.y - 1.0f}});
     f32 y0 = list.min.y + pad;
@@ -296,7 +302,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
         const rect none_r = {{list.center().x + 1.0f, y0}, {list.max.x - pad, y0 + item_h}};
         for (int k = 0; k < 2; ++k) {
             const rect& r = k == 0 ? all_r : none_r;
-            const interaction ti = interact(hash_id(k == 0 ? "##all" : "##none", key), r);
+            const interaction ti = interact(*this, hash_id(k == 0 ? "##all" : "##none", key), r);
             if (ti.pressed) {
                 for (std::size_t i = 0; i < count; ++i) { selected[i] = k == 0; }
                 changed = true;
@@ -323,7 +329,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
             continue;
         }
         const id ik = hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, key);
-        const interaction it = interact(ik, r);
+        const interaction it = interact(*this, ik, r);
         if (it.hovered) { m_->popup_.popup_hover_ = static_cast<int>(i); }
         if (it.pressed) {
             selected[i] = !selected[i];
@@ -351,8 +357,8 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
             m_->dl_.line({bx.min.x + bs * 0.24f, bx.min.y + bs * 0.52f}, {bx.min.x + bs * 0.43f, bx.min.y + bs * 0.72f}, color{255, 255, 255, 255}, 1.8f);
             m_->dl_.line({bx.min.x + bs * 0.43f, bx.min.y + bs * 0.72f}, {bx.min.x + bs * 0.78f, bx.min.y + bs * 0.30f}, color{255, 255, 255, 255}, 1.8f);
         }
-        const vec2 ts = label_size(f, items[i]);
-        label_draw({bx.max.x + 9.0f, r.min.y + (r.height() - ts.y) * 0.5f}, m_->style_.text, items[i], f);
+        const vec2 ts = label_size(*this, f, items[i]);
+        label_draw(*this, {bx.max.x + 9.0f, r.min.y + (r.height() - ts.y) * 0.5f}, m_->style_.text, items[i], f);
     }
     m_->dl_.pop_clip();
     m_->dl_.pop_clip();
@@ -368,8 +374,8 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
     }
 
     m_->dl_.pop_clip();
-    popup_leave();
-    track_edit(key, changed, m_->popup_.popup_has(key));
+    popup_leave(*this);
+    track_edit(*this, key, changed, m_->popup_.popup_has(key));
     return changed;
 }
 
@@ -380,38 +386,38 @@ bool context::combo(std::string_view label, int& current, const item_list& items
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
     current = std::clamp(current, 0, static_cast<int>(count) - 1);
 
-    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const field_layout fl  = layout_field(*this, visible_label(label), frame_height());
     const rect         box = fl.control;
-    const interaction  in  = interact(key, box);
+    const interaction  in  = interact(*this, key, box);
 
     bool open = m_->popup_.popup_has(key);
     if (in.pressed) {
         if (open) {
             m_->popup_.popup_close(key);
             open = false;
-        } else if (popup_push(key)) {
+        } else if (popup_push(*this, key)) {
             m_->popup_.popup_scroll_ = 0.0f;
             m_->popup_.popup_hover_  = current;
             open = true;
         }
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, open ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, open ? 1.0f : 0.0f);
 
     const color base = lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover);
-    shape_style field = widget_shape(base, m_->style_.rounding * 0.8f);
+    shape_style field = widget_shape(*this, base, m_->style_.rounding * 0.8f);
     field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
     m_->dl_.shape(box, field);
 
     const std::string_view shown = items[static_cast<std::size_t>(current)];
-    const vec2 tsize = label_size(f, shown);
+    const vec2 tsize = label_size(*this, f, shown);
     m_->dl_.push_clip({{box.min.x, box.min.y}, {box.max.x - m_->style_.frame_padding.x - 14.0f, box.max.y}});
-    label_draw({box.min.x + m_->style_.frame_padding.x, box.min.y + (box.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
+    label_draw(*this, {box.min.x + m_->style_.frame_padding.x, box.min.y + (box.height() - tsize.y) * 0.5f}, m_->style_.text, shown, f);
     m_->dl_.pop_clip();
 
     const vec2 c{box.max.x - m_->style_.frame_padding.x - 4.0f, box.center().y};
@@ -425,127 +431,128 @@ bool context::combo(std::string_view label, int& current, const item_list& items
 
     bool changed = false;
     if (open) {
-        draw_combo_popup(key, box, items, current, changed);
+        draw_combo_popup(*this, key, box, items, current, changed);
     }
-    track_edit(key, changed, m_->popup_.popup_has(key));
+    track_edit(*this, key, changed, m_->popup_.popup_has(key));
     return changed;
 }
 
-void context::draw_combo_popup(id key, const rect& anchor, const item_list& items,
+static void draw_combo_popup(context& ui, id key, const rect& anchor, const item_list& items,
                                int& current, bool& changed)
 {
+    auto& m = context_access::of(ui);
     const std::size_t count = items.size();
-    const font_id f       = current_font();
-    const f32     item_h  = frame_height() - 4.0f;
+    const font_id f       = ui.current_font();
+    const f32     item_h  = ui.frame_height() - 4.0f;
     const u32     visible = static_cast<u32>(std::min<std::size_t>(count, 8));
     const f32     pad     = 4.0f;
     const f32     list_h  = static_cast<f32>(visible) * item_h + 2.0f * pad;
 
     rect list = {{anchor.min.x, anchor.max.y + 4.0f}, {anchor.max.x, anchor.max.y + 4.0f + list_h}};
-    if (list.max.y > m_->display_.y - 4.0f && anchor.min.y - 4.0f - list_h >= 4.0f) {
+    if (list.max.y > m.display_.y - 4.0f && anchor.min.y - 4.0f - list_h >= 4.0f) {
         list = {{anchor.min.x, anchor.min.y - 4.0f - list_h}, {anchor.max.x, anchor.min.y - 4.0f}};
     }
-    const u32 level = m_->popup_.popup_level_of(key); // (before Enter / Esc below can close it: this frame still draws it)
+    const u32 level = m.popup_.popup_level_of(key); // (before Enter / Esc below can close it: this frame still draws it)
 
     const f32 view_h     = static_cast<f32>(visible) * item_h;
     const f32 max_scroll = std::max(0.0f, static_cast<f32>(count) * item_h - view_h);
-    if (list.contains(m_->input_.mouse_) && m_->input_.wheel_ != 0.0f) {
-        m_->popup_.popup_scroll_ -= wheel_scroll(item_h * 0.5f, list.height());
-        m_->wheel_consumed_ = true;
+    if (list.contains(m.input_.mouse_) && m.input_.wheel_ != 0.0f) {
+        m.popup_.popup_scroll_ -= wheel_scroll(ui, item_h * 0.5f, list.height());
+        m.wheel_consumed_ = true;
     }
 
-    for (u32 i = 0; i < m_->input_.key_count_; ++i) {
-        switch (m_->input_.keys_[i].k) {
+    for (u32 i = 0; i < m.input_.key_count_; ++i) {
+        switch (m.input_.keys_[i].k) {
         case key::down:
-            m_->popup_.popup_hover_ = std::min(m_->popup_.popup_hover_ + 1, static_cast<int>(count) - 1);
+            m.popup_.popup_hover_ = std::min(m.popup_.popup_hover_ + 1, static_cast<int>(count) - 1);
             break;
         case key::up:
-            m_->popup_.popup_hover_ = std::max(m_->popup_.popup_hover_ - 1, 0);
+            m.popup_.popup_hover_ = std::max(m.popup_.popup_hover_ - 1, 0);
             break;
         case key::enter:
-            if (m_->popup_.popup_hover_ >= 0 && m_->popup_.popup_hover_ < static_cast<int>(count)) {
-                changed   = changed || current != m_->popup_.popup_hover_;
-                current   = m_->popup_.popup_hover_;
-                m_->popup_.popup_close(key);
+            if (m.popup_.popup_hover_ >= 0 && m.popup_.popup_hover_ < static_cast<int>(count)) {
+                changed   = changed || current != m.popup_.popup_hover_;
+                current   = m.popup_.popup_hover_;
+                m.popup_.popup_close(key);
             }
             break;
         case key::escape:
-            m_->popup_.popup_close(key);
+            m.popup_.popup_close(key);
             break;
         default:
             break;
         }
     }
-    m_->input_.key_count_ = 0;
-    if (m_->popup_.popup_hover_ >= 0) { // keep the highlighted row on screen
-        const f32 top = static_cast<f32>(m_->popup_.popup_hover_) * item_h;
-        if (top < m_->popup_.popup_scroll_)                    { m_->popup_.popup_scroll_ = top; }
-        if (top + item_h > m_->popup_.popup_scroll_ + view_h)  { m_->popup_.popup_scroll_ = top + item_h - view_h; }
+    m.input_.key_count_ = 0;
+    if (m.popup_.popup_hover_ >= 0) { // keep the highlighted row on screen
+        const f32 top = static_cast<f32>(m.popup_.popup_hover_) * item_h;
+        if (top < m.popup_.popup_scroll_)                    { m.popup_.popup_scroll_ = top; }
+        if (top + item_h > m.popup_.popup_scroll_ + view_h)  { m.popup_.popup_scroll_ = top + item_h - view_h; }
     }
-    m_->popup_.popup_scroll_ = std::clamp(m_->popup_.popup_scroll_, 0.0f, max_scroll);
+    m.popup_.popup_scroll_ = std::clamp(m.popup_.popup_scroll_, 0.0f, max_scroll);
 
     // everything below is emitted into the popup's overlay layer, above all windows (and above a parent popup)
-    popup_enter(level, list, anchor);
-    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+    popup_enter(ui, level, list, anchor);
+    m.dl_.push_clip_absolute({{0.0f, 0.0f}, m.display_});
 
     shape_style body;
-    body.radius        = radii(m_->style_.rounding * 0.8f);
-    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
-    body.fill_bottom   = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
-    body.border        = m_->style_.border;
-    body.border_width  = m_->style_.border_width;
-    body.shadow        = m_->style_.shadow;
-    body.shadow_blur   = m_->style_.shadow_blur * 0.8f;
-    body.shadow_offset = {0.0f, m_->style_.shadow_blur * 0.3f};
-    popup_panel(list, body);
+    body.radius        = radii(m.style_.rounding * 0.8f);
+    body.fill_top      = color{m.style_.window_bg.r, m.style_.window_bg.g, m.style_.window_bg.b, 255};
+    body.fill_bottom   = color{m.style_.window_bg.r, m.style_.window_bg.g, m.style_.window_bg.b, 255};
+    body.border        = m.style_.border;
+    body.border_width  = m.style_.border_width;
+    body.shadow        = m.style_.shadow;
+    body.shadow_blur   = m.style_.shadow_blur * 0.8f;
+    body.shadow_offset = {0.0f, m.style_.shadow_blur * 0.3f};
+    popup_panel(ui, list, body);
 
-    m_->dl_.push_clip({{list.min.x, list.min.y + 1.0f}, {list.max.x, list.max.y - 1.0f}});
+    m.dl_.push_clip({{list.min.x, list.min.y + 1.0f}, {list.max.x, list.max.y - 1.0f}});
     for (std::size_t i = 0; i < count; ++i) {
-        const f32  y = list.min.y + pad + static_cast<f32>(i) * item_h - m_->popup_.popup_scroll_;
+        const f32  y = list.min.y + pad + static_cast<f32>(i) * item_h - m.popup_.popup_scroll_;
         const rect r = {{list.min.x + pad, y}, {list.max.x - pad - (max_scroll > 0.0f ? 6.0f : 0.0f), y + item_h}};
         if (r.max.y < list.min.y || r.min.y > list.max.y) {
             continue;
         }
 
         const id ik = hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, key);
-        const interaction it = interact(ik, r);
+        const interaction it = interact(ui, ik, r);
         if (it.hovered) {
-            m_->popup_.popup_hover_ = static_cast<int>(i);
+            m.popup_.popup_hover_ = static_cast<int>(i);
         }
         if (it.pressed) {
             changed   = changed || current != static_cast<int>(i);
             current   = static_cast<int>(i);
-            m_->popup_.popup_close(key);
+            m.popup_.popup_close(key);
         }
 
         const bool selected = static_cast<int>(i) == current;
-        const bool hot      = static_cast<int>(i) == m_->popup_.popup_hover_;
+        const bool hot      = static_cast<int>(i) == m.popup_.popup_hover_;
         if (hot || selected) {
             shape_style row;
-            row.radius      = radii(m_->style_.rounding * 0.55f);
-            row.fill_top    = m_->style_.accent.scaled_alpha(hot ? 0.34f : 0.16f);
+            row.radius      = radii(m.style_.rounding * 0.55f);
+            row.fill_top    = m.style_.accent.scaled_alpha(hot ? 0.34f : 0.16f);
             row.fill_bottom = row.fill_top;
-            m_->dl_.shape(r, row);
+            m.dl_.shape(r, row);
         }
-        const vec2 tsize = label_size(f, items[i]);
-        label_draw({r.min.x + 9.0f, r.min.y + (r.height() - tsize.y) * 0.5f},
-                   selected ? m_->style_.accent_hover : m_->style_.text, items[i], f);
+        const vec2 tsize = label_size(ui, f, items[i]);
+        label_draw(ui, {r.min.x + 9.0f, r.min.y + (r.height() - tsize.y) * 0.5f},
+                   selected ? m.style_.accent_hover : m.style_.text, items[i], f);
     }
-    m_->dl_.pop_clip();
+    m.dl_.pop_clip();
 
     if (max_scroll > 0.0f) {
         const f32 track_h = view_h;
         const f32 thumb_h = std::max(16.0f, track_h * view_h / (view_h + max_scroll));
-        const f32 thumb_y = list.min.y + pad + (track_h - thumb_h) * (m_->popup_.popup_scroll_ / max_scroll);
+        const f32 thumb_y = list.min.y + pad + (track_h - thumb_h) * (m.popup_.popup_scroll_ / max_scroll);
         shape_style thumb;
         thumb.radius      = radii(2.0f);
-        thumb.fill_top    = m_->style_.text_dim.scaled_alpha(0.5f);
+        thumb.fill_top    = m.style_.text_dim.scaled_alpha(0.5f);
         thumb.fill_bottom = thumb.fill_top;
-        m_->dl_.shape({{list.max.x - 8.0f, thumb_y}, {list.max.x - 4.0f, thumb_y + thumb_h}}, thumb);
+        m.dl_.shape({{list.max.x - 8.0f, thumb_y}, {list.max.x - 4.0f, thumb_y + thumb_h}}, thumb);
     }
 
-    m_->dl_.pop_clip();
-    popup_leave();
+    m.dl_.pop_clip();
+    popup_leave(ui);
 }
 
 } // namespace strata

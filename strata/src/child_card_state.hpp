@@ -50,10 +50,10 @@ struct card_frame {
 
 struct child_card_state {
     std::vector<child_state> children_; // context_config::capacity.children slots, sized once
-    std::array<child_frame, 4>  child_stack_{};  // (context::max_child_depth is the same)
+    std::array<child_frame, 4>  child_stack_{};  // (internal::max_child_depth is the same)
     u32 child_depth_{};
     std::vector<card_state>  cards_;    // context_config::capacity.cards slots, sized once
-    std::array<card_frame, 4>   card_stack_{};   // (context::max_card_depth is the same)
+    std::array<card_frame, 4>   card_stack_{};   // (internal::max_card_depth is the same)
     u32 card_depth_{};
 };
 

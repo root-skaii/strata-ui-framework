@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 #include "text_util.hpp"
 #include "widget_util.hpp"
@@ -18,6 +19,9 @@
 namespace strata {
 
 using namespace text;
+using namespace internal;
+
+static bool hotkey_field(context& ui, std::string_view label, key& k, key_chord* chord);
 
 std::string_view key_name(key k) noexcept
 {
@@ -85,12 +89,12 @@ std::string_view key_name(key k) noexcept
 
 bool context::hotkey(std::string_view label, strata::key& key_code)
 {
-    return hotkey_field(label, key_code, nullptr);
+    return hotkey_field(*this, label, key_code, nullptr);
 }
 
 bool context::hotkey_chord(std::string_view label, key_chord& chord)
 {
-    return hotkey_field(label, chord.key, &chord);
+    return hotkey_field(*this, label, chord.key, &chord);
 }
 
 bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
@@ -99,11 +103,11 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
         return false;
     }
     const font_id f = current_font();
-    const id key = widget_id(label);
+    const id key = widget_id(*this, label);
 
-    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const field_layout fl  = layout_field(*this, visible_label(label), frame_height());
     const rect         box = fl.control;
-    const interaction  in  = interact(key, box);
+    const interaction  in  = interact(*this, key, box);
 
     bool capturing = m_->hotkey_.hotkey_capture_ == key;
     if (in.pressed) {
@@ -151,11 +155,11 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
         m_->hotkey_.hotkey_seen_ = true;
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, capturing ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(*this, a.toggle, capturing ? 1.0f : 0.0f);
 
-    shape_style field = widget_shape(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
+    shape_style field = widget_shape(*this, lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
     field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
     field.shadow      = m_->style_.accent.scaled_alpha(0.3f * a.toggle);
     field.shadow_blur = 8.0f * a.toggle;
@@ -177,78 +181,79 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
     }
     const vec2 tsize = m_->font_.measure(f, shown);
     m_->dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, tc, shown, f);
-    track_edit(key, changed, m_->hotkey_.hotkey_capture_ == key);
+    track_edit(*this, key, changed, m_->hotkey_.hotkey_capture_ == key);
     return changed;
 }
 
 // `chord` null = plain key; otherwise key_code is chord->key and the held modifiers are stored too
-bool context::hotkey_field(std::string_view label, strata::key& key_code, key_chord* chord)
+static bool hotkey_field(context& ui, std::string_view label, strata::key& key_code, key_chord* chord)
 {
-    if (m_->cur_ == nullptr) {
+    auto& m = context_access::of(ui);
+    if (m.cur_ == nullptr) {
         return false;
     }
-    const font_id f = current_font();
-    const id key = widget_id(label);
+    const font_id f = ui.current_font();
+    const id key = widget_id(ui, label);
 
-    const field_layout fl  = layout_field(visible_label(label), frame_height());
+    const field_layout fl  = layout_field(ui, visible_label(label), ui.frame_height());
     const rect         box = fl.control;
-    const interaction  in  = interact(key, box);
+    const interaction  in  = interact(ui, key, box);
 
-    bool capturing = m_->hotkey_.hotkey_capture_ == key;
+    bool capturing = m.hotkey_.hotkey_capture_ == key;
     if (in.pressed) {
         capturing       = !capturing;
-        m_->hotkey_.hotkey_capture_ = capturing ? key : 0;
-    } else if (capturing && m_->input_.mouse_pressed_ && !box.contains(m_->input_.mouse_)) {
+        m.hotkey_.hotkey_capture_ = capturing ? key : 0;
+    } else if (capturing && m.input_.mouse_pressed_ && !box.contains(m.input_.mouse_)) {
         capturing       = false;
-        m_->hotkey_.hotkey_capture_ = 0;
+        m.hotkey_.hotkey_capture_ = 0;
     }
 
     bool changed = false;
-    if (capturing && m_->input_.pressed_key_ != strata::key::none) {
-        const bool bare = chord == nullptr || !(m_->input_.press_ctrl_ || m_->input_.press_shift_ || m_->input_.press_alt_);
-        if (m_->input_.pressed_key_ == strata::key::escape && bare) {                                     // Esc: leave it as it was
-        } else if ((m_->input_.pressed_key_ == strata::key::backspace || m_->input_.pressed_key_ == strata::key::del) && bare) {   // Backspace / Delete: unbind
+    if (capturing && m.input_.pressed_key_ != strata::key::none) {
+        const bool bare = chord == nullptr || !(m.input_.press_ctrl_ || m.input_.press_shift_ || m.input_.press_alt_);
+        if (m.input_.pressed_key_ == strata::key::escape && bare) {                                     // Esc: leave it as it was
+        } else if ((m.input_.pressed_key_ == strata::key::backspace || m.input_.pressed_key_ == strata::key::del) && bare) {   // Backspace / Delete: unbind
             changed  = key_code != strata::key::none;
             key_code = strata::key::none;
             if (chord != nullptr) { *chord = {}; }
         } else {
-            const key_chord next{m_->input_.pressed_key_, m_->input_.press_ctrl_, m_->input_.press_shift_, m_->input_.press_alt_};
-            changed  = chord != nullptr ? *chord != next : key_code != m_->input_.pressed_key_;
-            key_code = m_->input_.pressed_key_;
+            const key_chord next{m.input_.pressed_key_, m.input_.press_ctrl_, m.input_.press_shift_, m.input_.press_alt_};
+            changed  = chord != nullptr ? *chord != next : key_code != m.input_.pressed_key_;
+            key_code = m.input_.pressed_key_;
             if (chord != nullptr) { *chord = next; }
         }
         capturing       = false;
-        m_->hotkey_.hotkey_capture_ = 0;
-        m_->input_.pressed_key_ = strata::key::none;
-        m_->input_.key_count_      = 0;
+        m.hotkey_.hotkey_capture_ = 0;
+        m.input_.pressed_key_ = strata::key::none;
+        m.input_.key_count_      = 0;
     }
     if (capturing) {
-        m_->hotkey_.hotkey_seen_ = true;
+        m.hotkey_.hotkey_seen_ = true;
     }
 
-    anim_slot& a = anim_for(key);
-    a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-    a.toggle = approach(a.toggle, capturing ? 1.0f : 0.0f);
+    anim_slot& a = anim_for(ui, key);
+    a.hover  = approach(ui, a.hover, in.hovered ? 1.0f : 0.0f);
+    a.toggle = approach(ui, a.toggle, capturing ? 1.0f : 0.0f);
 
-    shape_style field = widget_shape(lerp(m_->style_.widget_bg, m_->style_.widget_hover, a.hover), m_->style_.rounding * 0.8f);
-    field.border = lerp(lerp(m_->style_.widget_border, m_->style_.accent_hover, a.hover * 0.45f), m_->style_.accent, a.toggle);
-    field.shadow      = m_->style_.accent.scaled_alpha(0.3f * a.toggle);
+    shape_style field = widget_shape(ui, lerp(m.style_.widget_bg, m.style_.widget_hover, a.hover), m.style_.rounding * 0.8f);
+    field.border = lerp(lerp(m.style_.widget_border, m.style_.accent_hover, a.hover * 0.45f), m.style_.accent, a.toggle);
+    field.shadow      = m.style_.accent.scaled_alpha(0.3f * a.toggle);
     field.shadow_blur = 8.0f * a.toggle;
-    m_->dl_.shape(box, field);
+    m.dl_.shape(box, field);
 
     std::string chord_text;
     if (chord != nullptr && !capturing) { chord_text = chord_to_string(*chord); }
-    std::string_view shown = capturing ? m_->strings_.press_a_key
-                           : chord != nullptr ? (chord_text.empty() ? m_->strings_.unbound : std::string_view{chord_text})
-                                              : key_code == strata::key::none ? m_->strings_.unbound : key_name(key_code);
-    color tc = key_code == strata::key::none && !capturing ? m_->style_.text_dim : m_->style_.text;
+    std::string_view shown = capturing ? m.strings_.press_a_key
+                           : chord != nullptr ? (chord_text.empty() ? m.strings_.unbound : std::string_view{chord_text})
+                                              : key_code == strata::key::none ? m.strings_.unbound : key_name(key_code);
+    color tc = key_code == strata::key::none && !capturing ? m.style_.text_dim : m.style_.text;
     if (capturing) {
-        const f32 pulse = 0.65f + 0.35f * std::sin(static_cast<f32>(m_->time_) * 7.0f);
-        tc = m_->style_.accent_hover.scaled_alpha(pulse);
+        const f32 pulse = 0.65f + 0.35f * std::sin(static_cast<f32>(m.time_) * 7.0f);
+        tc = m.style_.accent_hover.scaled_alpha(pulse);
     }
-    const vec2 tsize = m_->font_.measure(f, shown);
-    m_->dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, tc, shown, f);
-    track_edit(key, changed, m_->hotkey_.hotkey_capture_ == key);
+    const vec2 tsize = m.font_.measure(f, shown);
+    m.dl_.text({box.min.x + (box.width() - tsize.x) * 0.5f, box.min.y + (box.height() - tsize.y) * 0.5f}, tc, shown, f);
+    track_edit(ui, key, changed, m.hotkey_.hotkey_capture_ == key);
     return changed;
 }
 

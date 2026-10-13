@@ -34,6 +34,9 @@ target_link_libraries(strata_sandbox PRIVATE
     user32.lib
     shell32.lib
 )
+if(STRATA_PCH)
+    target_precompile_headers(strata_sandbox PRIVATE <strata/strata.hpp>)
+endif()
 
 if(STRATA_BUILD_DX11)
     target_sources(strata_sandbox PRIVATE gfx_d3d11.cpp)

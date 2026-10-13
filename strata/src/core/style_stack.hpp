@@ -13,8 +13,8 @@ namespace strata::internal {
 
 class style_stack {
 public:
-    static constexpr u32 max_overrides  = 32; // (context::max_overrides is the same)
-    static constexpr u32 max_font_depth = 8;  // (context::max_font_depth is the same)
+    static constexpr u32 max_overrides  = 32; // (internal::max_overrides is the same)
+    static constexpr u32 max_font_depth = 8;  // (internal::max_font_depth is the same)
 
     struct saved_color { style_color which{}; color previous{}; };
     struct saved_var   { style_var   which{}; f32   previous{}; };

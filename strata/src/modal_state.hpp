@@ -14,7 +14,7 @@ struct modal_frame {
 };
 
 struct modal_state {
-    static constexpr u32 max_modals = 4; // (context::max_modals is the same)
+    static constexpr u32 max_modals = 4; // (internal::max_modals is the same)
 
     std::array<id, max_modals> modal_stack_{};
     u32 modal_count_{};

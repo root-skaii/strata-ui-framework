@@ -232,6 +232,8 @@ public:
     void break_command() noexcept { force_new_command_ = true; } // next primitive opens a new command
     // rewrites the command list as `order`: slices covering every command exactly once
     void reorder_commands(std::span<const command_range> order);
+    // joins neighbouring commands whose clips make no difference to their geometry (end_frame, after reordering)
+    void merge_commands() noexcept;
 
     [[nodiscard]] draw_data data() const noexcept;
     // vertex / index / command reservation ran out this frame

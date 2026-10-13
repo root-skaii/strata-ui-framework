@@ -14,7 +14,7 @@ namespace strata::internal {
 
 class id_stack {
 public:
-    static constexpr u32 max_depth = 16; // (context::max_id_depth is the same)
+    static constexpr u32 max_depth = 16; // (internal::max_id_depth is the same)
 
     // hashes `s` / `value` / `p` against current() and pushes it; false (nothing pushed) past max_depth
     bool push(std::string_view s) noexcept;

@@ -7,6 +7,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 
 #include "dock_state.hpp"
@@ -17,6 +18,26 @@
 #include <format>
 
 namespace strata {
+
+using namespace internal;
+
+// docking
+static void dock_compute(context& ui, u8 node, const rect& area) noexcept;
+static void dock_relayout(context& ui) noexcept;
+[[nodiscard]] static u8 dock_new_node(context& ui) noexcept;
+static void dock_free_node(context& ui, u8 node) noexcept;
+static void dock_attach(context& ui, window_state& w, u8 space, u8 node, dock_zone zone, bool outer, f32 size = 0.0f, int tab = -1) noexcept;
+[[nodiscard]] static f32 dock_tab_width(const context& ui, const window_state& w) noexcept;
+[[nodiscard]] static u32 dock_leaf_tabs(const context& ui, u8 leaf, std::array<u8, max_windows>& out, bool shown_only) noexcept; // indices into windows_, in tab order
+static void dock_move_tab(context& ui, window_state& w, u32 index) noexcept; // to that place among its neighbours
+[[nodiscard]] static u32 dock_guides(const context& ui, const dock_space& sp, u8 leaf, std::array<dock_guide, 9>& out) noexcept;
+[[nodiscard]] static bool dock_double_click(context& ui, id key) noexcept; // the second press of a quick pair on `key`
+[[nodiscard]] static u8 dock_space_at(context& ui, id key) noexcept; // finds or creates the space with this key
+[[nodiscard]] static id dock_space_key(std::string_view name) noexcept;
+static void dock_set_space(context& ui, u8 space, const rect& area, const rect& drop, const rect& panel) noexcept;
+static void dock_detach(window_state& w) noexcept;
+static void dock_prune(context& ui) noexcept;
+static void dock_animate(context& ui);
 
 namespace {
 
@@ -33,44 +54,46 @@ constexpr f32 tab_pad      = 26.0f; // what a tab takes on top of its title
 
 // spaces ----------------------------------------------------------------------------------------
 
-id context::dock_space_key(std::string_view name) noexcept
+static id dock_space_key(std::string_view name) noexcept
 {
     // saved dock layouts store keys derived from this seed ("space <key>"): its value must never change
     static constexpr id dock_space_seed = hash_id("##dockspace");
     return hash_id(name, dock_space_seed);
 }
 
-u8 context::dock_space_at(id key) noexcept
+static u8 dock_space_at(context& ui, id key) noexcept
 {
+    auto& m = context_access::of(ui);
     u8 free_slot = no_node;
     u8 stale     = no_node;
     for (u32 i = 0; i < max_dock_spaces; ++i) {
-        const dock_space& sp = m_->dock_->spaces[i];
+        const dock_space& sp = m.dock_->spaces[i];
         if (sp.key == key) {
             return static_cast<u8>(i);
         }
         if (free_slot == no_node && sp.key == 0) { free_slot = static_cast<u8>(i); }
-        if (stale == no_node && sp.key != 0 && sp.root == no_node && sp.last_frame + 300 < m_->frame_) { stale = static_cast<u8>(i); }
+        if (stale == no_node && sp.key != 0 && sp.root == no_node && sp.last_frame + 300 < m.frame_) { stale = static_cast<u8>(i); }
     }
     const u8 pick = free_slot != no_node ? free_slot : stale;
     if (pick == no_node) {
-        report_limit("dock spaces (max_dock_spaces)", max_dock_spaces);
+        report_limit(ui, "dock spaces (max_dock_spaces)", max_dock_spaces);
         return no_node;
     }
-    m_->dock_->spaces[pick]            = {};
-    m_->dock_->spaces[pick].key        = key;
-    m_->dock_->spaces[pick].last_frame = m_->frame_;
+    m.dock_->spaces[pick]            = {};
+    m.dock_->spaces[pick].key        = key;
+    m.dock_->spaces[pick].last_frame = m.frame_;
     return pick;
 }
 
-void context::dock_set_space(u8 space, const rect& area, const rect& drop, const rect& panel) noexcept
+static void dock_set_space(context& ui, u8 space, const rect& area, const rect& drop, const rect& panel) noexcept
 {
-    dock_space& sp = m_->dock_->spaces[space];
+    auto& m = context_access::of(ui);
+    dock_space& sp = m.dock_->spaces[space];
     // a dragged floating dock moves its panes rigidly: only layout changes animate
-    if (sp.owner != 0 && sp.root != no_node && sp.last_frame + 1 >= m_->frame_ && sp.last_frame != 0) {
+    if (sp.owner != 0 && sp.root != no_node && sp.last_frame + 1 >= m.frame_ && sp.last_frame != 0) {
         const vec2 delta = area.min - sp.area.min;
         if (delta.x != 0.0f || delta.y != 0.0f) {
-            for (dock_node& n : m_->dock_->nodes) {
+            for (dock_node& n : m.dock_->nodes) {
                 if (n.used && n.space == space) {
                     n.shown_area    = {n.shown_area.min + delta, n.shown_area.max + delta};
                     n.shown_content = {n.shown_content.min + delta, n.shown_content.max + delta};
@@ -82,9 +105,9 @@ void context::dock_set_space(u8 space, const rect& area, const rect& drop, const
     sp.drop       = drop;
     sp.panel      = panel;
     sp.set        = true;
-    sp.last_frame = m_->frame_;
-    m_->dock_->any_set = true;
-    dock_relayout();
+    sp.last_frame = m.frame_;
+    m.dock_->any_set = true;
+    dock_relayout(ui);
 }
 
 void context::dock_area(const rect& area)
@@ -94,16 +117,16 @@ void context::dock_area(const rect& area)
 
 void context::dock_area(std::string_view space, const rect& area)
 {
-    const u8 si = dock_space_at(dock_space_key(space));
+    const u8 si = dock_space_at(*this, dock_space_key(space));
     if (si != no_node) {
-        dock_set_space(si, area, area, area);
+        dock_set_space(*this, si, area, area, area);
     }
 }
 
 // a panel along one side of `region`: it takes room only while something is docked in it
 rect context::dock_edge(std::string_view name, dock_side side, f32 size, const rect& region)
 {
-    const u8 si = dock_space_at(dock_space_key(name));
+    const u8 si = dock_space_at(*this, dock_space_key(name));
     if (si == no_node || m_->cur_ != nullptr) {
         return region;
     }
@@ -138,7 +161,7 @@ rect context::dock_edge(std::string_view name, dock_side side, f32 size, const r
         default:                remaining.max.y -= taken; break;
         }
     }
-    dock_set_space(si, occupied ? panel : strip(0.0f), occupied ? panel : (dragging ? strip(edge_strip) : rect{}), panel);
+    dock_set_space(*this, si, occupied ? panel : strip(0.0f), occupied ? panel : (dragging ? strip(edge_strip) : rect{}), panel);
     if (!occupied) {
         return remaining;
     }
@@ -152,10 +175,10 @@ rect context::dock_edge(std::string_view name, dock_side side, f32 size, const r
     }
     const bool free_pointer = m_->win_.hovered_window_prev_ == 0 || m_->hovered_docked_prev_;
     const id key = part_id(part::edge_splitter, static_cast<id>(si + 1));
-    const interaction in = interact_impl(key, gap.expanded(1.5f), free_pointer);
+    const interaction in = interact_impl(*this, key, gap.expanded(1.5f), free_pointer);
     if (in.hovered || in.held) { m_->cursor_ = horizontal ? cursor_kind::resize_ew : cursor_kind::resize_ns; }
     if (gap.expanded(1.5f).contains(m_->input_.mouse_)) { m_->dock_chrome_cur_ = true; }
-    if (in.hovered && m_->input_.mouse_pressed_ && dock_double_click(key)) { // a double click gives the panel its usual size back
+    if (in.hovered && m_->input_.mouse_pressed_ && dock_double_click(*this, key)) { // a double click gives the panel its usual size back
         sp.edge_size = std::clamp(std::max(size, min_node_size), min_node_size, room);
         m_->dock_->void_key   = key;
     }
@@ -184,14 +207,14 @@ bool context::floating_dock(std::string_view title, vec2 initial_pos, vec2 size,
     const bool open = begin_window(title, initial_pos, {size.x, size.y > 0.0f ? size.y : 320.0f}, flags | window_flags::resizable);
     const window_state& st = *m_->cur_;
 
-    const u8 si = dock_space_at(dock_space_key(title));
+    const u8 si = dock_space_at(*this, dock_space_key(title));
     if (si != no_node) {
         dock_space& sp = m_->dock_->spaces[si];
         sp.owner  = hash_id(title, m_->ids_.root());
         sp.edge   = false;
         const rect frame = m_->cur_frame_;
         const rect body  = {{frame.min.x, frame.min.y + st.title_h}, frame.max};
-        dock_set_space(si, body, body, body);
+        dock_set_space(*this, si, body, body, body);
         sp.hidden = st.collapsed;
         if (open && sp.root == no_node) { // nothing in it yet
             const std::string_view hint = m_->strings_.drop_here;
@@ -203,81 +226,88 @@ bool context::floating_dock(std::string_view title, vec2 initial_pos, vec2 size,
     return open;
 }
 
-bool context::dock_double_click(id key) noexcept
+static bool dock_double_click(context& ui, id key) noexcept
 {
-    const vec2 moved = m_->input_.mouse_ - m_->dock_->click_pos;
-    const bool twice = m_->dock_->click_key == key && m_->time_ - m_->dock_->click_time < m_->double_click_ && dot(moved, moved) < 25.0f;
-    m_->dock_->click_key  = twice ? id{} : key;
-    m_->dock_->click_time = m_->time_;
-    m_->dock_->click_pos  = m_->input_.mouse_;
+    auto& m = context_access::of(ui);
+    const vec2 moved = m.input_.mouse_ - m.dock_->click_pos;
+    const bool twice = m.dock_->click_key == key && m.time_ - m.dock_->click_time < m.double_click_ && dot(moved, moved) < 25.0f;
+    m.dock_->click_key  = twice ? id{} : key;
+    m.dock_->click_time = m.time_;
+    m.dock_->click_pos  = m.input_.mouse_;
     return twice;
 }
 
 // tabs ------------------------------------------------------------------------------------------
 
-f32 context::dock_tab_width(const window_state& w) const noexcept
+static f32 dock_tab_width(const context& ui, const window_state& w) noexcept
 {
-    return m_->font_.measure(0, {w.title.data(), w.title_len}).x + tab_pad;
+    auto& m = context_access::of(ui);
+    return m.font_.measure(0, {w.title.data(), w.title_len}).x + tab_pad;
 }
 
 // the windows sitting in a leaf as indices into m_->win_.windows_, in the order of their tabs
-u32 context::dock_leaf_tabs(u8 leaf, std::array<u8, max_windows>& out, bool shown_only) const noexcept
+static u32 dock_leaf_tabs(const context& ui, u8 leaf, std::array<u8, max_windows>& out, bool shown_only) noexcept
 {
+    auto& m = context_access::of(ui);
     u32 count = 0;
-    for (u32 i = 0; i < m_->win_.windows_.size(); ++i) {
-        const window_state& w = m_->win_.windows_[i];
-        if (w.key != 0 && w.dock == leaf + 1u && (!shown_only || w.last_frame + 1 >= m_->frame_)) { out[count++] = static_cast<u8>(i); }
+    for (u32 i = 0; i < m.win_.windows_.size(); ++i) {
+        const window_state& w = m.win_.windows_[i];
+        if (w.key != 0 && w.dock == leaf + 1u && (!shown_only || w.last_frame + 1 >= m.frame_)) { out[count++] = static_cast<u8>(i); }
     }
-    std::sort(out.begin(), out.begin() + count, [this](u8 a, u8 b) { return m_->win_.windows_[a].dock_order < m_->win_.windows_[b].dock_order; });
+    std::sort(out.begin(), out.begin() + count, [&m](u8 a, u8 b) { return m.win_.windows_[a].dock_order < m.win_.windows_[b].dock_order; });
     return count;
 }
 
 // puts a docked window at a place among the tabs of its pane
-void context::dock_move_tab(window_state& w, u32 index) noexcept
+static void dock_move_tab(context& ui, window_state& w, u32 index) noexcept
 {
+    auto& m = context_access::of(ui);
     if (w.dock == 0 || w.dock > max_dock_nodes) {
         return;
     }
     std::array<u8, max_windows> tabs{};
-    const u32 count = dock_leaf_tabs(static_cast<u8>(w.dock - 1), tabs, false);
+    const u32 count = dock_leaf_tabs(ui, static_cast<u8>(w.dock - 1), tabs, false);
     std::array<window_state*, max_windows> seq{};
     u32 n = 0;
     for (u32 i = 0; i < count; ++i) {
-        if (&m_->win_.windows_[tabs[i]] != &w) { seq[n++] = &m_->win_.windows_[tabs[i]]; }
+        if (&m.win_.windows_[tabs[i]] != &w) { seq[n++] = &m.win_.windows_[tabs[i]]; }
     }
     index = std::min(index, n);
     for (u32 i = n; i > index; --i) { seq[i] = seq[i - 1]; }
     seq[index] = &w;
-    for (u32 i = 0; i <= n; ++i) { seq[i]->dock_order = ++m_->dock_->counter; }
+    for (u32 i = 0; i <= n; ++i) { seq[i]->dock_order = ++m.dock_->counter; }
 }
 
 // tree ------------------------------------------------------------------------------------------
 
-u8 context::dock_new_node() noexcept
+static u8 dock_new_node(context& ui) noexcept
 {
+    auto& m = context_access::of(ui);
     for (u32 i = 0; i < max_dock_nodes; ++i) {
-        if (!m_->dock_->nodes[i].used) {
-            m_->dock_->nodes[i]      = {};
-            m_->dock_->nodes[i].used = true;
+        if (!m.dock_->nodes[i].used) {
+            m.dock_->nodes[i]      = {};
+            m.dock_->nodes[i].used = true;
             return static_cast<u8>(i);
         }
     }
     return no_node;
 }
 
-void context::dock_free_node(u8 node) noexcept
+static void dock_free_node(context& ui, u8 node) noexcept
 {
+    auto& m = context_access::of(ui);
     if (node != no_node) {
-        m_->dock_->nodes[node] = {};
+        m.dock_->nodes[node] = {};
     }
 }
 
-void context::dock_compute(u8 index, const rect& area) noexcept
+static void dock_compute(context& ui, u8 index, const rect& area) noexcept
 {
-    dock_node& n = m_->dock_->nodes[index];
+    auto& m = context_access::of(ui);
+    dock_node& n = m.dock_->nodes[index];
     n.area = area;
     if (n.leaf()) {
-        const f32 tab_h = m_->font_.line_height(0) + 10.0f;
+        const f32 tab_h = m.font_.line_height(0) + 10.0f;
         n.content = {{area.min.x, area.min.y + tab_h}, area.max};
         return;
     }
@@ -295,20 +325,21 @@ void context::dock_compute(u8 index, const rect& area) noexcept
         a.max.x = area.min.x + first;
         b.min.x = a.max.x + splitter_gap;
     }
-    dock_compute(n.child[0], a);
-    dock_compute(n.child[1], b);
+    dock_compute(ui, n.child[0], a);
+    dock_compute(ui, n.child[1], b);
 }
 
-void context::dock_relayout() noexcept
+static void dock_relayout(context& ui) noexcept
 {
-    for (const dock_space& sp : m_->dock_->spaces) {
+    auto& m = context_access::of(ui);
+    for (const dock_space& sp : m.dock_->spaces) {
         if (sp.set && sp.root != no_node) {
-            dock_compute(sp.root, sp.area);
+            dock_compute(ui, sp.root, sp.area);
         }
     }
     // what is drawn is the layout, unless panes are meant to slide there (dock_animate moves them)
-    for (dock_node& n : m_->dock_->nodes) {
-        if (n.used && (!m_->dock_animation_ || n.fresh)) {
+    for (dock_node& n : m.dock_->nodes) {
+        if (n.used && (!m.dock_animation_ || n.fresh)) {
             n.shown_area    = n.area;
             n.shown_content = n.content;
             n.fresh         = false;
@@ -317,18 +348,19 @@ void context::dock_relayout() noexcept
 }
 
 // one step of the slide of every pane towards its place in the layout; once per frame
-void context::dock_animate()
+static void dock_animate(context& ui)
 {
-    if (!m_->dock_animation_) {
+    auto& m = context_access::of(ui);
+    if (!m.dock_animation_) {
         return;
     }
-    const f32 k = m_->dock_->splitting ? 1.0f : 1.0f - std::exp(-16.0f * m_->dt_);
+    const f32 k = m.dock_->splitting ? 1.0f : 1.0f - std::exp(-16.0f * m.dt_);
     const auto step = [k](rect& shown, const rect& target) {
         const auto toward = [k](f32 a, f32 b) { return std::abs(b - a) < 0.5f ? b : a + (b - a) * k; };
         shown = {{toward(shown.min.x, target.min.x), toward(shown.min.y, target.min.y)},
                  {toward(shown.max.x, target.max.x), toward(shown.max.y, target.max.y)}};
     };
-    for (dock_node& n : m_->dock_->nodes) {
+    for (dock_node& n : m.dock_->nodes) {
         if (n.used) {
             step(n.shown_area, n.area);
             step(n.shown_content, n.content);
@@ -337,43 +369,44 @@ void context::dock_animate()
 }
 
 // puts a window into a leaf (center) or splits a node to make room for a new leaf next to it
-void context::dock_attach(window_state& w, u8 space, u8 node, dock_zone zone, bool outer, f32 size, int tab) noexcept
+static void dock_attach(context& ui, window_state& w, u8 space, u8 node, dock_zone zone, bool outer, f32 size, int tab) noexcept
 {
+    auto& m = context_access::of(ui);
     if (space >= max_dock_spaces) {
         return;
     }
     if (w.dock != 0) {
         dock_detach(w);
     }
-    dock_space& sp = m_->dock_->spaces[space];
+    dock_space& sp = m.dock_->spaces[space];
 
     u8 leaf = no_node;
     if (sp.root == no_node) { // the first docked window fills the whole space
-        leaf = dock_new_node();
+        leaf = dock_new_node(ui);
         if (leaf == no_node) {
-            report_limit("dock panes (max_dock_nodes)", max_dock_nodes);
+            report_limit(ui, "dock panes (max_dock_nodes)", max_dock_nodes);
             return;
         }
-        m_->dock_->nodes[leaf].space = space;
+        m.dock_->nodes[leaf].space = space;
         sp.root = leaf;
     } else {
         if (outer || node == no_node) { node = sp.root; }
-        if (m_->dock_->nodes[node].leaf() && zone == dock_zone::center && !outer) {
+        if (m.dock_->nodes[node].leaf() && zone == dock_zone::center && !outer) {
             leaf = node;
-        } else if (!m_->dock_->nodes[node].leaf() && zone == dock_zone::center) {
-            while (!m_->dock_->nodes[node].leaf()) { node = m_->dock_->nodes[node].child[0]; } // a split has no tabs: use its first leaf
+        } else if (!m.dock_->nodes[node].leaf() && zone == dock_zone::center) {
+            while (!m.dock_->nodes[node].leaf()) { node = m.dock_->nodes[node].child[0]; } // a split has no tabs: use its first leaf
             leaf = node;
         } else {
-            const u8 split = dock_new_node();
-            leaf           = dock_new_node();
+            const u8 split = dock_new_node(ui);
+            leaf           = dock_new_node(ui);
             if (split == no_node || leaf == no_node) {
-                report_limit("dock panes (max_dock_nodes)", max_dock_nodes);
-                dock_free_node(split);
-                dock_free_node(leaf);
+                report_limit(ui, "dock panes (max_dock_nodes)", max_dock_nodes);
+                dock_free_node(ui, split);
+                dock_free_node(ui, leaf);
                 return;
             }
-            dock_node& s = m_->dock_->nodes[split];
-            dock_node& n = m_->dock_->nodes[node];
+            dock_node& s = m.dock_->nodes[split];
+            dock_node& n = m.dock_->nodes[node];
             const bool new_first = zone == dock_zone::left || zone == dock_zone::top;
             s.space    = space;
             s.vertical = zone == dock_zone::top || zone == dock_zone::bottom;
@@ -384,24 +417,24 @@ void context::dock_attach(window_state& w, u8 space, u8 node, dock_zone zone, bo
             if (n.parent == no_node) {
                 sp.root = split;
             } else {
-                dock_node& p = m_->dock_->nodes[n.parent];
+                dock_node& p = m.dock_->nodes[n.parent];
                 (p.child[0] == node ? p.child[0] : p.child[1]) = split;
             }
             n.parent                 = split;
-            m_->dock_->nodes[leaf].parent = split;
-            m_->dock_->nodes[leaf].space  = space;
+            m.dock_->nodes[leaf].parent = split;
+            m.dock_->nodes[leaf].space  = space;
         }
     }
 
-    const bool slide = m_->dock_animation_ && m_->dock_->nodes[leaf].fresh && zone != dock_zone::center;
+    const bool slide = m.dock_animation_ && m.dock_->nodes[leaf].fresh && zone != dock_zone::center;
     w.float_size = {w.width, w.height};
     w.dock       = static_cast<u32>(leaf) + 1;
-    w.dock_order = ++m_->dock_->counter;
-    m_->dock_->nodes[leaf].active = w.key;
-    if (tab >= 0) { dock_move_tab(w, static_cast<u32>(tab)); }
-    dock_relayout();
+    w.dock_order = ++m.dock_->counter;
+    m.dock_->nodes[leaf].active = w.key;
+    if (tab >= 0) { dock_move_tab(ui, w, static_cast<u32>(tab)); }
+    dock_relayout(ui);
     if (slide) { // the new pane grows out of the edge it was dropped at
-        dock_node& l = m_->dock_->nodes[leaf];
+        dock_node& l = m.dock_->nodes[leaf];
         const auto collapsed = [zone](const rect& r) -> rect {
             switch (zone) {
             case dock_zone::left:   return {r.min, {r.min.x, r.max.y}};
@@ -416,7 +449,7 @@ void context::dock_attach(window_state& w, u8 space, u8 node, dock_zone zone, bo
     }
 }
 
-void context::dock_detach(window_state& w) noexcept
+static void dock_detach(window_state& w) noexcept
 {
     if (w.dock == 0) {
         return;
@@ -430,62 +463,64 @@ void context::dock_detach(window_state& w) noexcept
 }
 
 // removes leaves nobody sits in any more (and the splits that only wrapped them)
-void context::dock_prune() noexcept
+static void dock_prune(context& ui) noexcept
 {
+    auto& m = context_access::of(ui);
     bool again = true;
     while (again) {
         again = false;
         for (u32 i = 0; i < max_dock_nodes && !again; ++i) {
-            const dock_node& n = m_->dock_->nodes[i];
+            const dock_node& n = m.dock_->nodes[i];
             if (!n.used || !n.leaf()) { continue; }
 
             bool occupied = false;
-            for (const window_state& w : m_->win_.windows_) {
-                occupied = occupied || (w.key != 0 && w.dock == i + 1 && w.last_frame == m_->frame_);
+            for (const window_state& w : m.win_.windows_) {
+                occupied = occupied || (w.key != 0 && w.dock == i + 1 && w.last_frame == m.frame_);
             }
             if (occupied) { continue; }
 
-            for (window_state& w : m_->win_.windows_) { // windows that are not shown right now forget this node as well
+            for (window_state& w : m.win_.windows_) { // windows that are not shown right now forget this node as well
                 if (w.dock == i + 1) { dock_detach(w); }
             }
-            dock_space& sp     = m_->dock_->spaces[n.space];
+            dock_space& sp     = m.dock_->spaces[n.space];
             const u8    parent = n.parent;
-            dock_free_node(static_cast<u8>(i));
+            dock_free_node(ui, static_cast<u8>(i));
             if (parent == no_node) {
                 sp.root = no_node;
             } else {
-                dock_node& p = m_->dock_->nodes[parent];
+                dock_node& p = m.dock_->nodes[parent];
                 const u8 sibling = p.child[0] == i ? p.child[1] : p.child[0];
                 const u8 grand   = p.parent;
-                m_->dock_->nodes[sibling].parent = grand;
+                m.dock_->nodes[sibling].parent = grand;
                 if (grand == no_node) {
                     sp.root = sibling;
                 } else {
-                    dock_node& g = m_->dock_->nodes[grand];
+                    dock_node& g = m.dock_->nodes[grand];
                     (g.child[0] == parent ? g.child[0] : g.child[1]) = sibling;
                 }
-                dock_free_node(parent);
+                dock_free_node(ui, parent);
             }
             again = true;
         }
     }
-    dock_relayout();
+    dock_relayout(ui);
 }
 
 // where a window dropped at `pointer` would go
-dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const noexcept
+dock_target internal::dock_pick(const context& ui, vec2 pointer, u8 exclude_leaf, vec2 want) noexcept
 {
+    auto& st = context_access::of(ui);
     dock_target t;
 
     // which space: floating docks are on top of the others (the higher one first)
     int best = -1;
     u32 best_rank = 0;
     for (u32 si = 0; si < max_dock_spaces; ++si) {
-        const dock_space& sp = m_->dock_->spaces[si];
+        const dock_space& sp = st.dock_->spaces[si];
         if (!sp.set || sp.hidden || !sp.drop.contains(pointer)) { continue; }
         u32 rank = sp.edge && sp.root == no_node ? 1u : 0u; // the drop strip of an empty edge dock beats the area behind it
         if (sp.owner != 0) {
-            const u32 z = z_index(sp.owner);
+            const u32 z = z_index(ui, sp.owner);
             rank = 2 + (z == no_z ? 0u : z);
         }
         if (best < 0 || rank >= best_rank) {
@@ -496,7 +531,7 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
     if (best < 0) {
         return t; // no space under the pointer
     }
-    const dock_space& sp = m_->dock_->spaces[static_cast<u32>(best)];
+    const dock_space& sp = st.dock_->spaces[static_cast<u32>(best)];
     t.valid = true;
     t.space = static_cast<u8>(best);
     if (sp.root == no_node) { // empty space: the window would fill it (edge dock: the whole panel)
@@ -512,7 +547,7 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
 
     u8 found = no_node;
     for (u32 i = 0; i < max_dock_nodes; ++i) {
-        const dock_node& n = m_->dock_->nodes[i];
+        const dock_node& n = st.dock_->nodes[i];
         if (n.used && n.leaf() && n.space == best && n.area.contains(pointer)) { found = static_cast<u8>(i); break; }
     }
     if (found != exclude_leaf) { t.leaf = found; }
@@ -549,19 +584,19 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
 
     // the guides are big targets and win over the rest
     std::array<dock_guide, 9> guides;
-    const u32 guide_count = dock_guides(sp, t.leaf, guides);
+    const u32 guide_count = dock_guides(ui, sp, t.leaf, guides);
     for (u32 i = 0; i < guide_count; ++i) {
         const dock_guide& g = guides[i];
         if (!g.r.contains(pointer)) { continue; }
         t.on_guide = true;
         t.node     = g.outer ? sp.root : t.leaf;
-        set_zone(g.zone, g.outer, g.outer ? a : m_->dock_->nodes[t.leaf].area);
+        set_zone(g.zone, g.outer, g.outer ? a : st.dock_->nodes[t.leaf].area);
         return t;
     }
 
     // near the space border: split the whole tree (a top pane's tab bar is for tabs; the guide owns the top border)
-    const f32 tab_h   = m_->font_.line_height(0) + 10.0f;
-    const bool on_bar = t.leaf != no_node && pointer.y < m_->dock_->nodes[t.leaf].area.min.y + tab_h;
+    const f32 tab_h   = st.font_.line_height(0) + 10.0f;
+    const bool on_bar = t.leaf != no_node && pointer.y < st.dock_->nodes[t.leaf].area.min.y + tab_h;
     const f32 dl = pointer.x - a.min.x;
     const f32 dr = a.max.x - pointer.x;
     const f32 dt = on_bar ? a.height() : pointer.y - a.min.y;
@@ -577,20 +612,20 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
         t.valid = false; // over a splitter, or over the pane being moved
         return t;
     }
-    const rect& r = m_->dock_->nodes[found].area;
+    const rect& r = st.dock_->nodes[found].area;
     t.node = found;
 
     // over the tab bar of a pane: join its tabs, at the place under the pointer
     if (on_bar) {
         std::array<u8, max_windows> tabs{};
-        const u32 count = dock_leaf_tabs(found, tabs, true);
+        const u32 count = dock_leaf_tabs(ui, found, tabs, true);
         f32 total = 0.0f;
-        for (u32 i = 0; i < count; ++i) { total += dock_tab_width(m_->win_.windows_[tabs[i]]); }
+        for (u32 i = 0; i < count; ++i) { total += dock_tab_width(ui, st.win_.windows_[tabs[i]]); }
         const f32 squeeze = total > r.width() ? r.width() / total : 1.0f;
         f32 x = r.min.x;
         u32 index = count;
         for (u32 i = 0; i < count; ++i) {
-            const f32 w = dock_tab_width(m_->win_.windows_[tabs[i]]) * squeeze;
+            const f32 w = dock_tab_width(ui, st.win_.windows_[tabs[i]]) * squeeze;
             if (pointer.x < x + w * 0.5f) { index = i; break; }
             x += w;
         }
@@ -617,8 +652,9 @@ dock_target context::dock_pick(vec2 pointer, u8 exclude_leaf, vec2 want) const n
 }
 
 // drop guides: a five-button cross in the pane body, plus the space borders
-u32 context::dock_guides(const dock_space& sp, u8 leaf, std::array<dock_guide, 9>& out) const noexcept
+static u32 dock_guides(const context& ui, const dock_space& sp, u8 leaf, std::array<dock_guide, 9>& out) noexcept
 {
+    auto& st = context_access::of(ui);
     u32 n = 0;
     if (sp.root == no_node) {
         return 0;
@@ -636,7 +672,7 @@ u32 context::dock_guides(const dock_space& sp, u8 leaf, std::array<dock_guide, 9
         add(dock_zone::bottom, true, {c.x, a.max.y - m}, border_guide);
     }
     if (leaf != no_node) {
-        const rect& body = m_->dock_->nodes[leaf].content;
+        const rect& body = st.dock_->nodes[leaf].content;
         const f32 step = guide_size + guide_gap;
         if (body.width() >= 3.0f * step + 24.0f && body.height() >= 3.0f * step + 24.0f) {
             const vec2 c = body.center();
@@ -653,7 +689,7 @@ u32 context::dock_guides(const dock_space& sp, u8 leaf, std::array<dock_guide, 9
 bool context::dock_window(std::string_view title, dock_zone zone, std::string_view target, f32 size, std::string_view space_name)
 {
     const id wid = hash_id(title, m_->ids_.root());
-    window_state* w = window_for(wid, {}, 0.0f);
+    window_state* w = window_for(*this, wid, {}, 0.0f);
     if (w == nullptr) {
         return false;
     }
@@ -661,103 +697,104 @@ bool context::dock_window(std::string_view title, dock_zone zone, std::string_vi
     u8 node  = no_node;
     bool outer = false;
     if (!target.empty()) {
-        const window_state* t = window_find(hash_id(target, m_->ids_.root()));
+        const window_state* t = window_find(*this, hash_id(target, m_->ids_.root()));
         if (t == nullptr || t->dock == 0 || t->dock > max_dock_nodes || !m_->dock_->nodes[t->dock - 1].used) {
             return false;
         }
         node  = static_cast<u8>(t->dock - 1);
         space = m_->dock_->nodes[node].space;
     } else {
-        space = dock_space_at(dock_space_key(space_name));
+        space = dock_space_at(*this, dock_space_key(space_name));
         outer = zone != dock_zone::center; // relative to the whole space
     }
     if (space == no_node) {
         return false;
     }
-    dock_attach(*w, space, node, zone, outer, size);
+    dock_attach(*this, *w, space, node, zone, outer, size);
     return w->dock != 0;
 }
 
 void context::undock_window(std::string_view title)
 {
-    if (window_state* w = window_find(hash_id(title, m_->ids_.root()))) {
+    if (window_state* w = window_find(*this, hash_id(title, m_->ids_.root()))) {
         dock_detach(*w);
     }
 }
 
 bool context::window_docked(std::string_view title) const noexcept
 {
-    const window_state* w = window_find(hash_id(title, m_->ids_.root()));
+    const window_state* w = window_find(*this, hash_id(title, m_->ids_.root()));
     return w != nullptr && w->dock != 0;
 }
 
 // per frame: chrome, input, drop ---------------------------------------------------------------------
 
-void context::dock_end_frame()
+void internal::dock_end_frame(context& ui)
 {
-    if (!m_->dock_->any_set) {
-        m_->dock_->splitting = false;
-        if (!m_->input_.mouse_down_) { m_->dock_->void_key = 0; }
+    auto& m = context_access::of(ui);
+    if (!m.dock_->any_set) {
+        m.dock_->splitting = false;
+        if (!m.input_.mouse_down_) { m.dock_->void_key = 0; }
         return;
     }
-    dock_relayout();
+    dock_relayout(ui);
 
-    const f32 lh    = m_->font_.line_height(0);
+    const f32 lh    = m.font_.line_height(0);
     const f32 tab_h = lh + 10.0f;
 
     // dock chrome belongs to no window: usable only when no floating window covers the pointer (a floating dock's own
     // window excepted: its tab bars sit on its body)
-    const bool free_pointer = m_->win_.hovered_window_prev_ == 0 || m_->hovered_docked_prev_;
+    const bool free_pointer = m.win_.hovered_window_prev_ == 0 || m.hovered_docked_prev_;
 
     for (u32 ni = 0; ni < max_dock_nodes; ++ni) {
-        dock_node& n = m_->dock_->nodes[ni];
+        dock_node& n = m.dock_->nodes[ni];
         if (!n.used) { continue; }
-        const dock_space& sp = m_->dock_->spaces[n.space];
+        const dock_space& sp = m.dock_->spaces[n.space];
         if (!sp.set || sp.hidden) { continue; }
 
         // the chrome of a floating dock is drawn into that window's layer, so it stacks with it
         u32 layer = run_base;
         if (sp.owner != 0) {
-            for (u32 i = 0; i < m_->win_.frame_window_count_; ++i) {
-                if (m_->win_.frame_windows_[i]->key == sp.owner) { layer = i; break; }
+            for (u32 i = 0; i < m.win_.frame_window_count_; ++i) {
+                if (m.win_.frame_windows_[i]->key == sp.owner) { layer = i; break; }
             }
         }
-        switch_run(layer);
-        const bool free = free_pointer || (sp.owner != 0 && m_->win_.hovered_window_prev_ == sp.owner);
-        const auto chrome = [&](id key, const rect& r) { return interact_impl(key, r, free); };
+        switch_run(ui, layer);
+        const bool free = free_pointer || (sp.owner != 0 && m.win_.hovered_window_prev_ == sp.owner);
+        const auto chrome = [&](id key, const rect& r) { return interact_impl(ui, key, r, free); };
 
         if (!n.leaf()) { // splitter between the two children
-            const dock_node& a = m_->dock_->nodes[n.child[0]];
-            const dock_node& b = m_->dock_->nodes[n.child[1]];
+            const dock_node& a = m.dock_->nodes[n.child[0]];
+            const dock_node& b = m.dock_->nodes[n.child[1]];
             const rect gap = n.vertical ? rect{{n.shown_area.min.x, a.shown_area.max.y}, {n.shown_area.max.x, b.shown_area.min.y}}
                                         : rect{{a.shown_area.max.x, n.shown_area.min.y}, {b.shown_area.min.x, n.shown_area.max.y}};
             const id skey = part_id(part::dock_splitter, static_cast<id>(ni + 1));
             const interaction in = chrome(skey, gap.expanded(1.5f));
             if (in.hovered || in.held) {
-                m_->cursor_ = n.vertical ? cursor_kind::resize_ns : cursor_kind::resize_ew;
+                m.cursor_ = n.vertical ? cursor_kind::resize_ns : cursor_kind::resize_ew;
             }
-            if (gap.expanded(1.5f).contains(m_->input_.mouse_)) { m_->dock_chrome_cur_ = true; }
-            if (in.hovered && m_->input_.mouse_pressed_ && dock_double_click(skey)) { // a double click shares the space equally again
+            if (gap.expanded(1.5f).contains(m.input_.mouse_)) { m.dock_chrome_cur_ = true; }
+            if (in.hovered && m.input_.mouse_pressed_ && dock_double_click(ui, skey)) { // a double click shares the space equally again
                 n.ratio    = 0.5f;
-                m_->dock_->void_key = skey;
+                m.dock_->void_key = skey;
             }
-            if (in.held && m_->dock_->void_key != skey) {
-                m_->dock_->splitting = true;
+            if (in.held && m.dock_->void_key != skey) {
+                m.dock_->splitting = true;
                 const f32 span = (n.vertical ? n.area.height() : n.area.width()) - splitter_gap;
                 if (span >= 2.0f * min_node_size) {
-                    const f32 pos = (n.vertical ? m_->input_.mouse_.y - n.area.min.y : m_->input_.mouse_.x - n.area.min.x) - splitter_gap * 0.5f;
+                    const f32 pos = (n.vertical ? m.input_.mouse_.y - n.area.min.y : m.input_.mouse_.x - n.area.min.x) - splitter_gap * 0.5f;
                     n.ratio = std::clamp(pos / span, min_node_size / span, 1.0f - min_node_size / span);
                 }
             }
-            const color line = lerp(m_->style_.border, m_->style_.accent, in.held ? 1.0f : (in.hovered ? 0.7f : 0.0f));
-            m_->dl_.rect_filled(gap, line.scaled_alpha(in.hovered || in.held ? 0.9f : 0.55f));
+            const color line = lerp(m.style_.border, m.style_.accent, in.held ? 1.0f : (in.hovered ? 0.7f : 0.0f));
+            m.dl_.rect_filled(gap, line.scaled_alpha(in.hovered || in.held ? 0.9f : 0.55f));
             continue;
         }
 
         std::array<window_state*, max_windows> tabs{};
         u32 count = 0;
-        for (u32 i = 0; i < m_->win_.frame_window_count_; ++i) {
-            window_state* w = m_->win_.frame_windows_[i];
+        for (u32 i = 0; i < m.win_.frame_window_count_; ++i) {
+            window_state* w = m.win_.frame_windows_[i];
             if (w->dock == ni + 1 && w->docked_now) { tabs[count++] = w; }
         }
         if (count == 0) { continue; }
@@ -769,18 +806,18 @@ void context::dock_end_frame()
         if (!active_found) { n.active = tabs[0]->key; }
 
         const rect bar = {n.shown_area.min, {n.shown_area.max.x, n.shown_area.min.y + tab_h}};
-        if (bar.contains(m_->input_.mouse_)) { m_->dock_chrome_cur_ = true; }
+        if (bar.contains(m.input_.mouse_)) { m.dock_chrome_cur_ = true; }
         shape_style head;
-        head.fill_top    = lerp(m_->style_.title_bg, color{255, 255, 255, m_->style_.title_bg.a}, m_->style_.gradient * 0.8f);
-        head.fill_bottom = m_->style_.title_bg;
-        m_->dl_.shape(bar, head);
-        m_->dl_.rect_filled({{bar.min.x, bar.max.y - 1.0f}, bar.max}, m_->style_.border);
+        head.fill_top    = lerp(m.style_.title_bg, color{255, 255, 255, m.style_.title_bg.a}, m.style_.gradient * 0.8f);
+        head.fill_bottom = m.style_.title_bg;
+        m.dl_.shape(bar, head);
+        m.dl_.rect_filled({{bar.min.x, bar.max.y - 1.0f}, bar.max}, m.style_.border);
 
         // tab widths: as wide as the title, squeezed equally when they do not all fit
         std::array<f32, max_windows> widths{};
         f32 total = 0.0f;
         for (u32 i = 0; i < count; ++i) {
-            widths[i] = dock_tab_width(*tabs[i]);
+            widths[i] = dock_tab_width(ui, *tabs[i]);
             total += widths[i];
         }
         const f32 squeeze = total > bar.width() ? bar.width() / total : 1.0f;
@@ -802,185 +839,185 @@ void context::dock_end_frame()
 
             const id key = part_id(part::dock_tab, w.key);
             const interaction in = chrome(key, cell);
-            if (in.hovered && m_->input_.mouse_pressed_) {
+            if (in.hovered && m.input_.mouse_pressed_) {
                 n.active        = w.key;
-                m_->dock_->press_pos = m_->input_.mouse_;
-                if (dock_double_click(key)) { // a double click floats the window where the pane is
+                m.dock_->press_pos = m.input_.mouse_;
+                if (dock_double_click(ui, key)) { // a double click floats the window where the pane is
                     dock_detach(w);
                     w.pos = {n.shown_area.min.x + 24.0f, n.shown_area.min.y + 24.0f};
-                    bring_to_front(w.key);
+                    bring_to_front(ui, w.key);
                     continue;
                 }
             }
             if (in.held) {
-                const vec2 d = m_->input_.mouse_ - m_->dock_->press_pos;
+                const vec2 d = m.input_.mouse_ - m.dock_->press_pos;
                 // along its own bar a tab moves among the others (which make room) ...
-                const bool in_bar = m_->input_.mouse_.y >= bar.min.y - 14.0f && m_->input_.mouse_.y <= bar.max.y + 14.0f;
+                const bool in_bar = m.input_.mouse_.y >= bar.min.y - 14.0f && m.input_.mouse_.y <= bar.max.y + 14.0f;
                 if (count > 1 && in_bar) {
                     u32 want = 0;
                     for (u32 j = 0; j < count; ++j) {
-                        if (j != i && m_->input_.mouse_.x > centers[j]) { ++want; }
+                        if (j != i && m.input_.mouse_.x > centers[j]) { ++want; }
                     }
-                    if (want != i) { dock_move_tab(w, want); }
+                    if (want != i) { dock_move_tab(ui, w, want); }
                 } else if (dot(d, d) > 36.0f) {
                     // ... pulled away, it undocks and floats under the pointer
                     const f32 fw = w.float_size.x > 0.0f ? w.float_size.x : 320.0f;
                     dock_detach(w);
-                    w.pos = {m_->input_.mouse_.x - std::min(fw * 0.25f, 80.0f), m_->input_.mouse_.y - tab_h * 0.5f};
-                    bring_to_front(w.key);
-                    m_->active_ = part_id(part::title_drag, w.key);
+                    w.pos = {m.input_.mouse_.x - std::min(fw * 0.25f, 80.0f), m.input_.mouse_.y - tab_h * 0.5f};
+                    bring_to_front(ui, w.key);
+                    m.active_ = part_id(part::title_drag, w.key);
                     continue;
                 }
             }
 
             const bool sel = w.key == n.active;
-            anim_slot& a = anim_for(key);
-            a.hover  = approach(a.hover, in.hovered ? 1.0f : 0.0f);
-            a.toggle = approach(a.toggle, sel ? 1.0f : 0.0f);
+            anim_slot& a = anim_for(ui, key);
+            a.hover  = approach(ui, a.hover, in.hovered ? 1.0f : 0.0f);
+            a.toggle = approach(ui, a.toggle, sel ? 1.0f : 0.0f);
             if (a.toggle > 0.01f || a.hover > 0.01f) {
                 shape_style bg;
-                bg.radius      = radii(m_->style_.rounding * 0.6f, corners::top);
-                bg.fill_top    = m_->style_.window_bg.scaled_alpha(a.toggle);
+                bg.radius      = radii(m.style_.rounding * 0.6f, corners::top);
+                bg.fill_top    = m.style_.window_bg.scaled_alpha(a.toggle);
                 bg.fill_bottom = bg.fill_top;
-                if (!sel) { bg.fill_top = m_->style_.widget_hover.scaled_alpha(0.6f * a.hover); bg.fill_bottom = bg.fill_top; }
-                m_->dl_.shape({{cell.min.x + 1.0f, cell.min.y + 3.0f}, {cell.max.x - 1.0f, cell.max.y}}, bg);
+                if (!sel) { bg.fill_top = m.style_.widget_hover.scaled_alpha(0.6f * a.hover); bg.fill_bottom = bg.fill_top; }
+                m.dl_.shape({{cell.min.x + 1.0f, cell.min.y + 3.0f}, {cell.max.x - 1.0f, cell.max.y}}, bg);
             }
             if (sel) {
-                m_->dl_.rect_filled({{cell.min.x + 6.0f, cell.max.y - 2.0f}, {cell.max.x - 6.0f, cell.max.y}}, m_->style_.accent);
+                m.dl_.rect_filled({{cell.min.x + 6.0f, cell.max.y - 2.0f}, {cell.max.x - 6.0f, cell.max.y}}, m.style_.accent);
             }
-            m_->dl_.push_clip({{cell.min.x + 4.0f, cell.min.y}, {cell.max.x - 4.0f, cell.max.y}});
-            m_->dl_.text({cell.min.x + 13.0f, cell.min.y + (tab_h - lh) * 0.5f}, lerp(m_->style_.text_dim, m_->style_.text, std::max(a.toggle, a.hover * 0.7f)),
+            m.dl_.push_clip({{cell.min.x + 4.0f, cell.min.y}, {cell.max.x - 4.0f, cell.max.y}});
+            m.dl_.text({cell.min.x + 13.0f, cell.min.y + (tab_h - lh) * 0.5f}, lerp(m.style_.text_dim, m.style_.text, std::max(a.toggle, a.hover * 0.7f)),
                      {w.title.data(), w.title_len}, 0);
-            m_->dl_.pop_clip();
+            m.dl_.pop_clip();
         }
 
         // the rest of the bar is a grip that drags the whole pane with all its tabs
         const rect grip = {{x, bar.min.y}, bar.max};
         if (grip.width() >= 16.0f) {
             const interaction in = chrome(part_id(part::dock_grip, static_cast<id>(ni + 1)), grip);
-            if (in.hovered && m_->input_.mouse_pressed_) {
-                m_->dock_->group_src   = static_cast<u8>(ni);
-                m_->dock_->group_moved = false;
-                m_->dock_->press_pos   = m_->input_.mouse_;
+            if (in.hovered && m.input_.mouse_pressed_) {
+                m.dock_->group_src   = static_cast<u8>(ni);
+                m.dock_->group_moved = false;
+                m.dock_->press_pos   = m.input_.mouse_;
             }
-            if (in.held && m_->dock_->group_src == ni && !m_->dock_->group_moved) {
-                const vec2 d = m_->input_.mouse_ - m_->dock_->press_pos;
-                m_->dock_->group_moved = dot(d, d) > 36.0f;
+            if (in.held && m.dock_->group_src == ni && !m.dock_->group_moved) {
+                const vec2 d = m.input_.mouse_ - m.dock_->press_pos;
+                m.dock_->group_moved = dot(d, d) > 36.0f;
             }
-            const bool lit = in.hovered || (in.held && m_->dock_->group_src == ni);
-            const color dots = m_->style_.text_dim.scaled_alpha(lit ? 0.9f : 0.35f);
+            const bool lit = in.hovered || (in.held && m.dock_->group_src == ni);
+            const color dots = m.style_.text_dim.scaled_alpha(lit ? 0.9f : 0.35f);
             const f32 gx = bar.max.x - 12.0f;
             const f32 gy = bar.min.y + (tab_h - 12.0f) * 0.5f;
             for (u32 cx = 0; cx < 2; ++cx) {
                 for (u32 cy = 0; cy < 3; ++cy) {
                     const f32 px = gx + static_cast<f32>(cx) * 4.0f;
                     const f32 py = gy + static_cast<f32>(cy) * 4.0f;
-                    m_->dl_.rect_filled({{px, py}, {px + 2.0f, py + 2.0f}}, dots);
+                    m.dl_.rect_filled({{px, py}, {px + 2.0f, py + 2.0f}}, dots);
                 }
             }
         }
     }
-    switch_run(run_base);
+    switch_run(ui, run_base);
 
     // a pane being carried by its grip: where it would land, and the drop
-    if (m_->dock_->group_src != no_node) {
-        const bool src_ok = m_->dock_->nodes[m_->dock_->group_src].used && m_->dock_->nodes[m_->dock_->group_src].leaf() &&
-                            m_->dock_->spaces[m_->dock_->nodes[m_->dock_->group_src].space].set;
-        if (!src_ok || (!m_->input_.mouse_down_ && !m_->input_.mouse_released_) || key_pressed(key::escape)) { // (Esc: the pane stays where it is)
-            m_->dock_->group_src   = no_node;
-            m_->dock_->group_moved = false;
-        } else if (m_->dock_->group_moved) {
+    if (m.dock_->group_src != no_node) {
+        const bool src_ok = m.dock_->nodes[m.dock_->group_src].used && m.dock_->nodes[m.dock_->group_src].leaf() &&
+                            m.dock_->spaces[m.dock_->nodes[m.dock_->group_src].space].set;
+        if (!src_ok || (!m.input_.mouse_down_ && !m.input_.mouse_released_) || ui.key_pressed(key::escape)) { // (Esc: the pane stays where it is)
+            m.dock_->group_src   = no_node;
+            m.dock_->group_moved = false;
+        } else if (m.dock_->group_moved) {
             std::array<window_state*, max_windows> group{};
             u32 count = 0;
-            for (u32 i = 0; i < m_->win_.frame_window_count_; ++i) {
-                if (m_->win_.frame_windows_[i]->dock == m_->dock_->group_src + 1u && m_->win_.frame_windows_[i]->docked_now) { group[count++] = m_->win_.frame_windows_[i]; }
+            for (u32 i = 0; i < m.win_.frame_window_count_; ++i) {
+                if (m.win_.frame_windows_[i]->dock == m.dock_->group_src + 1u && m.win_.frame_windows_[i]->docked_now) { group[count++] = m.win_.frame_windows_[i]; }
             }
             std::sort(group.begin(), group.begin() + count, [](const window_state* a, const window_state* b) {
                 return a->dock_order < b->dock_order;
             });
-            const dock_target t = m_->input_.mod_shift_ ? dock_target{} : dock_pick(m_->input_.mouse_, m_->dock_->group_src, group[0] != nullptr ? group[0]->float_size : vec2{}); // (Shift: do not dock, float)
-            if (m_->input_.mouse_released_) {
-                const id active = m_->dock_->nodes[m_->dock_->group_src].active;
+            const dock_target t = m.input_.mod_shift_ ? dock_target{} : dock_pick(ui, m.input_.mouse_, m.dock_->group_src, group[0] != nullptr ? group[0]->float_size : vec2{}); // (Shift: do not dock, float)
+            if (m.input_.mouse_released_) {
+                const id active = m.dock_->nodes[m.dock_->group_src].active;
                 if (t.valid && count > 0) {
-                    dock_attach(*group[0], t.space, t.node, t.zone, t.outer, t.share, t.tab);
+                    dock_attach(ui, *group[0], t.space, t.node, t.zone, t.outer, t.share, t.tab);
                     const u32 leaf = group[0]->dock;
                     for (u32 i = 1; i < count && leaf != 0; ++i) {
-                        dock_attach(*group[i], t.space, static_cast<u8>(leaf - 1), dock_zone::center, false, 0.0f,
+                        dock_attach(ui, *group[i], t.space, static_cast<u8>(leaf - 1), dock_zone::center, false, 0.0f,
                                     t.tab >= 0 ? t.tab + static_cast<int>(i) : -1);
                     }
-                    if (leaf != 0) { m_->dock_->nodes[leaf - 1].active = active; }
+                    if (leaf != 0) { m.dock_->nodes[leaf - 1].active = active; }
                 } else {
                     // dropped on nothing: the windows float again, fanned out from the pointer
                     for (u32 i = 0; i < count; ++i) {
                         const f32 fw = group[i]->float_size.x > 0.0f ? group[i]->float_size.x : 320.0f;
                         dock_detach(*group[i]);
                         const f32 fan = static_cast<f32>(i) * 26.0f;
-                        group[i]->pos = {m_->input_.mouse_.x - std::min(fw * 0.25f, 80.0f) + fan, m_->input_.mouse_.y - tab_h * 0.5f + fan};
-                        bring_to_front(group[i]->key);
+                        group[i]->pos = {m.input_.mouse_.x - std::min(fw * 0.25f, 80.0f) + fan, m.input_.mouse_.y - tab_h * 0.5f + fan};
+                        bring_to_front(ui, group[i]->key);
                     }
                 }
-                m_->dock_->group_src   = no_node;
-                m_->dock_->group_moved = false;
-                m_->dock_->drag_win    = 0;
-                m_->dock_->drag_prev   = 0;
-                m_->dock_->target_prev = {};
+                m.dock_->group_src   = no_node;
+                m.dock_->group_moved = false;
+                m.dock_->drag_win    = 0;
+                m.dock_->drag_prev   = 0;
+                m.dock_->target_prev = {};
             } else {
-                m_->dock_->target_cur = t;
-                m_->dock_->drag_win   = group[0] != nullptr ? group[0]->key : m_->dock_->nodes[m_->dock_->group_src].active;
+                m.dock_->target_cur = t;
+                m.dock_->drag_win   = group[0] != nullptr ? group[0]->key : m.dock_->nodes[m.dock_->group_src].active;
                 // the pane follows the pointer as a small ghost of its tab bar
-                const u32 saved_owner = m_->run_owner_;
-                switch_run(run_overlay);
-                m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+                const u32 saved_owner = m.run_owner_;
+                switch_run(ui, run_overlay);
+                m.dl_.push_clip_absolute({{0.0f, 0.0f}, m.display_});
                 const std::string label = count > 1 ? std::format("{} windows", count)
                                                     : std::string{group[0] != nullptr ? std::string_view{group[0]->title.data(), group[0]->title_len} : ""};
-                const f32 gw = m_->font_.measure(0, label).x + 28.0f;
-                const rect ghost = rect::from_size({m_->input_.mouse_.x + 12.0f, m_->input_.mouse_.y + 10.0f}, {gw, tab_h});
+                const f32 gw = m.font_.measure(0, label).x + 28.0f;
+                const rect ghost = rect::from_size({m.input_.mouse_.x + 12.0f, m.input_.mouse_.y + 10.0f}, {gw, tab_h});
                 shape_style gs;
-                gs.radius       = radii(m_->style_.rounding * 0.6f);
-                gs.fill_top     = m_->style_.window_bg.scaled_alpha(0.92f);
+                gs.radius       = radii(m.style_.rounding * 0.6f);
+                gs.fill_top     = m.style_.window_bg.scaled_alpha(0.92f);
                 gs.fill_bottom  = gs.fill_top;
-                gs.border       = m_->style_.accent;
+                gs.border       = m.style_.accent;
                 gs.border_width = 1.5f;
                 gs.shadow       = color{0, 0, 0, 110};
                 gs.shadow_blur  = 10.0f;
-                m_->dl_.shape(ghost, gs);
-                m_->dl_.text({ghost.min.x + 14.0f, ghost.min.y + (tab_h - lh) * 0.5f}, m_->style_.text, label, 0);
-                m_->dl_.pop_clip();
-                switch_run(saved_owner);
+                m.dl_.shape(ghost, gs);
+                m.dl_.text({ghost.min.x + 14.0f, ghost.min.y + (tab_h - lh) * 0.5f}, m.style_.text, label, 0);
+                m.dl_.pop_clip();
+                switch_run(ui, saved_owner);
             }
         }
     }
 
     // the drop preview of a window being dragged over a space, and the drop itself
-    if (m_->dock_->target_cur.space < max_dock_spaces) {
-        const dock_target& tg = m_->dock_->target_cur;
-        const u32 saved_owner = m_->run_owner_;
-        switch_run(run_overlay);
-        m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+    if (m.dock_->target_cur.space < max_dock_spaces) {
+        const dock_target& tg = m.dock_->target_cur;
+        const u32 saved_owner = m.run_owner_;
+        switch_run(ui, run_overlay);
+        m.dl_.push_clip_absolute({{0.0f, 0.0f}, m.display_});
         if (tg.valid) {
             shape_style pv;
-            pv.radius       = radii(m_->style_.rounding * 0.6f);
-            pv.fill_top     = m_->style_.accent.scaled_alpha(0.22f);
-            pv.fill_bottom  = m_->style_.accent.scaled_alpha(0.14f);
-            pv.border       = m_->style_.accent.scaled_alpha(0.9f);
+            pv.radius       = radii(m.style_.rounding * 0.6f);
+            pv.fill_top     = m.style_.accent.scaled_alpha(0.22f);
+            pv.fill_bottom  = m.style_.accent.scaled_alpha(0.14f);
+            pv.border       = m.style_.accent.scaled_alpha(0.9f);
             pv.border_width = 2.0f;
-            m_->dl_.shape(tg.preview.expanded(-3.0f), pv);
-            if (tg.tab >= 0) { m_->dl_.rect_filled(tg.marker, m_->style_.accent); } // where the tab would go
+            m.dl_.shape(tg.preview.expanded(-3.0f), pv);
+            if (tg.tab >= 0) { m.dl_.rect_filled(tg.marker, m.style_.accent); } // where the tab would go
         }
         std::array<dock_guide, 9> guides;
-        const u32 guide_count = dock_guides(m_->dock_->spaces[tg.space], tg.leaf, guides);
+        const u32 guide_count = dock_guides(ui, m.dock_->spaces[tg.space], tg.leaf, guides);
         for (u32 i = 0; i < guide_count; ++i) {
             const dock_guide& g = guides[i];
             const bool hot = tg.on_guide && tg.valid && tg.zone == g.zone && tg.outer == g.outer;
             shape_style gs;
-            gs.radius       = radii(m_->style_.rounding * 0.6f);
-            gs.fill_top     = hot ? m_->style_.accent.scaled_alpha(0.95f) : m_->style_.window_bg.scaled_alpha(0.9f);
+            gs.radius       = radii(m.style_.rounding * 0.6f);
+            gs.fill_top     = hot ? m.style_.accent.scaled_alpha(0.95f) : m.style_.window_bg.scaled_alpha(0.9f);
             gs.fill_bottom  = gs.fill_top;
-            gs.border       = m_->style_.accent.scaled_alpha(hot ? 1.0f : 0.65f);
+            gs.border       = m.style_.accent.scaled_alpha(hot ? 1.0f : 0.65f);
             gs.border_width = 1.5f;
             gs.shadow       = color{0, 0, 0, 90};
             gs.shadow_blur  = 6.0f;
-            m_->dl_.shape(g.r, gs);
+            m.dl_.shape(g.r, gs);
             // what it does, drawn small: the part of the pane the new window takes (all of it: a tab)
             const rect in = g.r.expanded(-7.0f);
             const vec2 c  = in.center();
@@ -992,28 +1029,28 @@ void context::dock_end_frame()
             case dock_zone::bottom: part.min.y = c.y; break;
             default:                part = in.expanded(-2.0f); break;
             }
-            m_->dl_.rect_filled(in, (hot ? m_->style_.window_bg : m_->style_.text_dim).scaled_alpha(0.3f));
-            m_->dl_.rect_filled(part, hot ? color{255, 255, 255, 240} : m_->style_.accent);
+            m.dl_.rect_filled(in, (hot ? m.style_.window_bg : m.style_.text_dim).scaled_alpha(0.3f));
+            m.dl_.rect_filled(part, hot ? color{255, 255, 255, 240} : m.style_.accent);
         }
-        m_->dl_.pop_clip();
-        switch_run(saved_owner);
+        m.dl_.pop_clip();
+        switch_run(ui, saved_owner);
     }
-    if (m_->input_.mouse_released_ && m_->dock_->target_prev.valid && m_->dock_->drag_prev != 0 && m_->dock_->drag_prev != m_->dock_->void_key &&
-        m_->dock_->target_prev.space < max_dock_spaces) {
-        const dock_space& target_space = m_->dock_->spaces[m_->dock_->target_prev.space];
-        if (target_space.set && target_space.drop.contains(m_->input_.mouse_)) {
+    if (m.input_.mouse_released_ && m.dock_->target_prev.valid && m.dock_->drag_prev != 0 && m.dock_->drag_prev != m.dock_->void_key &&
+        m.dock_->target_prev.space < max_dock_spaces) {
+        const dock_space& target_space = m.dock_->spaces[m.dock_->target_prev.space];
+        if (target_space.set && target_space.drop.contains(m.input_.mouse_)) {
             // let go over a space: the window that was being dragged joins it
-            window_state* dragged = window_find(m_->dock_->drag_prev);
+            window_state* dragged = window_find(ui, m.dock_->drag_prev);
             if (dragged != nullptr && dragged->dock == 0) {
-                const dock_target t = m_->dock_->target_prev;
-                dock_attach(*dragged, t.space, t.node, t.zone, t.outer, t.share, t.tab);
+                const dock_target t = m.dock_->target_prev;
+                dock_attach(ui, *dragged, t.space, t.node, t.zone, t.outer, t.share, t.tab);
             }
         }
     }
-    dock_prune();
-    dock_animate();
-    m_->dock_->splitting = false;
-    if (!m_->input_.mouse_down_) { m_->dock_->void_key = 0; }
+    dock_prune(ui);
+    dock_animate(ui);
+    m.dock_->splitting = false;
+    if (!m.input_.mouse_down_) { m.dock_->void_key = 0; }
 }
 
 // layout text ------------------------------------------------------------------------------------
@@ -1211,7 +1248,7 @@ bool context::dock_load_layout(std::string_view text)
     for (dock_space& sp : m_->dock_->spaces) { sp.root = no_node; }
 
     for (const layout_window& lw : lp.windows) {
-        window_state* w = window_for(lw.key, lw.pos, lw.size.x);
+        window_state* w = window_for(*this, lw.key, lw.pos, lw.size.x);
         if (w == nullptr) { continue; }
         w->pos       = lw.pos;
         w->width     = std::max(lw.size.x, 0.0f);
@@ -1221,7 +1258,7 @@ bool context::dock_load_layout(std::string_view text)
     }
     const auto build = [&](auto& self, int index, u8 parent, u8 space) -> u8 {
         const layout_node& pn = lp.nodes[static_cast<std::size_t>(index)];
-        const u8 ni = dock_new_node();
+        const u8 ni = dock_new_node(*this);
         if (ni == no_node) { return no_node; }
         dock_node& n = m_->dock_->nodes[ni];
         n.space  = space;
@@ -1235,7 +1272,7 @@ bool context::dock_load_layout(std::string_view text)
             return ni;
         }
         for (const id key : pn.windows) {
-            window_state* w = window_for(key, {}, 0.0f);
+            window_state* w = window_for(*this, key, {}, 0.0f);
             if (w == nullptr) { continue; }
             w->float_size = {w->width, w->height};
             w->dock       = static_cast<u32>(ni) + 1;
@@ -1245,7 +1282,7 @@ bool context::dock_load_layout(std::string_view text)
         return ni;
     };
     for (const layout_space& ls : lp.spaces) {
-        const u8 si = dock_space_at(ls.key);
+        const u8 si = dock_space_at(*this, ls.key);
         if (si == no_node) { continue; }
         dock_space& sp = m_->dock_->spaces[si];
         if (ls.edge > 0.0f) {
@@ -1254,7 +1291,7 @@ bool context::dock_load_layout(std::string_view text)
         }
         if (ls.root >= 0) { sp.root = build(build, ls.root, no_node, si); }
     }
-    dock_relayout();
+    dock_relayout(*this);
     return true;
 }
 

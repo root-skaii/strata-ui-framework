@@ -23,9 +23,12 @@ option(STRATA_FAST_MATH     "compile with /fp:fast"                ON)
 # cpu it runs on -- and the ui gains little from it. see README "requirements".
 option(STRATA_AVX2          "compile with /arch:AVX2"              OFF)
 option(STRATA_WERROR        "treat warnings as errors"             OFF)
+option(STRATA_LTO          "whole-program optimisation (/GL + /LTCG, or ThinLTO) outside debug builds; off: much faster relinks" ON)
 # AddressSanitizer on everything built here (library, sandbox, tests): out-of-bounds reads / writes, use after free.
 # the x64-asan preset turns it on together with the fuzzer
 option(STRATA_ASAN          "build with AddressSanitizer (/fsanitize=address)" OFF)
+# off now and then: a file that forgets an include it needs still compiles while the pch hands it over
+option(STRATA_PCH           "precompile the standard headers the public headers include" ON)
 # strata_fuzz: libFuzzer over the parsers (config, theme, dock layout, saved state, rich text, key chords) and text editing
 option(STRATA_BUILD_FUZZERS "build the libFuzzer target strata_fuzz (use with STRATA_ASAN)" OFF)
 # ctest: the headless self-test, and screenshot comparisons of the sandbox scenes against sandbox/golden/*.png
@@ -55,7 +58,7 @@ if(PROJECT_IS_TOP_LEVEL)
     # /GL + /LTCG for everything that isn't a debug build. clang-cl gets explicit
     # ThinLTO instead (see the Clang branch below) -- CMake's built-in IPO switch
     # only emits full -flto for Clang, not thin, so it's wired by hand there.
-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if(STRATA_LTO AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE        ON)
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL     ON)
@@ -95,6 +98,16 @@ target_compile_definitions(strata_options INTERFACE
     _HAS_EXCEPTIONS=0
 )
 
+# nearly all of a strata .cpp's compile time is parsing these (<format> and <chrono> via log.hpp above all), not
+# strata's own code. each target linking strata_options builds its own pch
+if(STRATA_PCH)
+    target_precompile_headers(strata_options INTERFACE
+        <algorithm> <array> <chrono> <cmath> <compare> <concepts> <cstddef> <cstdint> <cstdio> <cstring> <ctime>
+        <deque> <expected> <format> <functional> <initializer_list> <limits> <memory> <mutex> <new> <ranges> <span>
+        <string> <string_view> <type_traits> <utility> <vector>
+    )
+endif()
+
 if(MSVC)
     target_compile_options(strata_options INTERFACE
         /std:c++latest /W4 /permissive- /utf-8
@@ -113,7 +126,7 @@ if(MSVC)
         $<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
     )
 
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT STRATA_ASAN)
+    if(STRATA_LTO AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT STRATA_ASAN)
         # ThinLTO: faster to build and to link than MSVC's /GL+LTCG.
         target_compile_options(strata_options INTERFACE $<$<NOT:$<CONFIG:Debug>>:-flto=thin>)
         target_link_options(strata_options INTERFACE $<$<NOT:$<CONFIG:Debug>>:-flto=thin>)

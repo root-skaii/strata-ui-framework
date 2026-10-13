@@ -5,16 +5,24 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 
 
 #include <algorithm>
 
 namespace strata {
 
-void context::push_id_value(id key) noexcept
+using namespace internal;
+
+static void scroll_reveal_rect(context& ui, const rect& item, bool center) noexcept;
+// innermost open child_flags::horizontal region (owns the x offset)
+[[nodiscard]] static child_state* horizontal_child(const context& ui) noexcept;
+
+void internal::push_id_value(context& ui, id key) noexcept
 {
-    if (!m_->ids_.push_raw(key)) {
-        report_limit("push_id nesting (max_id_depth): ids will collide", max_id_depth);
+    auto& m = context_access::of(ui);
+    if (!m.ids_.push_raw(key)) {
+        report_limit(ui, "push_id nesting (max_id_depth): ids will collide", max_id_depth);
     }
 }
 
@@ -22,9 +30,9 @@ void context::push_id_value(id key) noexcept
 
 void context::nav_begin(std::string_view id_label)
 {
-    const id key = widget_id(id_label);
+    const id key = widget_id(*this, id_label);
     if (m_->nav_.scope != 0) {
-        report_limit("nav_begin inside another nav scope (only one at a time)", 1);
+        report_limit(*this, "nav_begin inside another nav scope (only one at a time)", 1);
         return;
     }
     if (m_->nav_.scope_key != key) { // another list: start its cursor over
@@ -37,28 +45,31 @@ void context::nav_begin(std::string_view id_label)
     m_->nav_.active = m_->focus_id_ == 0 && m_->hotkey_.hotkey_capture_ == 0;
 }
 
-void context::nav_record(id key, const rect& r, u32 depth, bool node, bool open) noexcept
+void internal::nav_record(context& ui, id key, const rect& r, u32 depth, bool node, bool open) noexcept
 {
-    if (m_->nav_.scope == 0 || key == 0) {
+    auto& m = context_access::of(ui);
+    if (m.nav_.scope == 0 || key == 0) {
         return;
     }
-    m_->nav_.items.push_back({key, r, depth, node, open});
+    m.nav_.items.push_back({key, r, depth, node, open});
 }
 
 // the row the cursor was on when Enter was pressed last frame reports it as a press, once
-bool context::nav_take(id key) noexcept
+bool internal::nav_take(context& ui, id key) noexcept
 {
-    if (m_->nav_.scope == 0 || key == 0 || m_->nav_.activate_pending != key) {
+    auto& m = context_access::of(ui);
+    if (m.nav_.scope == 0 || key == 0 || m.nav_.activate_pending != key) {
         return false;
     }
-    m_->nav_.activate_pending = 0;
+    m.nav_.activate_pending = 0;
     return true;
 }
 
-void context::nav_click(id key) noexcept
+void internal::nav_click(context& ui, id key) noexcept
 {
-    if (m_->nav_.scope != 0) {
-        m_->nav_.cursor = key;
+    auto& m = context_access::of(ui);
+    if (m.nav_.scope != 0) {
+        m.nav_.cursor = key;
     }
 }
 
@@ -109,13 +120,13 @@ void context::nav_end()
             case key::enter:     if (found) { activate = true; } break;
             case key::right:
                 if (found && items[at].node) {
-                    if (!items[at].open) { tree_open_set(items[at].key, true); moved = true; }
+                    if (!items[at].open) { tree_open_set(*this, items[at].key, true); moved = true; }
                     else                 { step(1); }
                 }
                 break;
             case key::left:
                 if (found && items[at].node && items[at].open) {
-                    tree_open_set(items[at].key, false);
+                    tree_open_set(*this, items[at].key, false);
                     moved = true;
                 } else if (found && items[at].depth > 0) {
                     // step out: the nearest row above that is one level shallower
@@ -137,7 +148,7 @@ void context::nav_end()
         m_->nav_.activate_pending = m_->nav_.cursor;
     }
     if (moved) { // keep the row the cursor moved to in view
-        scroll_reveal_rect(items[at].bounds, false);
+        scroll_reveal_rect(*this, items[at].bounds, false);
     }
     m_->nav_.scope = 0;
 }
@@ -145,31 +156,32 @@ void context::nav_end()
 // scrolling -----------------------------------------------------------------------------------
 
 // scroll offset and visible rect of the innermost scrolling region (child being built, else window); nullptr if none.
-f32* context::scroll_slot(rect& view) noexcept
+f32* internal::scroll_slot(context& ui, rect& view) noexcept
 {
-    if (m_->children_cards_.child_depth_ > m_->child_base_) {
-        child_frame& cf = m_->children_cards_.child_stack_[m_->children_cards_.child_depth_ - 1];
+    auto& m = context_access::of(ui);
+    if (m.children_cards_.child_depth_ > m.child_base_) {
+        child_frame& cf = m.children_cards_.child_stack_[m.children_cards_.child_depth_ - 1];
         if (cf.state == nullptr) { return nullptr; }
         view = cf.inner;
         return &cf.state->scroll;
     }
-    if (m_->cur_ == nullptr) {
+    if (m.cur_ == nullptr) {
         return nullptr;
     }
-    const f32 shown_h = m_->cur_->height > 0.0f ? m_->cur_->height : m_->cur_->capped_h;
+    const f32 shown_h = m.cur_->height > 0.0f ? m.cur_->height : m.cur_->capped_h;
     if (shown_h <= 0.0f) {
         return nullptr;
     }
-    const f32 pad = m_->cur_->menubar ? 0.0f : m_->style_.padding;
-    view = {{m_->cur_->pos.x, m_->cur_->pos.y + m_->cur_->title_h + pad}, {m_->cur_->pos.x + m_->cur_->width, m_->cur_->pos.y + shown_h - pad}};
-    return &m_->cur_->scroll;
+    const f32 pad = m.cur_->menubar ? 0.0f : m.style_.padding;
+    view = {{m.cur_->pos.x, m.cur_->pos.y + m.cur_->title_h + pad}, {m.cur_->pos.x + m.cur_->width, m.cur_->pos.y + shown_h - pad}};
+    return &m.cur_->scroll;
 }
 
 f32 context::scroll_y() const noexcept
 {
     context& self = *const_cast<context*>(this); // the lookup only reads; the slot it finds is what is mutable
     rect     view;
-    const f32* scroll = self.scroll_slot(view);
+    const f32* scroll = scroll_slot(self, view);
     return scroll != nullptr ? *scroll : 0.0f;
 }
 
@@ -177,7 +189,7 @@ f32 context::scroll_max_y() const noexcept
 {
     context& self = *const_cast<context*>(this);
     rect     view;
-    if (self.scroll_slot(view) == nullptr) {
+    if (scroll_slot(self, view) == nullptr) {
         return 0.0f;
     }
     // last frame's value: this frame's content is not finished yet
@@ -189,17 +201,18 @@ f32 context::scroll_max_y() const noexcept
 void context::set_scroll_y(f32 y) noexcept
 {
     rect view;
-    if (f32* scroll = scroll_slot(view); scroll != nullptr) {
+    if (f32* scroll = scroll_slot(*this, view); scroll != nullptr) {
         *scroll = std::max(0.0f, y); // the owner clamps against this frame's content height
     }
 }
 
 // only child_flags::horizontal children scroll sideways: the innermost one owns the x offset
-context::child_state* context::horizontal_child() const noexcept
+static child_state* horizontal_child(const context& ui) noexcept
 {
-    for (u32 d = m_->children_cards_.child_depth_; d-- > m_->child_base_;) {
-        if (has_flag(m_->children_cards_.child_stack_[d].flags, child_flags::horizontal)) {
-            return m_->children_cards_.child_stack_[d].state;
+    auto& m = context_access::of(ui);
+    for (u32 d = m.children_cards_.child_depth_; d-- > m.child_base_;) {
+        if (has_flag(m.children_cards_.child_stack_[d].flags, child_flags::horizontal)) {
+            return m.children_cards_.child_stack_[d].state;
         }
     }
     return nullptr;
@@ -207,15 +220,16 @@ context::child_state* context::horizontal_child() const noexcept
 
 f32 context::scroll_x() const noexcept
 {
-    const child_state* st = horizontal_child();
-    return st != nullptr ? st->scroll_x : 0.0f;
+    const child_state* st = horizontal_child(*this);
+    if (st == nullptr) { return m_->cur_ != nullptr ? m_->cur_->scroll_x : 0.0f; }
+    return st->scroll_x;
 }
 
 f32 context::scroll_max_x() const noexcept
 {
-    const child_state* st = horizontal_child();
+    const child_state* st = horizontal_child(*this);
     if (st == nullptr) {
-        return 0.0f;
+        return m_->cur_ != nullptr ? std::max(0.0f, m_->cur_->max_scroll_x) : 0.0f;
     }
     // last frame's value, like scroll_max_y
     for (u32 d = m_->children_cards_.child_depth_; d-- > m_->child_base_;) {
@@ -228,17 +242,19 @@ f32 context::scroll_max_x() const noexcept
 
 void context::set_scroll_x(f32 x) noexcept
 {
-    if (child_state* st = horizontal_child(); st != nullptr) {
+    if (child_state* st = horizontal_child(*this); st != nullptr) {
         st->scroll_x = std::max(0.0f, x); // end_child clamps against this frame's content width
+    } else if (m_->cur_ != nullptr) {
+        m_->cur_->scroll_x = std::max(0.0f, x); // the next begin_window clamps it
     }
 }
 
 // scrolls minimally (or centres). this frame is laid out already, so the next frame shows it -- hence callers
 // revealing a selection call it every frame
-void context::scroll_reveal_rect(const rect& item, bool center) noexcept
+static void scroll_reveal_rect(context& ui, const rect& item, bool center) noexcept
 {
     rect view;
-    f32* scroll = scroll_slot(view);
+    f32* scroll = scroll_slot(ui, view);
     if (scroll == nullptr || view.height() <= 0.0f) {
         return;
     }
@@ -257,12 +273,12 @@ void context::scroll_reveal_rect(const rect& item, bool center) noexcept
 
 void context::ensure_item_visible() noexcept
 {
-    scroll_reveal_rect(m_->last_item_rect_, false);
+    scroll_reveal_rect(*this, m_->last_item_rect_, false);
 }
 
 void context::scroll_to_item() noexcept
 {
-    scroll_reveal_rect(m_->last_item_rect_, true);
+    scroll_reveal_rect(*this, m_->last_item_rect_, true);
 }
 
 void context::list_clip_begin(int count, f32 item_height, int& first, int& last)
@@ -274,21 +290,21 @@ void context::list_clip_begin(int count, f32 item_height, int& first, int& last)
     f32 pitch;
     f32 y0;
     if (m_->tree_table_.table_.active) {
-        table_finalize_columns();
-        if (m_->tree_table_.table_.in_row) { table_finish_row(); }
-        table_start_body();
+        table_finalize_columns(*this);
+        if (m_->tree_table_.table_.in_row) { table_finish_row(*this); }
+        table_start_body(*this);
         pitch = std::max(m_->tree_table_.table_.state->row_hint, m_->tree_table_.table_.min_row_h);
         y0    = m_->tree_table_.table_.row_y;
     } else {
         pitch = (item_height > 0.0f ? item_height : m_->font_.line_height(current_font())) + m_->style_.item_spacing;
-        y0    = layout_next_y();
+        y0    = layout_next_y(*this);
     }
     const rect view = m_->dl_.clip();
     first = std::clamp(static_cast<int>(std::floor((view.min.y - y0) / pitch)) - 1, 0, count);
     last  = std::clamp(static_cast<int>(std::ceil((view.max.y - y0) / pitch)) + 1, first, count);
     if (first > 0) {
         if (m_->tree_table_.table_.active) { table_skip_rows(first); }
-        else               { (void)layout_place({0.0f, static_cast<f32>(first) * pitch - m_->style_.item_spacing}); }
+        else               { (void)layout_place(*this, {0.0f, static_cast<f32>(first) * pitch - m_->style_.item_spacing}); }
     }
 }
 
@@ -302,7 +318,7 @@ void context::list_clip_end(int count, f32 item_height, int last)
         table_skip_rows(rest);
     } else {
         const f32 pitch = (item_height > 0.0f ? item_height : m_->font_.line_height(current_font())) + m_->style_.item_spacing;
-        (void)layout_place({0.0f, static_cast<f32>(rest) * pitch - m_->style_.item_spacing});
+        (void)layout_place(*this, {0.0f, static_cast<f32>(rest) * pitch - m_->style_.item_spacing});
     }
 }
 

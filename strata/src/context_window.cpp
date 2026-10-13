@@ -3,6 +3,7 @@
 #include "strata/context.hpp"
 
 #include "context_impl.hpp"
+#include "context_helpers.hpp"
 #include "core/part_id.hpp"
 #include "text_util.hpp"
 #include "widget_util.hpp"
@@ -18,11 +19,16 @@
 namespace strata {
 
 using namespace text;
+using namespace internal;
 
-context::window_state* context::window_for(id key, vec2 pos, f32 width) noexcept
+static void forget_window(context& ui, id key) noexcept;
+static void resume_parent_window(context& ui) noexcept; // ends a nested begin_window: the suspended parent continues
+
+window_state* internal::window_for(context& ui, id key, vec2 pos, f32 width) noexcept
 {
+    auto& m = context_access::of(ui);
     window_state* free_slot = nullptr;
-    for (window_state& w : m_->win_.windows_) {
+    for (window_state& w : m.win_.windows_) {
         if (w.key == key) {
             return &w;
         }
@@ -34,40 +40,42 @@ context::window_state* context::window_for(id key, vec2 pos, f32 width) noexcept
         // table full: the least recently shown window gives up its slot (it restarts where its code places it). exempt:
         // docked windows and floating docks (the layout refers to them), open modals, anything shown this or last frame
         const auto owns_space = [&](id k) {
-            return std::ranges::any_of(m_->dock_->spaces, [k](const dock_space& sp) { return sp.key != 0 && sp.owner == k; });
+            return std::ranges::any_of(m.dock_->spaces, [k](const dock_space& sp) { return sp.key != 0 && sp.owner == k; });
         };
         const auto modal_open = [&](id k) {
-            return std::find(m_->modal_.modal_stack_.begin(), m_->modal_.modal_stack_.begin() + m_->modal_.modal_count_, k) != m_->modal_.modal_stack_.begin() + m_->modal_.modal_count_;
+            return std::find(m.modal_.modal_stack_.begin(), m.modal_.modal_stack_.begin() + m.modal_.modal_count_, k) != m.modal_.modal_stack_.begin() + m.modal_.modal_count_;
         };
-        for (window_state& w : m_->win_.windows_) {
-            if (w.dock != 0 || w.last_frame + 1 >= m_->frame_ || owns_space(w.key) || modal_open(w.key)) { continue; }
+        for (window_state& w : m.win_.windows_) {
+            if (w.dock != 0 || w.last_frame + 1 >= m.frame_ || owns_space(w.key) || modal_open(w.key)) { continue; }
             if (free_slot == nullptr || w.last_frame < free_slot->last_frame) { free_slot = &w; }
         }
         if (free_slot == nullptr) {
-            report_limit("windows (context_config::capacity.windows)", static_cast<u32>(m_->win_.windows_.size()));
+            report_limit(ui, "windows (context_config::capacity.windows)", static_cast<u32>(m.win_.windows_.size()));
             return nullptr;
         }
-        forget_window(free_slot->key);
+        forget_window(ui, free_slot->key);
     }
     *free_slot = {.key = key, .pos = pos, .width = width};
     return free_slot;
 }
 
 // references to a window by key besides its slot: stacking order and keyboard / hover / focus trackers
-void context::forget_window(id key) noexcept
+static void forget_window(context& ui, id key) noexcept
 {
-    if (const u32 z = z_index(key); z != no_z) {
-        std::copy(m_->win_.z_order_.begin() + z + 1, m_->win_.z_order_.begin() + m_->win_.z_count_, m_->win_.z_order_.begin() + z);
-        --m_->win_.z_count_;
+    auto& m = context_access::of(ui);
+    if (const u32 z = z_index(ui, key); z != no_z) {
+        std::copy(m.win_.z_order_.begin() + z + 1, m.win_.z_order_.begin() + m.win_.z_count_, m.win_.z_order_.begin() + z);
+        --m.win_.z_count_;
     }
-    for (id* k : {&m_->win_.focused_window_, &m_->key_window_, &m_->win_.hovered_window_prev_, &m_->win_.hovered_window_cur_}) {
+    for (id* k : {&m.win_.focused_window_, &m.key_window_, &m.win_.hovered_window_prev_, &m.win_.hovered_window_cur_}) {
         if (*k == key) { *k = 0; }
     }
 }
 
-context::window_state* context::window_find(id key) noexcept
+window_state* internal::window_find(context& ui, id key) noexcept
 {
-    for (window_state& w : m_->win_.windows_) {
+    auto& m = context_access::of(ui);
+    for (window_state& w : m.win_.windows_) {
         if (w.key == key) {
             return &w;
         }
@@ -75,9 +83,10 @@ context::window_state* context::window_find(id key) noexcept
     return nullptr;
 }
 
-const context::window_state* context::window_find(id key) const noexcept
+const window_state* internal::window_find(const context& ui, id key) noexcept
 {
-    for (const window_state& w : m_->win_.windows_) {
+    auto& m = context_access::of(ui);
+    for (const window_state& w : m.win_.windows_) {
         if (w.key == key) {
             return &w;
         }
@@ -87,7 +96,7 @@ const context::window_state* context::window_find(id key) const noexcept
 
 rect context::window_rect(std::string_view title) const noexcept
 {
-    const window_state* w = window_find(hash_id(title, m_->ids_.root()));
+    const window_state* w = window_find(*this, hash_id(title, m_->ids_.root()));
     if (w == nullptr) {
         return {};
     }
@@ -98,28 +107,30 @@ rect context::window_rect(std::string_view title) const noexcept
     return rect::from_size(w->pos, {w->width, height});
 }
 
-u32 context::z_index(id key) const noexcept
+u32 internal::z_index(const context& ui, id key) noexcept
 {
-    for (u32 i = 0; i < m_->win_.z_count_; ++i) {
-        if (m_->win_.z_order_[i] == key) {
+    auto& m = context_access::of(ui);
+    for (u32 i = 0; i < m.win_.z_count_; ++i) {
+        if (m.win_.z_order_[i] == key) {
             return i;
         }
     }
     return no_z;
 }
 
-void context::bring_to_front(id key) noexcept
+void internal::bring_to_front(context& ui, id key) noexcept
 {
-    const u32 i = z_index(key);
+    auto& m = context_access::of(ui);
+    const u32 i = z_index(ui, key);
     if (i == no_z) {
-        if (m_->win_.z_count_ < m_->win_.z_order_.size()) {
-            m_->win_.z_order_[m_->win_.z_count_++] = key;
+        if (m.win_.z_count_ < m.win_.z_order_.size()) {
+            m.win_.z_order_[m.win_.z_count_++] = key;
         } else {
-            report_limit("window stacking order (context_config::capacity.windows)", static_cast<u32>(m_->win_.z_order_.size()));
+            report_limit(ui, "window stacking order (context_config::capacity.windows)", static_cast<u32>(m.win_.z_order_.size()));
         }
         return;
     }
-    std::rotate(m_->win_.z_order_.begin() + i, m_->win_.z_order_.begin() + i + 1, m_->win_.z_order_.begin() + m_->win_.z_count_);
+    std::rotate(m.win_.z_order_.begin() + i, m.win_.z_order_.begin() + i + 1, m.win_.z_order_.begin() + m.win_.z_count_);
 }
 
 bool context::begin_window(std::string_view title, vec2 initial_pos, f32 width)
@@ -132,7 +143,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     const id wid = hash_id(title, m_->ids_.root());
     if (m_->cur_ != nullptr) { // begun inside another window's code: suspend that one until this one ends
         if (m_->nest_depth_ >= impl::max_window_nesting) {
-            report_limit("windows begun inside windows (max_window_nesting)", impl::max_window_nesting);
+            report_limit(*this, "windows begun inside windows (max_window_nesting)", impl::max_window_nesting);
             ++m_->nest_overflow_;
             return false;
         }
@@ -145,15 +156,15 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         m_->cur_               = nullptr;
         m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_}); // not clipped to the parent
     }
-    window_state* st = window_for(wid, initial_pos, size.x);
+    window_state* st = window_for(*this, wid, initial_pos, size.x);
     if (st == nullptr) {
         if (m_->nest_depth_ > 0 && m_->cur_ == nullptr) { // put the parent back; this begin's end_window must not close it
-            resume_parent_window();
+            resume_parent_window(*this);
             m_->nest_[m_->nest_depth_++].dud = true;
         }
         return false;
     }
-    if (st->content_h > 0.0f) { apply_pending_scroll(wid, st->scroll, nullptr); } // (once its content has been measured)
+    if (st->content_h > 0.0f) { apply_pending_scroll(*this, wid, st->scroll, &st->scroll_x); } // (once its content has been measured)
     if (!st->size_set) {
         // (the state can exist before the first begin_window when dock_window() got there first)
         st->pos      = initial_pos;
@@ -222,19 +233,19 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     m_->cur_flags_ = flags;
 
     if (m_->nest_depth_ > 0) {
-        push_id_value(wid); // the same widget ids as when this window is begun on its own
+        push_id_value(*this, wid); // the same widget ids as when this window is begun on its own
     } else {
         push_id(title);
     }
     m_->cur_        = st;
     m_->cur_window_ = wid;
 
-    if (z_index(wid) == no_z) {
-        bring_to_front(wid); // first appearance: on top
+    if (z_index(*this, wid) == no_z) {
+        bring_to_front(*this, wid); // first appearance: on top
     }
     // a press on the topmost window under the pointer raises it (docked windows stay behind)
     if (m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && (!docked || st->dock_owner != 0)) {
-        bring_to_front(docked ? st->dock_owner : wid); // (a window in a floating dock raises the whole dock)
+        bring_to_front(*this, docked ? st->dock_owner : wid); // (a window in a floating dock raises the whole dock)
     }
     // ... and focuses it, docked windows too (without restacking), so panel shortcuts know which panel is active
     if (m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && !st->menubar && m_->modal_.modal_top_prev_ == 0) {
@@ -244,25 +255,28 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     // every window's draw commands form their own run so the windows can be restacked
     if (m_->win_.frame_window_count_ < m_->win_.frame_windows_.size()) {
         m_->win_.frame_windows_[m_->win_.frame_window_count_] = st;
-        switch_run(m_->win_.frame_window_count_);
+        switch_run(*this, m_->win_.frame_window_count_);
         ++m_->win_.frame_window_count_;
     }
 
     const f32 lh      = m_->font_.line_height(0);
     const f32 title_h = has_title ? lh + 10.0f : 0.0f;
     const f32 pad     = is_menubar ? 0.0f : m_->style_.padding;
+    const bool horiz  = has_flag(flags, window_flags::horizontal) && !is_menubar;
+    const f32  hbar   = horiz && st->overflow_x && !st->collapsed ? 10.0f : 0.0f; // last frame's, like the vertical bar
+    if (!horiz) { st->overflow_x = false; }
     st->title_h       = title_h;
 
     // collapse arrow + title drag use last frame's geometry
     const rect arrow_hit = rect::from_size(st->pos, {title_h, title_h});
     const rect drag_hit  = {{st->pos.x + (can_collapse ? title_h : 0.0f), st->pos.y}, {st->pos.x + st->width, st->pos.y + title_h}};
 
-    if (can_collapse && interact(part_id(part::collapse_arrow, wid), arrow_hit).pressed) {
+    if (can_collapse && interact(*this, part_id(part::collapse_arrow, wid), arrow_hit).pressed) {
         st->collapsed = !st->collapsed;
     }
     interaction drag_in;
     if (has_title && can_move) {
-        drag_in = interact(part_id(part::title_drag, wid), drag_hit);
+        drag_in = interact(*this, part_id(part::title_drag, wid), drag_hit);
         if (drag_in.held) {
             st->pos += m_->input_.mouse_delta_;
         }
@@ -276,8 +290,8 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         if (key_pressed(key::escape)) { m_->dock_->void_key = wid; } // Esc: this drag does not dock
         if (m_->dock_->void_key != wid && !m_->input_.mod_shift_) {             // ... and neither does one with Shift held
             m_->dock_->drag_win   = wid;
-            const f32 shown_h = st->height > 0.0f ? st->height : title_h + 2.0f * pad + st->content_h;
-            m_->dock_->target_cur = dock_pick(m_->input_.mouse_, no_node, {st->width, shown_h});
+            const f32 shown_h = st->height > 0.0f ? st->height : title_h + 2.0f * pad + st->content_h + hbar;
+            m_->dock_->target_cur = dock_pick(*this, m_->input_.mouse_, no_node, {st->width, shown_h});
         }
     }
 
@@ -285,15 +299,15 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     if (st->resizable && !st->collapsed) {
         const f32 prev_h = st->height > 0.0f ? st->height
                          : st->capped_h > 0.0f ? st->capped_h
-                                               : title_h + pad + st->content_h + pad;
+                                               : title_h + pad + st->content_h + pad + hbar;
         const f32 grip   = 6.0f;
         const f32 corner = 16.0f;
         const f32 x1 = st->pos.x + st->width;
         const f32 y1 = st->pos.y + prev_h;
 
-        const interaction right  = interact(part_id(part::resize_right, wid), {{x1 - grip, st->pos.y + title_h}, {x1, y1 - corner}});
-        const interaction bottom = interact(part_id(part::resize_bottom, wid), {{st->pos.x, y1 - grip}, {x1 - corner, y1}});
-        const interaction edge   = interact(part_id(part::resize_corner, wid), {{x1 - corner, y1 - corner}, {x1, y1}});
+        const interaction right  = interact(*this, part_id(part::resize_right, wid), {{x1 - grip, st->pos.y + title_h}, {x1, y1 - corner}});
+        const interaction bottom = interact(*this, part_id(part::resize_bottom, wid), {{st->pos.x, y1 - grip}, {x1 - corner, y1}});
+        const interaction edge   = interact(*this, part_id(part::resize_corner, wid), {{x1 - corner, y1 - corner}, {x1, y1}});
 
         if (right.hovered || right.held)   { m_->cursor_ = cursor_kind::resize_ew; }
         if (bottom.hovered || bottom.held) { m_->cursor_ = cursor_kind::resize_ns; }
@@ -318,7 +332,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     // an auto-height window does not grow past the bottom of the display: it scrolls instead
     st->capped_h = 0.0f;
     if (!fixed_h && !docked && !st->menubar && !st->collapsed && m_->display_.y > 0.0f) {
-        const f32 wanted = title_h + pad + st->content_h + pad;
+        const f32 wanted = title_h + pad + st->content_h + pad + hbar;
         const f32 room   = std::max(m_->display_.y - st->pos.y - 8.0f, title_h + 48.0f);
         if (wanted > room) { st->capped_h = room; }
     }
@@ -326,7 +340,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     const f32  height  = st->collapsed ? title_h
                        : fixed_h ? st->height
                        : scrolls ? st->capped_h
-                                 : title_h + pad + st->content_h + pad;
+                                 : title_h + pad + st->content_h + pad + hbar;
     const rect frame   = rect::from_size(st->pos, {st->width, height});
     const rect bar     = rect::from_size(st->pos, {st->width, title_h});
     m_->cur_frame_ = frame;
@@ -337,7 +351,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         // a floating window beats a docked one, the menu bar beats both, a modal beats them all
         const bool in_float = docked && st->dock_owner != 0;
         const u32 rank = modal_level != 0 ? 0x30000u + modal_level * 0x10000u : (is_menubar ? 0x20000u : (docked && !in_float ? 0u : 0x10000u));
-        u32 zi = z_index(in_float ? st->dock_owner : wid);
+        u32 zi = z_index(*this, in_float ? st->dock_owner : wid);
         if (zi == no_z) { zi = 0; }
         const u32 z = zi * 2 + (in_float ? 1u : 0u) + rank; // a window docked in a floating dock is just above that dock
         if (m_->win_.hovered_z_ == no_z || z > m_->win_.hovered_z_) {
@@ -348,7 +362,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     }
 
     // a window carried over a dock target turns see-through so the target pane shows
-    st->ghost = approach(st->ghost, !docked && m_->dock_->drag_prev == wid && m_->dock_->target_prev.valid ? 1.0f : 0.0f);
+    st->ghost = approach(*this, st->ghost, !docked && m_->dock_->drag_prev == wid && m_->dock_->target_prev.valid ? 1.0f : 0.0f);
     if (st->ghost > 0.01f) {
         m_->dl_.push_alpha(1.0f - 0.45f * st->ghost);
         m_->window_faded_ = true;
@@ -435,16 +449,22 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     }
 
     if (scrolls) {
-        const f32 max_scroll = std::max(0.0f, st->content_h + 2.0f * pad - (height - title_h));
+        const f32 max_scroll = std::max(0.0f, st->content_h + 2.0f * pad - (height - title_h - hbar));
         st->scroll = std::clamp(st->scroll, 0.0f, max_scroll);
     } else {
         st->scroll = 0.0f;
     }
+    if (horiz) {
+        const f32 view_w = st->width - 2.0f * pad - (scrolls && st->overflow ? 10.0f : 0.0f);
+        st->scroll_x = std::clamp(st->scroll_x, 0.0f, std::max(0.0f, st->content_w - view_w));
+    } else {
+        st->scroll_x = 0.0f;
+    }
 
     m_->layout_        = {};
-    m_->layout_.origin = {st->pos.x + pad, st->pos.y + title_h + pad - st->scroll};
+    m_->layout_.origin = {st->pos.x + pad - st->scroll_x, st->pos.y + title_h + pad - st->scroll};
     m_->layout_.width  = st->width - 2.0f * pad - (scrolls && st->overflow ? 10.0f : 0.0f);
-    m_->layout_.bound_bottom = fixed_h ? st->pos.y + height - pad : 0.0f;
+    m_->layout_.bound_bottom = fixed_h ? st->pos.y + height - pad - hbar : 0.0f;
     return !st->collapsed && !hidden_tab;
 }
 
@@ -466,11 +486,38 @@ void context::end_window()
     if (!w.collapsed) {
         w.content_h = m_->layout_.first ? 0.0f : m_->layout_.bottom - m_->layout_.origin.y;
 
+        const f32  title_h = has_title ? m_->font_.line_height(0) + 10.0f : 0.0f;
+        const f32  pad     = w.menubar ? 0.0f : m_->style_.padding;
+        const rect frame   = m_->cur_frame_;
+        const f32  view_w  = w.width - 2.0f * pad - (w.overflow ? 10.0f : 0.0f);
+        if (has_flag(m_->cur_flags_, window_flags::horizontal) && !w.menubar) {
+            w.content_w  = m_->layout_.first ? 0.0f : m_->layout_.right - m_->layout_.origin.x;
+            w.overflow_x = w.content_w > view_w + 0.5f;
+        } else {
+            w.overflow_x = false;
+        }
+        const f32 hbar = w.overflow_x ? 10.0f : 0.0f;
+        w.max_scroll_x = w.overflow_x ? w.content_w - view_w : 0.0f;
+
+        if (w.overflow_x) {
+            const rect body = {{frame.min.x, frame.min.y + title_h}, frame.max};
+            // tilt wheel, or Shift + wheel (the Windows convention)
+            if (m_->input_.wheel_x_ != 0.0f && !m_->wheel_x_consumed_ && pointer_over(*this, body)) {
+                w.scroll_x = std::clamp(w.scroll_x + wheel_scroll_x(*this, m_->font_.line_height(0), view_w), 0.0f, w.max_scroll_x);
+                m_->wheel_x_consumed_ = true;
+            } else if (m_->input_.mod_shift_ && m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(*this, body)) {
+                w.scroll_x = std::clamp(w.scroll_x - wheel_scroll(*this, m_->font_.line_height(0), view_w), 0.0f, w.max_scroll_x);
+                m_->wheel_consumed_ = true;
+            }
+            const rect track = {{body.min.x + 6.0f, body.max.y - 12.0f}, {body.max.x - 6.0f - (w.overflow ? 10.0f : 0.0f), body.max.y - 1.0f}};
+            w.scroll_x = scrollbar(*this, part_id(part::window_scrollbar_x, m_->cur_window_), track, true, view_w, w.content_w, w.scroll_x, w.grab_x);
+        } else {
+            w.scroll_x = 0.0f;
+        }
+
         const f32 shown_h = w.height > 0.0f ? w.height : w.capped_h;
         if (shown_h > 0.0f) {
-            const f32 title_h = has_title ? m_->font_.line_height(0) + 10.0f : 0.0f;
-            const f32 pad     = w.menubar ? 0.0f : m_->style_.padding;
-            const f32 body_h  = shown_h - title_h;
+            const f32 body_h  = shown_h - title_h - hbar;
             const f32 full_h  = w.content_h + 2.0f * pad;
             w.overflow = full_h > body_h + 0.5f;
 
@@ -478,24 +525,13 @@ void context::end_window()
                 const f32  max_scroll = full_h - body_h;
                 const rect body = {{w.pos.x, w.pos.y + title_h}, {w.pos.x + w.width, w.pos.y + shown_h}};
 
-                if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(body)) {
-                    w.scroll = std::clamp(w.scroll - wheel_scroll(m_->font_.line_height(0), body_h), 0.0f, max_scroll);
+                if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(*this, body)) {
+                    w.scroll = std::clamp(w.scroll - wheel_scroll(*this, m_->font_.line_height(0), body_h), 0.0f, max_scroll);
                     m_->wheel_consumed_ = true;
                 }
 
-                const f32  track_top = body.min.y + 6.0f;
-                const f32  track_h = body_h - 12.0f;
-                const f32  thumb_h = std::max(20.0f, track_h * body_h / full_h);
-                f32 thumb_y = track_top + (track_h - thumb_h) * (w.scroll / max_scroll);
-                const interaction in = interact(part_id(part::window_scrollbar, m_->cur_window_), {{body.max.x - 13.0f, track_top}, {body.max.x - 2.0f, track_top + track_h}});
-                w.scroll = thumb_drag(in, w.grab, thumb_y, thumb_h, track_top, track_h - thumb_h, max_scroll, w.scroll);
-                thumb_y  = track_top + (track_h - thumb_h) * (w.scroll / max_scroll);
-                const rect thumb = {{body.max.x - 10.0f, thumb_y}, {body.max.x - 5.0f, thumb_y + thumb_h}};
-                shape_style bar;
-                bar.radius      = radii(2.5f);
-                bar.fill_top    = m_->style_.text_dim.scaled_alpha(in.hovered || in.held ? 0.85f : 0.45f);
-                bar.fill_bottom = bar.fill_top;
-                m_->dl_.shape(thumb, bar);
+                const rect track = {{body.max.x - 13.0f, body.min.y + 6.0f}, {body.max.x - 2.0f, body.min.y + body_h - 6.0f}};
+                w.scroll = scrollbar(*this, part_id(part::window_scrollbar, m_->cur_window_), track, false, body_h, full_h, w.scroll, w.grab);
             }
         }
     }
@@ -512,28 +548,29 @@ void context::end_window()
         m_->dl_.pop_alpha();
         m_->window_faded_ = false;
     }
-    switch_run(run_base);
+    switch_run(*this, run_base);
     pop_id();
     m_->cur_        = nullptr;
     m_->cur_window_ = 0;
     if (m_->nest_depth_ > 0) {
-        resume_parent_window();
+        resume_parent_window(*this);
     }
 }
 
-void context::resume_parent_window() noexcept
+static void resume_parent_window(context& ui) noexcept
 {
-    const impl::window_nest& n = m_->nest_[--m_->nest_depth_];
-    m_->dl_.pop_clip(); // the absolute clip the nested begin pushed
-    m_->cur_               = n.cur;
-    m_->cur_window_        = n.window;
-    m_->cur_flags_         = n.flags;
-    m_->cur_frame_         = n.frame;
-    m_->layout_            = n.layout;
-    m_->window_faded_      = n.faded;
-    m_->child_base_        = n.child_base;
-    m_->tree_table_.table_ = n.table;
-    switch_run(n.run_owner);
+    auto& m = context_access::of(ui);
+    const auto& n = m.nest_[--m.nest_depth_];
+    m.dl_.pop_clip(); // the absolute clip the nested begin pushed
+    m.cur_               = n.cur;
+    m.cur_window_        = n.window;
+    m.cur_flags_         = n.flags;
+    m.cur_frame_         = n.frame;
+    m.layout_            = n.layout;
+    m.window_faded_      = n.faded;
+    m.child_base_        = n.child_base;
+    m.tree_table_.table_ = n.table;
+    switch_run(ui, n.run_owner);
 }
 
 } // namespace strata

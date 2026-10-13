@@ -162,6 +162,85 @@ void test_horizontal_scroll()
     CHECK(plain_max == 0.0f);
 }
 
+void test_horizontal_scroll_window_and_table()
+{
+    std::fprintf(stderr, "[horizontal scrolling in windows and tables]\n");
+    {
+        harness h;
+        f32 seen_max = 0.0f;
+        f32 seen_x   = 0.0f;
+        const auto build = [&] {
+            if (auto w = h.ui.window("hw", {0, 0}, {300, 200}, plain_window | window_flags::horizontal)) {
+                seen_max = h.ui.scroll_max_x();
+                seen_x   = h.ui.scroll_x();
+                h.ui.set_next_item_width(900.0f);
+                h.ui.button("wide");
+            }
+        };
+        h.frames(build, 3);
+        CHECK(seen_max > 500.0f);
+        CHECK(near_eq(seen_x, 0.0f, 0.5f));
+        h.scroll_x({100, 60}, 2.0f, build);
+        CHECK(seen_x > 0.0f);
+        const f32 after_wheel = seen_x;
+        h.modifiers(false, true);
+        h.scroll({100, 60}, -1.0f, build);
+        h.modifiers();
+        h.frames(build, 2);
+        CHECK(seen_x > after_wheel);
+        h.frames([&] {
+            if (auto w = h.ui.window("hw", {0, 0}, {300, 200}, plain_window | window_flags::horizontal)) {
+                h.ui.set_scroll_x(100000.0f);
+                h.ui.set_next_item_width(900.0f);
+                h.ui.button("wide");
+            }
+        }, 2);
+        h.frames(build, 2);
+        CHECK(seen_x > 0.0f && seen_x <= seen_max + 0.5f);
+
+        // without the flag, or with content that fits, nothing scrolls
+        f32 plain_max = -1.0f, fits_max = -1.0f;
+        h.frames([&] {
+            if (auto w = h.ui.window("plain", {0, 0}, {300, 200}, plain_window)) {
+                plain_max = h.ui.scroll_max_x();
+                h.ui.set_next_item_width(900.0f);
+                h.ui.button("wide");
+            }
+            if (auto w = h.ui.window("fits", {320, 0}, {300, 200}, plain_window | window_flags::horizontal)) {
+                fits_max = h.ui.scroll_max_x();
+                h.ui.button("small");
+            }
+        }, 3);
+        CHECK(plain_max == 0.0f);
+        CHECK(fits_max == 0.0f);
+    }
+    {
+        harness h;
+        std::string layout;
+        const auto build = [&] {
+            if (auto w = h.ui.window("tw", {0, 0}, {400, 300}, plain_window)) {
+                if (h.ui.begin_table("tbl", 3, table_default | table_flags::scroll_x)) {
+                    h.ui.table_setup_column("a", 300);
+                    h.ui.table_setup_column("b", 300);
+                    h.ui.table_setup_column("c", 300);
+                    (void)h.ui.table_headers_row();
+                    for (int i = 0; i < 3; ++i) {
+                        h.ui.table_next_row();
+                        for (int c = 0; c < 3; ++c) { h.ui.table_next_column(); h.ui.text("cell"); }
+                    }
+                    h.ui.end_table();
+                }
+                layout = h.ui.table_save_layout("tbl");
+            }
+        };
+        h.frames(build, 3);
+        CHECK(layout.find("span=900") != std::string::npos); // the fixed widths add up to more than the 370 px table
+        h.scroll_x({100, 60}, 2.0f, build);
+        h.frames(build, 2);
+        h.frames(build, 1);
+    }
+}
+
 void test_rich_links()
 {
     std::fprintf(stderr, "[rich text links]\n");
@@ -301,6 +380,7 @@ void run_new_tests()
     test_stack_overflow();
     test_long_text_chunks();
     test_horizontal_scroll();
+    test_horizontal_scroll_window_and_table();
     test_rich_links();
     test_id_collisions();
     test_idle_predicates();

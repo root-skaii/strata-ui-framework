@@ -349,6 +349,7 @@ ui.begin_table("files", 5, table_default | table_flags::hideable | table_flags::
 ui.table_setup_column("Name", 0, 1, table_column_flags::no_hide | table_column_flags::no_reorder);
 ui.table_setup_column("Path", 0, 1, table_column_flags::default_hidden);      // ... the other columns
 // right-click the header: a menu of columns; drag a header: move the column
+// add table_flags::scroll_x: fixed-width columns that exceed the table scroll sideways, and resizing one widens the table
 std::string saved = ui.table_save_layout("files");                            // order, widths, hidden: text for a config file
 ui.table_load_layout("files", saved);                                         // may be called before the table is first shown
 
@@ -613,6 +614,8 @@ Windows drag, collapse and stack; pressing one raises it. Input goes to the topm
 `ui.cursor()` reports the pointer shape to apply (`arrow`, `text`, `hand`, `not_allowed`, `resize_*`);
 `platform.set_cursor(ui.cursor())` after `end_frame()` applies it via `win32_platform`.
 
+- **Sideways scrolling:** `window_flags::horizontal` (and `child_flags::horizontal`) scrolls content wider than the window by scrollbar,
+  tilt wheel or Shift + wheel; `ui.scroll_x()` / `set_scroll_x()` read and move it.
 - **Passive windows:** `window_flags::no_inputs` (hud, name plates, readouts) is never hovered, focused, moved or
   docked; the pointer goes to whatever is below and it doesn't count toward `want_capture_mouse()`.
 - **Layers:** `{ auto fg = ui.layer(strata::layer::foreground); ui.draw().rect_filled(...); }` draws above every window
@@ -775,7 +778,6 @@ return app->run([&](strata::app&, strata::context& ui) { if (auto w = ui.window(
 **Input and windows**
 - [ ] Keyboard navigation of widgets and menus (Tab / arrows; today only text fields, combos and hotkeys take the keyboard)
 - [ ] Multi-viewport (windows outside the application window)
-- [ ] Horizontal scrolling for windows and tables themselves (today only a `child_flags::horizontal` child scrolls sideways)
 
 ## Ideas
 
