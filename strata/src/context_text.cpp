@@ -601,15 +601,22 @@ bool internal::input_multiline_core(context& ui, std::string_view label, std::st
             cs.edit_.edit_anchor_ = nl_before == std::string::npos ? 0 : nl_before + 1;
             cs.edit_.edit_cursor_ = nl_after == std::string::npos ? cs.edit_.edit_buf_.size() : nl_after + 1;
         } else if (clicks == 2) {
-            cs.edit_.edit_anchor_ = word_start(cs.edit_.edit_buf_, idx);
-            cs.edit_.edit_cursor_ = word_end(cs.edit_.edit_buf_, idx);
+            word_bounds(cs.edit_.edit_buf_, idx, cs.edit_.edit_anchor_, cs.edit_.edit_cursor_);
         } else if (!has_flag(flags, input_flags::select_all_on_focus) || cs.edit_.edit_cursor_ != 0) {
             cs.edit_.edit_cursor_ = idx;
             cs.edit_.edit_anchor_ = idx;
         }
+        cs.edit_.press_from_ = std::min(cs.edit_.edit_anchor_, cs.edit_.edit_cursor_);
+        cs.edit_.press_to_   = std::max(cs.edit_.edit_anchor_, cs.edit_.edit_cursor_);
         cs.edit_.caret_time_ = cs.time_;
     } else if (focused && in.held) {
-        cs.edit_.edit_cursor_ = index_at(cs.input_.mouse_); // dragging selects, and pulls the view along past the edges
+        // dragging selects (after a double or triple click by whole words or lines), and pulls the view along past the edges
+        if (cs.edit_.click_count_ >= 2) {
+            extend_unit_selection(cs.edit_.edit_buf_, cs.edit_.click_count_, cs.edit_.press_from_, cs.edit_.press_to_,
+                                  index_at(cs.input_.mouse_), cs.edit_.edit_anchor_, cs.edit_.edit_cursor_);
+        } else {
+            cs.edit_.edit_cursor_ = index_at(cs.input_.mouse_);
+        }
         cs.edit_.caret_time_  = cs.time_;
         if (cs.input_.mouse_.y < inner.min.y)      { st->scroll -= (inner.min.y - cs.input_.mouse_.y) * 8.0f * cs.dt_ + 1.0f; }
         else if (cs.input_.mouse_.y > inner.max.y) { st->scroll += (cs.input_.mouse_.y - inner.max.y) * 8.0f * cs.dt_ + 1.0f; }

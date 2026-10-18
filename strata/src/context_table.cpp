@@ -347,9 +347,21 @@ int context::table_headers_row(int sort_column, bool ascending)
                 }
                 table_recompute_x(*this);
             }
-            if (in.hovered || in.held) {
-                m_->dl_.rect_filled({{tbl.col_x[k + 1] - 1.0f, y0 + 3.0f}, {tbl.col_x[k + 1] + 1.0f, y0 + hh - 3.0f}},
-                                m_->style_.accent.scaled_alpha(in.held ? 0.9f : 0.6f));
+            // eased like the header cells: the bar grows and brightens under the pointer, and the cursor says "resize"
+            const id grip_key = part_id(part::column_grip, hash_id({reinterpret_cast<const char*>(&a), sizeof(a)}, current_seed(*this)));
+            anim_slot* ga = anim_find(*this, grip_key);
+            if (ga == nullptr && (in.hovered || in.held)) { ga = &anim_for(*this, grip_key); }
+            if (in.hovered || in.held) { m_->cursor_ = cursor_kind::resize_ew; }
+            if (ga != nullptr) {
+                ga->hover      = approach(*this, ga->hover, (in.hovered || in.held) ? 1.0f : 0.0f);
+                ga->last_frame = (ga->hover == 0.0f && !in.hovered && !in.held) ? 0 : m_->frame_;
+                if (ga->hover > 0.01f) {
+                    const f32 x   = tbl.col_x[k + 1];
+                    const f32 w   = 0.5f + (in.held ? 1.5f : 1.0f) * ga->hover;
+                    const f32 pad = 7.0f - 4.0f * ga->hover;
+                    m_->dl_.rect_filled({{x - w, y0 + pad}, {x + w, y0 + hh - pad}},
+                                        m_->style_.accent.scaled_alpha((in.held ? 0.95f : 0.7f) * ga->hover), w);
+                }
             }
         }
     }

@@ -13,6 +13,8 @@ void run_rows_tests();
 void run_app_tests();
 void run_new_tests();
 void run_robust_tests();
+void run_backend_tests();
+void run_tool_tests();
 
 int run_selftest()
 {
@@ -25,6 +27,8 @@ int run_selftest()
     run_app_tests();
     run_new_tests();
     run_robust_tests();
+    run_backend_tests();
+    run_tool_tests();
     std::fprintf(stderr, "selftest: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -159,4 +159,114 @@ void context::debug_draw_list_window(bool& open)
     pop_id();
 }
 
+namespace {
+
+[[nodiscard]] bool contains_nocase(std::string_view hay, std::string_view needle) noexcept
+{
+    if (needle.empty()) { return true; }
+    const auto lower = [](char c) { return static_cast<char>(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c); };
+    return std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
+                       [&](char a, char b) { return lower(a) == lower(b); }) != hay.end();
+}
+
+[[nodiscard]] std::string window_title(const context& ui, id win)
+{
+    if (win == 0) { return "(outside windows)"; }
+    if (const window_state* w = window_find(ui, win); w != nullptr && w->title_len != 0) {
+        return std::string{w->title.data(), w->title_len};
+    }
+    return std::format("window {:#x}", win);
+}
+
+} // namespace
+
+void context::debug_inspector_window(bool& open)
+{
+    if (!open) {
+        return;
+    }
+    auto& ins = m_->inspect_;
+    ins.want = true;
+    // the inspector's own widgets stay out of the record it shows
+    const bool was_recording = ins.recording;
+    ins.recording            = false;
+
+    const vec2 mouse = mouse_pos();
+    const inspected_item* hovered = nullptr;
+    ins.swallow = ins.pick && !ins.frame.contains(mouse);
+    if (ins.swallow) {
+        for (auto it = ins.prev.rbegin(); it != ins.prev.rend(); ++it) {
+            if (it->box.contains(mouse)) { hovered = &*it; break; }
+        }
+        if (hovered != nullptr && mouse_clicked()) { ins.picked = hovered->key; }
+    }
+    const inspected_item* picked = nullptr;
+    if (ins.picked != 0) {
+        for (const inspected_item& it : ins.prev) {
+            if (it.key == ins.picked) { picked = &it; }
+        }
+    }
+    const inspected_item* listed = nullptr; // the row under the pointer in the list
+
+    push_id("##strata_inspector");
+    if (auto w = window("strata inspector", {440.0f, 40.0f}, {430.0f, 420.0f},
+                        window_flags::resizable | window_flags::drag_by_body)) {
+        ins.frame = m_->cur_frame_;
+        checkbox("pick (outline the item under the pointer, click to select)", ins.pick);
+        input_text("filter", ins.filter);
+        textf("{} items recorded", ins.prev.size());
+
+        const inspected_item* info = hovered != nullptr ? hovered : picked;
+        if (info != nullptr) {
+            separator();
+            text(info->label_len != 0 ? info->name() : std::string_view{"(no label)"});
+            text_dim(std::format("id {:#018x}", info->key));
+            text_dim(std::format("rect {:.0f},{:.0f}  {:.0f} x {:.0f}", info->box.min.x, info->box.min.y, info->box.width(),
+                                 info->box.height()));
+            text_dim(std::format("in {}, {} id scope{}", window_title(*this, info->window), info->depth, info->depth == 1 ? "" : "s"));
+            text_dim(info->flags == 0 ? "idle"
+                                      : std::format("{}{}{}", (info->flags & 1) != 0 ? "hovered " : "", (info->flags & 2) != 0 ? "held " : "",
+                                                    (info->flags & 4) != 0 ? "pressed" : ""));
+        }
+        separator();
+
+        // grouped by window, in the order the windows were first seen
+        std::vector<id> windows;
+        for (const inspected_item& it : ins.prev) {
+            if (std::find(windows.begin(), windows.end(), it.window) == windows.end()) { windows.push_back(it.window); }
+        }
+        for (const id win : windows) {
+            u32 shown = 0;
+            for (const inspected_item& it : ins.prev) {
+                shown += it.window == win && contains_nocase(it.name(), ins.filter) ? 1u : 0u;
+            }
+            if (shown == 0) { continue; }
+            push_id(win);
+            if (tree_node(std::format("{} ({})", window_title(*this, win), shown), "window", tree_flags::none)) {
+                for (u32 i = 0; i < ins.prev.size(); ++i) {
+                    const inspected_item& it = ins.prev[i];
+                    if (it.window != win || !contains_nocase(it.name(), ins.filter)) { continue; }
+                    push_id(static_cast<u64>(i));
+                    if (selectable(it.label_len != 0 ? it.name() : std::string_view{"-"}, "row", it.key == ins.picked)) {
+                        ins.picked = it.key;
+                    }
+                    if (item_hovered()) { listed = &it; }
+                    pop_id();
+                }
+                tree_pop();
+            }
+            pop_id();
+        }
+    }
+    pop_id();
+    ins.recording = was_recording;
+
+    const auto outline = [&](const inspected_item* it, color c) {
+        if (it != nullptr && !it->box.empty()) { draw().rect_outline(it->box, c, 0.0f, 2.0f); }
+    };
+    auto fg = layer(layer::foreground);
+    outline(picked, m_->style_.warning);
+    outline(hovered != nullptr ? hovered : listed, m_->style_.accent);
+}
+
 } // namespace strata

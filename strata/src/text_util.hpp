@@ -88,6 +88,51 @@ namespace strata::text {
     return i;
 }
 
+// what a double click at `idx` selects: the word, else the run of spaces or of punctuation, else the line break
+inline void word_bounds(std::string_view s, std::size_t idx, std::size_t& first, std::size_t& last) noexcept
+{
+    idx = std::min(idx, s.size());
+    if (s.empty()) { first = last = 0; return; }
+    const auto kind = [&](std::size_t i) { // 1 word, 2 blank, 3 line break, 4 punctuation
+        const char c = s[i];
+        return is_word_char(c) ? 1 : (c == ' ' || c == '\t') ? 2 : c == '\n' ? 3 : 4;
+    };
+    // the click lands between two characters: a word on either side wins, then whatever is to the right
+    std::size_t at = idx;
+    if (idx >= s.size() || kind(idx) != 1) {
+        const std::size_t before = idx > 0 ? prev_boundary(s, idx) : 0;
+        if (idx > 0 && kind(before) == 1) { at = before; }
+        else if (idx >= s.size() || kind(idx) == 3) { at = idx > 0 ? before : 0; }
+    }
+    const int k = kind(at);
+    first = at;
+    while (first > 0 && kind(prev_boundary(s, first)) == k && k != 3) { first = prev_boundary(s, first); }
+    last = next_boundary(s, at);
+    while (k != 3 && last < s.size() && kind(last) == k) { last = next_boundary(s, last); }
+}
+
+// a drag that began with a double or triple click grows the selection by whole words or lines: [from, to) is what the
+// press selected, `idx` the pointer; sets the new anchor and cursor
+inline void extend_unit_selection(std::string_view s, u32 clicks, std::size_t from, std::size_t to, std::size_t idx,
+                                  std::size_t& anchor, std::size_t& cursor) noexcept
+{
+    const auto lo = [&](std::size_t i) {
+        if (clicks >= 3) { return i == 0 ? std::size_t{0} : (s.substr(0, i).rfind('\n') == std::string_view::npos ? 0 : s.substr(0, i).rfind('\n') + 1); }
+        std::size_t a = 0, b = 0;
+        word_bounds(s, i, a, b);
+        return a;
+    };
+    const auto hi = [&](std::size_t i) {
+        if (clicks >= 3) { const auto nl = s.find('\n', i); return nl == std::string_view::npos ? s.size() : nl + 1; }
+        std::size_t a = 0, b = 0;
+        word_bounds(s, i, a, b);
+        return b;
+    };
+    if (idx >= to)        { anchor = from; cursor = std::max(to, hi(idx)); }
+    else if (idx < from)  { anchor = to;   cursor = std::min(from, lo(idx)); }
+    else                  { anchor = from; cursor = to; }
+}
+
 [[nodiscard]] inline std::size_t count_codepoints(std::string_view s) noexcept
 {
     std::size_t n = 0;

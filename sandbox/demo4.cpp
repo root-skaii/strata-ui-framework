@@ -349,3 +349,67 @@ void demo4_rows(context& ui, demo4_state& s)
         }
     }
 }
+
+void demo4_nodes(context& ui, demo4_state& s)
+{
+    constexpr auto in_pin  = [](std::uint64_t node, int i) { return node * 100 + static_cast<std::uint64_t>(i); };
+    constexpr auto out_pin = [](std::uint64_t node, int i) { return node * 100 + 50 + static_cast<std::uint64_t>(i); };
+
+    if (s.graph_nodes.empty() && s.graph_links.empty()) {
+        s.graph_nodes = {{1, "Texture", {30, 40}, 0, 1}, {2, "Noise", {30, 170}, 0, 1}, {3, "Blend", {260, 90}, 2, 1},
+                         {4, "Output", {470, 100}, 1, 0}};
+        s.graph_links = {{out_pin(1, 0), in_pin(3, 0)}, {out_pin(2, 0), in_pin(3, 1)}, {out_pin(3, 0), in_pin(4, 0)}};
+    }
+
+    if (auto w = ui.window("node graph", {24.0f, 24.0f}, {680.0f, 440.0f}, window_flags::resizable)) {
+        ui.text_dim("drag nodes and pins; wheel zooms, middle-drag pans; right-click for a menu; Delete removes the selection");
+        if (s.graph.begin(ui, "graph", {0.0f, 340.0f})) {
+            for (demo4_state::graph_node& n : s.graph_nodes) {
+                s.graph.begin_node(n.id, n.title, n.pos);
+                for (int i = 0; i < n.inputs; ++i)  { s.graph.input_pin(in_pin(n.id, i), std::format("in {}", i)); }
+                for (int i = 0; i < n.outputs; ++i) { s.graph.output_pin(out_pin(n.id, i), "out"); }
+                s.graph.end_node();
+            }
+            for (const node_link& l : s.graph_links) { s.graph.link(l.from, l.to); }
+            s.graph.end();
+        }
+
+        if (node_context_request req; s.graph.context_requested(req)) {
+            s.graph_request = req;
+            ui.open_popup("graph_menu", req.screen);
+        }
+        if (ui.begin_popup("graph_menu")) {
+            const node_context_request& req = s.graph_request;
+            if (req.target == node_target::canvas && ui.selectable("add node")) {
+                s.graph_nodes.push_back({s.next_node_id++, "Node", req.canvas, 1, 1});
+                ui.close_popup();
+            } else if (req.target == node_target::node && ui.selectable("delete node")) {
+                std::erase_if(s.graph_links, [&](const node_link& l) { return l.from / 100 == req.node || l.to / 100 == req.node; });
+                std::erase_if(s.graph_nodes, [&](const demo4_state::graph_node& n) { return n.id == req.node; });
+                s.graph.clear_selection();
+                ui.close_popup();
+            } else if (req.target == node_target::link && ui.selectable("delete link")) {
+                std::erase(s.graph_links, req.link);
+                ui.close_popup();
+            }
+            ui.end_popup();
+        }
+
+        node_link edit;
+        if (s.graph.link_created(edit)) {
+            std::erase_if(s.graph_links, [&](const node_link& l) { return l.to == edit.to; }); // one link per input
+            s.graph_links.push_back(edit);
+        }
+        if (s.graph.link_deleted(edit)) { std::erase(s.graph_links, edit); }
+        if (s.graph.delete_requested()) {
+            const auto gone = [&](std::uint64_t pin) {
+                return s.graph.node_selected(pin / 100);
+            };
+            std::erase_if(s.graph_links, [&](const node_link& l) { return gone(l.from) || gone(l.to); });
+            std::erase_if(s.graph_nodes, [&](const demo4_state::graph_node& n) { return s.graph.node_selected(n.id); });
+            s.graph.clear_selection();
+        }
+        ui.checkbox("inspector", s.show_inspector);
+    }
+    ui.debug_inspector_window(s.show_inspector);
+}

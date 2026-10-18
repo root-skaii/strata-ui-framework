@@ -210,15 +210,21 @@ bool internal::input_core(context& ui, std::string_view label, std::string_view 
             m.edit_.edit_anchor_ = 0;
             m.edit_.edit_cursor_ = m.edit_.edit_buf_.size();
         } else if (clicks == 2) {
-            m.edit_.edit_anchor_ = word_start(m.edit_.edit_buf_, idx);
-            m.edit_.edit_cursor_ = word_end(m.edit_.edit_buf_, idx);
+            word_bounds(m.edit_.edit_buf_, idx, m.edit_.edit_anchor_, m.edit_.edit_cursor_);
         } else if (!has_flag(flags, input_flags::select_all_on_focus) || m.edit_.edit_cursor_ != 0) {
             m.edit_.edit_cursor_ = idx;
             m.edit_.edit_anchor_ = idx;
         }
+        m.edit_.press_from_ = std::min(m.edit_.edit_anchor_, m.edit_.edit_cursor_);
+        m.edit_.press_to_   = std::max(m.edit_.edit_anchor_, m.edit_.edit_cursor_);
         m.edit_.caret_time_ = m.time_;
     } else if (focused && in.held) {
-        m.edit_.edit_cursor_ = index_at(m.input_.mouse_.x);
+        if (m.edit_.click_count_ == 2) { // a drag after a double click grows by whole words
+            extend_unit_selection(m.edit_.edit_buf_, 2, m.edit_.press_from_, m.edit_.press_to_, index_at(m.input_.mouse_.x),
+                                  m.edit_.edit_anchor_, m.edit_.edit_cursor_);
+        } else if (m.edit_.click_count_ < 2) {
+            m.edit_.edit_cursor_ = index_at(m.input_.mouse_.x);
+        }
         m.edit_.caret_time_  = m.time_;
     }
     if (focused) {

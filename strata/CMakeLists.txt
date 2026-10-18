@@ -3,7 +3,9 @@
 include(strata_shaders)
 
 add_library(strata STATIC
+    src/backend_software.cpp
     src/bidi.cpp
+    src/c_api.cpp
     src/config.cpp
     src/context.cpp
     src/context_badge.cpp
@@ -39,7 +41,9 @@ add_library(strata STATIC
     src/datetime.cpp
     src/draw_list.cpp
     src/font.cpp
+    src/input_record.cpp
     src/keybinds.cpp
+    src/node_editor.cpp
     src/limits.cpp
     src/platform_win32.cpp
     src/texture.cpp
@@ -55,11 +59,14 @@ target_sources(strata PUBLIC
         include/strata/backend/backend.hpp
         include/strata/backend/d3d11.hpp
         include/strata/backend/d3d12.hpp
+        include/strata/backend/null.hpp
+        include/strata/backend/software.hpp
         include/strata/backend/openxr.hpp
         include/strata/backend/openvr.hpp
         include/strata/backend/vr_types.hpp
         include/strata/bidi.hpp
         include/strata/config.hpp
+        include/strata/strata_c.h
         include/strata/platform/win32.hpp
         include/strata/context.hpp
         include/strata/datetime.hpp
@@ -67,16 +74,18 @@ target_sources(strata PUBLIC
         include/strata/font.hpp
         include/strata/frame.hpp
         include/strata/icons.hpp
+        include/strata/input_record.hpp
         include/strata/keybinds.hpp
         include/strata/log.hpp
         include/strata/log_queue.hpp
+        include/strata/node_editor.hpp
         include/strata/strata.hpp
         include/strata/texture.hpp
         include/strata/themes.hpp
         include/strata/types.hpp
         include/strata/vmem.hpp
 )
-target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp src/core/part_id.hpp src/widget_util.hpp)
+target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/inspector_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp src/core/part_id.hpp src/widget_util.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
 if(STRATA_PCH)

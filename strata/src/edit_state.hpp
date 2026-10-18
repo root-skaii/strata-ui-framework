@@ -58,6 +58,8 @@ struct edit_state {
     f64         last_click_time_{-10.0};
     vec2        last_click_pos_{};
     u32         click_count_{};
+    std::size_t press_from_{}; // the selection the last press made, for a multi-click drag to grow
+    std::size_t press_to_{};
 
     // styled contents (input_spans) for the field being built
     std::vector<text_span> edit_spans_pending_;

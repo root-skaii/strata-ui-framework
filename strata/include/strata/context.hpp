@@ -1817,6 +1817,10 @@ public:
     [[nodiscard]] bool mouse_clicked(mouse_button b = mouse_button::left) const noexcept;
     [[nodiscard]] bool mouse_released(mouse_button b = mouse_button::left) const noexcept;
 
+    // wheel notches of this frame (positive = up), once: marks them used so scroll regions around the caller leave them
+    // alone, and returns 0 if a widget already took them. call only while the pointer is over the widget
+    [[nodiscard]] f32 take_wheel() noexcept;
+
     // focused window. window_focused() asks about the window being submitted, for panel-scoped shortcuts:
     //   if (ui.window_focused() && ui.key_pressed(strata::key::del)) { destroy(); }
     [[nodiscard]] bool window_focused() const noexcept;
@@ -1888,6 +1892,11 @@ public:
     void debug_metrics_window(bool& open);
     // the live draw commands (clip, index count, texture, blur), one row each: shows what failed to merge
     void debug_draw_list_window(bool& open);
+    // widget inspector: every item of the last frame (label, id, rect, window) with a filter, and a pick mode that
+    // outlines the item under the pointer and keeps the clicked one selected (the click does not reach the
+    // application's widgets). records widgets only while open; shows the previous frame, so a widget appears one frame
+    // after it is first submitted
+    void debug_inspector_window(bool& open);
 
     // per-key value easing toward `target` at the theme's speed (or `speed`, 1/s); starts at `target`
     [[nodiscard]] f32 animate(std::string_view key, f32 target, f32 speed = 0.0f);

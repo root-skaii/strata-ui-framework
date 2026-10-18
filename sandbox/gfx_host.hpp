@@ -34,6 +34,7 @@ public:
     [[nodiscard]] virtual bool take_capture(std::vector<strata::u8>& rgba, strata::u32& width, strata::u32& height) = 0;
 };
 
+[[nodiscard]] std::unique_ptr<gfx_host> make_software_host();
 #if STRATA_HAS_DX11
 [[nodiscard]] std::unique_ptr<gfx_host> make_d3d11_host();
 #endif

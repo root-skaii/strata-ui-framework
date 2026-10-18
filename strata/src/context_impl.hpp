@@ -21,6 +21,7 @@
 #include "drag_drop_state.hpp"
 #include "edit_state.hpp"
 #include "hotkey_state.hpp"
+#include "inspector_state.hpp"
 #include "measure_cache_state.hpp"
 #include "menu_state.hpp"
 #include "modal_state.hpp"
@@ -196,6 +197,7 @@ struct context::impl {
     internal::menu_state menu_;
 
     internal::toast_state toast_;
+    internal::inspector_state inspect_;
 
     // docking animation
     bool          dock_animation_{true};

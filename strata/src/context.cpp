@@ -241,6 +241,7 @@ void context::begin_frame(const input_state& in)
     assert(m_->cur_ == nullptr && "begin_frame called inside a window");
     m_->frame_clock_ = now_ms();
     ++m_->frame_;
+    m_->inspect_.begin_frame();
 
     // undo overrides the previous frame forgot to pop
     pop_color(m_->style_stack_.color_depth());
@@ -429,7 +430,7 @@ void context::begin_frame(const input_state& in)
     m_->popup_.popup_depth_    = 0;
     m_->popup_.popup_esc_used_ = false;
     m_->in_overlay_     = false;
-    m_->swallow_press_  = false;
+    m_->swallow_press_  = m_->inspect_.swallow_prev && m_->input_.mouse_pressed_;
 
     // menus: a press outside every open menu closes them all (and only does that)
     m_->menu_.menu_hit_prev_ = false;
@@ -1130,7 +1131,9 @@ field_layout internal::layout_field(context& ui, std::string_view shown, f32 con
 id internal::widget_id(context& ui, std::string_view label) noexcept
 {
     auto& m = context_access::of(ui);
-    return m.ids_.widget_id(label);
+    const id key = m.ids_.widget_id(label);
+    if (m.inspect_.recording) { m.inspect_.note_label(key, visible_label(label)); }
+    return key;
 }
 
 static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key) noexcept
@@ -1153,7 +1156,20 @@ interaction internal::interact(context& ui, id key, const rect& r) noexcept
     return interact_impl(ui, key, r, m.in_overlay_ || (m.cur_window_ != 0 && m.win_.hovered_window_prev_ == m.cur_window_));
 }
 
+static interaction interact_core(context& ui, id key, const rect& r, bool in_window) noexcept;
+
 interaction internal::interact_impl(context& ui, id key, const rect& r, bool in_window) noexcept
+{
+    const interaction out = interact_core(ui, key, r, in_window);
+    auto& m = context_access::of(ui);
+    if (m.inspect_.recording && key != 0) {
+        m.inspect_.note_item(key, r.intersect(m.dl_.clip()), m.cur_window_, static_cast<u8>(m.ids_.depth()),
+                               static_cast<u8>((out.hovered ? 1 : 0) | (out.held ? 2 : 0) | (out.pressed ? 4 : 0)));
+    }
+    return out;
+}
+
+static interaction interact_core(context& ui, id key, const rect& r, bool in_window) noexcept
 {
     auto& m = context_access::of(ui);
     interaction out;
@@ -1279,6 +1295,13 @@ bool context::key_down(key k) const noexcept
     }
     const auto i = static_cast<u32>(k);
     return (m_->input_.keys_held_[i >> 3] & (1u << (i & 7))) != 0;
+}
+
+f32 context::take_wheel() noexcept
+{
+    if (m_->wheel_consumed_ || m_->input_.wheel_ == 0.0f) { return 0.0f; }
+    m_->wheel_consumed_ = true;
+    return m_->input_.wheel_;
 }
 
 bool context::mouse_down(mouse_button b) const noexcept

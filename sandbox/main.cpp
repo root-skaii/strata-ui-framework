@@ -27,6 +27,7 @@ namespace {
 
 struct options {
     bool           use_dx12   = false;
+    bool           use_software = false;
     bool           use_xr     = false; // --xr: standalone vr loop (xr_main.cpp), skips the windowed path entirely
     bool           use_openvr = false; // --openvr: standalone steamvr overlay loop (openvr_main.cpp)
     bool           vsync      = true;
@@ -42,6 +43,8 @@ struct options {
     float          scroll_speed = 1.0f; // how far a wheel notch scrolls, as a multiple of the mouse settings' lines
     std::string    scene;               // start with one scene: default, features, visuals, ...
     int            icon_page  = -1;     // --scene icons: show this 256-code-point page (hex)
+    std::string    record;              // save every frame's input to this file on exit
+    std::string    replay;              // feed the input in this file instead of the real one; exit after the last frame
     std::string    shot;                // write a screenshot (png) of the last frame and exit
     std::string    golden;              // compare the last frame with this png and exit (0 = same)
     std::string    artifacts;           // where failed comparisons write .actual / .diff (default: temp)
@@ -78,6 +81,7 @@ struct options {
 constexpr const wchar_t* usage_text =
     L"strata_sandbox [options]\n\n"
     L"  --dx11 | --dx12          graphics backend (default dx11)\n"
+    L"  --software               cpu rasteriser instead of a gpu backend (slow; screenshots work without a gpu)\n"
     L"  --xr                     standalone vr loop instead of a window (needs a build with STRATA_BUILD_OPENXR;\n"
     L"                           uses --width/--height as the panel's pixel size, --face/--size/--theme as usual)\n"
     L"  --openvr                 standalone steamvr overlay loop instead of a window (needs STRATA_BUILD_OPENVR);\n"
@@ -93,8 +97,10 @@ constexpr const wchar_t* usage_text =
     L"  --scale F                ui scale (default: the monitor's dpi scale)\n"
     L"  --scroll-speed F         how far one wheel notch scrolls: 1 = the mouse settings' lines, 2 = twice as far\n"
     L"  --scene NAME             start with one scene only: default, features, visuals, menus, config, tabs, dnd, lists,\n"
-    L"                           editor, icons, bigtree, rows, app, ...\n"
+    L"                           editor, icons, bigtree, rows, nodes, app, ...\n"
     L"  --icon-page HEX          with --scene icons: show that page of 256 code points instead of the named set\n"
+    L"  --record FILE            save each frame's input to FILE on exit (play it back with --replay)\n"
+    L"  --replay FILE            use the input recorded in FILE; with --shot, the screenshot is the frame after the last one\n"
     L"  --shot FILE              render --shot-frames fixed steps, save the last frame as a png and exit\n"
     L"  --golden FILE            same, but compare with the png FILE (exit code 0 = match); --update-golden rewrites it\n"
     L"  --golden-tolerance N     a pixel matches when every channel is within N of the golden (default 6, of 255)\n"
@@ -163,6 +169,7 @@ struct app {
         const std::wstring_view a = argv[i];
         if (a == L"--dx12")                { opt.use_dx12 = true; }
         else if (a == L"--dx11")           { opt.use_dx12 = false; }
+        else if (a == L"--software")       { opt.use_software = true; }
         else if (a == L"--xr")             { opt.use_xr = true; }
         else if (a == L"--openvr")         { opt.use_openvr = true; }
         else if (a == L"--vsync")          { opt.vsync = true; }
@@ -188,6 +195,8 @@ struct app {
         else if (a == L"--scene")          { opt.scene = to_utf8(value(i)); }
         else if (a == L"--icon-page")      { opt.icon_page = static_cast<int>(std::wcstol(value(i), nullptr, 16)); }
         else if (a == L"--shot")           { opt.shot = to_utf8(value(i)); }
+        else if (a == L"--record")         { opt.record = to_utf8(value(i)); }
+        else if (a == L"--replay")         { opt.replay = to_utf8(value(i)); }
         else if (a == L"--golden")         { opt.golden = to_utf8(value(i)); }
         else if (a == L"--update-golden")  { opt.update_golden = true; }
         else if (a == L"--artifacts")      { opt.artifacts = to_utf8(value(i)); }
@@ -965,6 +974,7 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
     if (s.x.d4.show_icons) { demo4_icons(ui, s.x.d4); }
     if (s.x.d4.show_bigtree) { demo4_bigtree(ui, s.x.d4); }
     if (s.x.d4.show_rows) { demo4_rows(ui, s.x.d4); }
+    if (s.x.d4.show_nodes) { demo4_nodes(ui, s.x.d4); }
     if (s.x.d4.show_app) { demo4_app(ui, s.x.d4); }
     demo2_more(ui, s.x);
     if (s.scene_only) { return; }
@@ -1187,6 +1197,8 @@ void apply_scene(demo_state& s, const std::string& name)
         s.x.d4.show_bigtree = s.scene_only = true;
     } else if (name == "rows") {
         s.x.d4.show_rows = s.scene_only = true;
+    } else if (name == "nodes") {
+        s.x.d4.show_nodes = s.scene_only = true;
     } else if (name == "app") {
         s.x.d4.show_app = s.scene_only = true;
     } else {
@@ -1309,8 +1321,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 #endif
 
     std::unique_ptr<gfx_host> host;
+    if (opt.use_software) { host = make_software_host(); }
 #if STRATA_HAS_DX12
-    if (opt.use_dx12) { host = make_d3d12_host(); }
+    if (host == nullptr && opt.use_dx12) { host = make_d3d12_host(); }
 #endif
 #if STRATA_HAS_DX11
     if (host == nullptr) { host = make_d3d11_host(); }
@@ -1435,6 +1448,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 
     // ui scale: --scale, else the monitor dpi (fixed 1.0 for screenshots, which must be machine-independent)
     const bool shot_mode = !opt.shot.empty() || !opt.golden.empty();
+    strata::input_recorder recorder;
+    strata::input_replayer player;
+    const bool recording = !opt.record.empty();
+    const bool replaying = !opt.replay.empty();
+    bool       replay_over = false;
+    if (replaying && !player.load_file(opt.replay)) {
+        std::fprintf(stderr, "[sandbox] cannot read the recording %s\n", opt.replay.c_str());
+        return 2;
+    }
     const float start_scale = opt.scale > 0.0f ? opt.scale : (shot_mode ? 1.0f : self.platform.dpi_scale());
     if (start_scale != 1.0f) {
         if (const auto r = ui.set_scale(start_scale); !r) {
@@ -1590,7 +1612,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 
         const double ui_start = seconds_now();
         strata::input_state input = self.platform.new_frame();
-        if (shot_mode) { // nothing from the real world may leak into a screenshot
+        if (shot_mode && !replaying) { // nothing from the real world may leak into a screenshot
             input.delta_time = 1.0f / 60.0f;
             demo2_script(state.x, shot_counter, sim);
             input.mouse_pos  = sim.pos;
@@ -1601,6 +1623,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             input.caret_blink_time  = strata::input_state{}.caret_blink_time; // (not the user's system settings)
             input.double_click_time = strata::input_state{}.double_click_time;
         }
+        if (replaying && !player.next(input)) { replay_over = true; }
+        if (recording) { recorder.record(input); }
         ui.begin_frame(std::move(input));
         build_ui(ui, state, *host, last_data);
         if (opt.metrics) { // strata inspecting itself; last, so it sees every command
@@ -1621,7 +1645,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         state.ui_ms = state.ui_ms == 0.0 ? ui_ms : state.ui_ms * 0.9 + ui_ms * 0.1;
 
         last_data = ui.render_data();
-        const bool shot_frame = shot_mode && ++shot_counter >= opt.shot_frames;
+        const bool shot_frame = shot_mode && (replaying ? replay_over : ++shot_counter >= opt.shot_frames);
         if (shot_frame) { host->request_capture(); }
         // --idle: an untouched ui repeats its geometry and the window is ours, so skip drawing and presenting (the loop
         // below sleeps until input or ui.next_wake_seconds()). never while capturing a screenshot.
@@ -1636,6 +1660,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             exit_code = finish_shot(*host, opt);
             ::DestroyWindow(hwnd);
         }
+
+        if (replay_over && !shot_mode) { ::DestroyWindow(hwnd); }
 
         if (opt.max_frames > 0 && ++frame >= opt.max_frames) {
             std::fprintf(stderr, "[sandbox] %d frames ok (%s), %.0f fps, ui %.3f ms, ui time %.2f s vs wall %.2f s\n", frame,
@@ -1673,6 +1699,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         }
     }
 
+    if (recording && !recorder.save(opt.record)) {
+        std::fprintf(stderr, "[sandbox] cannot write %s\n", opt.record.c_str());
+        exit_code = exit_code != 0 ? exit_code : 2;
+    }
     self.host = nullptr;
     return exit_code;
 }

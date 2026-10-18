@@ -3,6 +3,7 @@
 
 add_executable(strata_sandbox WIN32
     gfx_host.hpp
+    gfx_software.cpp
     main.cpp
     ../tests/selftest.cpp
     ../tests/selftest.hpp
@@ -16,6 +17,8 @@ add_executable(strata_sandbox WIN32
     ../tests/selftest_app.cpp
     ../tests/selftest_new.cpp
     ../tests/selftest_robust.cpp
+    ../tests/selftest_backends.cpp
+    ../tests/selftest_tools.cpp
     demo2.cpp
     demo3.cpp
     demo3.hpp
@@ -26,7 +29,7 @@ add_executable(strata_sandbox WIN32
     imgio.hpp
 )
 
-target_include_directories(strata_sandbox PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+target_include_directories(strata_sandbox PRIVATE "${PROJECT_SOURCE_DIR}/tests" "${PROJECT_SOURCE_DIR}/strata/src")
 
 target_link_libraries(strata_sandbox PRIVATE
     $<BUILD_INTERFACE:strata_options>
@@ -87,18 +90,23 @@ if(STRATA_BUILD_TESTS)
 
     add_custom_target(strata_update_goldens)
 
-    # strata_shot(<name> <sandbox arguments>...): one comparison per backend that is built
+    # strata_shot(<name> <sandbox arguments>...): one comparison per backend that is built, and one on the cpu
+    # rasteriser (label "software": no gpu needed, only a desktop session; its goldens are its own)
     function(strata_shot name)
-        foreach(api IN ITEMS dx11 dx12)
+        foreach(api IN ITEMS dx11 dx12 software)
             string(TOUPPER "${api}" api_upper)
-            if(NOT STRATA_BUILD_${api_upper})
+            if(NOT api STREQUAL "software" AND NOT STRATA_BUILD_${api_upper})
                 continue()
             endif()
             set(golden "${STRATA_GOLDEN_DIR}/${name}_${api}.png")
             add_test(NAME shot_${name}_${api} COMMAND strata_sandbox --${api} ${ARGN} --golden "${golden}"
                      --golden-tolerance ${STRATA_GOLDEN_TOLERANCE} --golden-allowed ${STRATA_GOLDEN_ALLOWED}
                      --artifacts "${CMAKE_BINARY_DIR}/test_artifacts")
-            set_tests_properties(shot_${name}_${api} PROPERTIES LABELS "gpu" TIMEOUT 180)
+            set(label gpu)
+            if(api STREQUAL "software")
+                set(label software)
+            endif()
+            set_tests_properties(shot_${name}_${api} PROPERTIES LABELS "${label}" TIMEOUT 180)
             add_custom_target(strata_update_golden_${name}_${api}
                 COMMAND strata_sandbox --${api} ${ARGN} --golden "${golden}" --update-golden
                 COMMENT "golden ${name} (${api})")
@@ -130,6 +138,7 @@ if(STRATA_BUILD_TESTS)
     strata_shot(bigtree    --scene bigtree --width 1020 --height 900)
     strata_shot(rows       --scene rows --width 880 --height 620)
     strata_shot(app        --scene app --width 900 --height 640)
+    strata_shot(nodes      --scene nodes --width 760 --height 520)
     strata_shot(dracula    --theme dracula)
     strata_shot(glass      --theme glass --scene visuals)
 endif()

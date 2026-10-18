@@ -650,11 +650,67 @@ content hash. The sandbox's `--idle` flag demonstrates and reports this.
 ```cpp
 ui.debug_metrics_window(show_metrics);    // frame cost, geometry, culling, idle state, and what went wrong
 ui.debug_draw_list_window(show_commands); // the live commands: clip, index count, base vertex, texture
+ui.debug_inspector_window(show_inspector); // every widget of the last frame (label, id, rect); "pick" outlines the one under the pointer
 ```
 
 `ui.stats()` gives the same numbers as a struct, plus overflow counters for fixed-size tables (`draw_overflow`,
 `clip_overflows`, `alpha_overflows`) and, in debug builds, `id_collisions` when two widgets hash to the same id.
 A `begin_*` without its `end_*` is reported as `diagnostic_kind::misuse` and closed by `end_frame()`.
+
+## Node editor
+
+```cpp
+strata::node_editor graph;                                  // kept between frames
+if (graph.begin(ui, "graph", {0, 400})) {
+    for (node& n : nodes) {
+        graph.begin_node(n.id, n.title, n.pos);             // pos is edited by dragging
+        graph.input_pin(n.in_pin, "in");
+        graph.output_pin(n.out_pin, "out");
+        graph.end_node();
+    }
+    for (link& l : links) { graph.link(l.from, l.to); }     // output pin -> input pin
+    graph.end();
+}
+if (strata::node_link made; graph.link_created(made)) { links.push_back({made.from, made.to}); }
+```
+
+The application owns the graph; the editor draws it and reports edits (`link_created`, `link_deleted`, `delete_requested`,
+`selected_nodes`). Pins link only to the opposite kind with the same `type`. Left-drag moves nodes, box-selects and
+links; middle-drag or Alt + left-drag pans; the wheel zooms (`zoom`, `allow_zoom`); a right-click is reported by
+`context_requested` (canvas, node or link) so the application can open its own popup. `--scene nodes` in the sandbox.
+
+## Headless rendering
+
+`strata::software_renderer` rasterises `draw_data` on the cpu into an rgba8 image, with no gpu or window; `null_renderer`
+draws nothing but validates and counts the draw data. Both satisfy `renderer_backend`.
+
+```cpp
+strata::software_renderer r;
+r.create(ui.font());
+r.resize(1280, 720);
+r.clear({20, 20, 24, 255});
+r.render(ui.render_data());     // r.pixels(): rgba8; the sandbox's --software --shot FILE saves one as a png
+```
+
+Output follows the shaders but is not bit-identical to the gpu renderers; compare it against goldens made by itself
+(`ctest -L software`).
+
+`input_recorder` / `input_replayer` (`strata/input_record.hpp`) save the `input_state` of each frame and play it back, so a
+bug report or a test is a file; the sandbox has `--record FILE` and `--replay FILE [--shot out.png]`.
+
+## C interface
+
+`strata/strata_c.h` wraps the context, the common widgets, the draw data and the software renderer for C and other
+languages: windows, text, buttons, inputs, tables, tabs, menus, popups, plots, the node editor, the debug windows, the draw data
+and the software renderer. Opaque handles, plain structs, no exceptions; the draw data layouts match the C++ ones.
+
+```c
+strata_context* ui = strata_context_create(NULL);
+strata_begin_frame(ui, &input);
+if (strata_begin_window(ui, "hello", 20, 20, 300, 160, 0)) { if (strata_button(ui, "ok")) { /* ... */ } }
+strata_end_window(ui);
+strata_end_frame(ui);
+```
 
 ## Footprint
 
@@ -797,6 +853,7 @@ Would fit, not promised.
 **Input**
 - Files dropped on the window from the OS (`WM_DROPFILES`) as `input_state::dropped_files`
 - Gamepad input, together with keyboard navigation
+- Bindings on top of the C interface (C#, Python, Rust): the C layer is there, a wrapper would show what is missing from it
 
 **Platform and rendering**
 - A Vulkan or OpenGL backend (the in-game overlay's README lists the missing one as a limit)

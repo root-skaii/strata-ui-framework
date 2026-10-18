@@ -1,6 +1,7 @@
 // headless self-test: text editing, multi-line input, rich text, text styles, bidi / emoji, code fields
 
 #include "selftest_common.hpp"
+#include "text_util.hpp" // (strata/src: the word rules are internal)
 
 namespace {
 
@@ -276,6 +277,49 @@ void test_editing_extra()
     h.type("J");
     h.frame(build);
     CHECK(text == "J world\nsecond line");
+
+    // the button stays down after a double click: the selection must stay the whole word, and a drag grows by words
+    text = "hello world\nsecond line";
+    h.click({700, 500}, build);
+    h.frames(build, 40); // let the double-click time run out: the click away is not a counted click
+    h.click({40, 24}, build);
+    h.move({40, 24});
+    h.frame(build);
+    h.down();
+    h.frames(build, 5); // held, as a real click is
+    h.up();
+    h.frame(build);
+    h.type("J");
+    h.frame(build);
+    CHECK(text == "J world\nsecond line");
+
+    text = "hello world\nsecond line";
+    h.click({700, 500}, build);
+    h.frames(build, 40);
+    h.click({40, 24}, build);
+    h.move({40, 24});
+    h.frame(build);
+    h.down();
+    h.frames(build, 2);
+    h.move({95, 24}); // into "world": both words are selected, whole
+    h.frames(build, 3);
+    h.up();
+    h.frame(build);
+    h.type("J");
+    h.frame(build);
+    CHECK(text == "J\nsecond line");
+
+    // punctuation and blanks select their own run instead of nothing
+    text = "ab  (cd) ef";
+    std::size_t first = 9, last = 9;
+    strata::text::word_bounds(text, 3, first, last);   // inside the blanks
+    CHECK(text.substr(first, last - first) == "  ");
+    strata::text::word_bounds(text, 4, first, last);   // on the bracket
+    CHECK(text.substr(first, last - first) == "(");
+    strata::text::word_bounds(text, 7, first, last);   // just after "cd"
+    CHECK(text.substr(first, last - first) == "cd");
+    strata::text::word_bounds(text, text.size(), first, last); // past the end: the last word
+    CHECK(text.substr(first, last - first) == "ef");
 
     text = "hello world\nsecond line";
     h.click({700, 500}, build);

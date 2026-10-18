@@ -1,10 +1,12 @@
 #pragma once
 
 // tree / list scenes: the icon set (--scene icons), a deep tree paying only for visible rows (--scene bigtree), and
-// row ergonomics: overlap, right gutter, ellipsis, keyboard navigation (--scene rows). state in demo4_state.
+// row ergonomics: overlap, right gutter, ellipsis, keyboard navigation (--scene rows), and a node graph with the widget
+// inspector (--scene nodes). state in demo4_state.
 
 #include <strata/strata.hpp>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -55,6 +57,22 @@ struct demo4_state {
     int                      ui_scale_percent = 100;
     int                      pending_scale_percent = 0; // > 0: main applies it between frames
 
+    // --scene nodes: a node graph and the widget inspector
+    bool show_nodes = false;
+    struct graph_node {
+        std::uint64_t id{};
+        std::string   title;
+        strata::vec2  pos;
+        int           inputs{};
+        int           outputs{};
+    };
+    strata::node_editor            graph;
+    std::vector<graph_node>        graph_nodes;
+    std::vector<strata::node_link> graph_links;
+    strata::node_context_request   graph_request;
+    std::uint64_t                  next_node_id = 10;
+    bool                           show_inspector = false;
+
     demo4_state();
 };
 
@@ -62,3 +80,4 @@ void demo4_icons(strata::context& ui, demo4_state& s);
 void demo4_bigtree(strata::context& ui, demo4_state& s);
 void demo4_rows(strata::context& ui, demo4_state& s);
 void demo4_app(strata::context& ui, demo4_state& s);
+void demo4_nodes(strata::context& ui, demo4_state& s);
