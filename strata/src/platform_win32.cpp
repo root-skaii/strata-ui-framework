@@ -160,6 +160,8 @@ win32_platform::appearance_settings win32_platform::appearance() noexcept
     }
     HIGHCONTRASTW hc{sizeof hc};
     a.high_contrast = ::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0) != FALSE && (hc.dwFlags & HCF_HIGHCONTRASTON) != 0;
+    BOOL animations = TRUE;
+    a.reduced_motion = ::SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0) != FALSE && animations == FALSE;
     DWORD accent = 0; // 0xAABBGGRR
     size = sizeof accent;
     if (::RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"AccentColor", RRF_RT_REG_DWORD, nullptr, &accent,

@@ -362,7 +362,7 @@ void demo4_nodes(context& ui, demo4_state& s)
     }
 
     if (auto w = ui.window("node graph", {24.0f, 24.0f}, {680.0f, 440.0f}, window_flags::resizable)) {
-        ui.text_dim("drag nodes and pins; wheel zooms, middle-drag pans; right-click for a menu; Delete removes the selection");
+        ui.text_dim("wheel zoom, middle-drag pan, F frame, Ctrl+C/V/D copy, Ctrl+Z/Y undo, right-click menu");
         if (s.graph.begin(ui, "graph", {0.0f, 340.0f})) {
             for (demo4_state::graph_node& n : s.graph_nodes) {
                 s.graph.begin_node(n.id, n.title, n.pos);
@@ -395,20 +395,77 @@ void demo4_nodes(context& ui, demo4_state& s)
             ui.end_popup();
         }
 
+        // every edit is one undo step: a snapshot before, a snapshot after
+        using snapshot = std::pair<std::vector<demo4_state::graph_node>, std::vector<node_link>>;
+        const auto take   = [&] { return snapshot{s.graph_nodes, s.graph_links}; };
+        const auto record = [&](snapshot before, std::string_view name) {
+            snapshot after = take();
+            s.graph_history.push([&s, before] { s.graph_nodes = before.first; s.graph_links = before.second; s.graph.clear_selection(); },
+                                 [&s, after] { s.graph_nodes = after.first; s.graph_links = after.second; s.graph.clear_selection(); }, name);
+        };
+        const auto add_copies = [&](const std::vector<demo4_state::graph_node>& src, vec2 at) {
+            if (src.empty()) { return; }
+            const snapshot before = take();
+            s.graph.clear_selection();
+            for (const demo4_state::graph_node& n : src) {
+                demo4_state::graph_node c = n;
+                c.id  = s.next_node_id++;
+                c.pos = at + (n.pos - src.front().pos);
+                s.graph_nodes.push_back(c);
+                s.graph.select_node(c.id, true);
+            }
+            record(before, "paste");
+        };
+
+        if (auto mv = s.graph.moved_nodes(); !mv.empty()) {
+            snapshot before = take();
+            for (const node_move& m : mv) {
+                for (demo4_state::graph_node& n : before.first) { if (n.id == m.id) { n.pos = m.from; } }
+            }
+            record(std::move(before), "move");
+        }
         node_link edit;
         if (s.graph.link_created(edit)) {
+            const snapshot before = take();
             std::erase_if(s.graph_links, [&](const node_link& l) { return l.to == edit.to; }); // one link per input
             s.graph_links.push_back(edit);
+            record(before, "link");
         }
-        if (s.graph.link_deleted(edit)) { std::erase(s.graph_links, edit); }
+        if (s.graph.link_deleted(edit)) {
+            const snapshot before = take();
+            std::erase(s.graph_links, edit);
+            record(before, "unlink");
+        }
+        const auto selected_nodes = [&] {
+            std::vector<demo4_state::graph_node> out;
+            for (const demo4_state::graph_node& n : s.graph_nodes) { if (s.graph.node_selected(n.id)) { out.push_back(n); } }
+            return out;
+        };
+        if (s.graph.copy_requested()) { s.graph_clip = selected_nodes(); }
+        if (vec2 at; s.graph.paste_requested(at)) { add_copies(s.graph_clip, at); }
+        if (s.graph.duplicate_requested()) {
+            auto picked = selected_nodes();
+            if (!picked.empty()) { add_copies(picked, picked.front().pos + vec2{30.0f, 30.0f}); }
+        }
         if (s.graph.delete_requested()) {
-            const auto gone = [&](std::uint64_t pin) {
-                return s.graph.node_selected(pin / 100);
-            };
+            const snapshot before = take();
+            const auto gone = [&](std::uint64_t pin) { return s.graph.node_selected(pin / 100); };
             std::erase_if(s.graph_links, [&](const node_link& l) { return gone(l.from) || gone(l.to); });
             std::erase_if(s.graph_nodes, [&](const demo4_state::graph_node& n) { return s.graph.node_selected(n.id); });
             s.graph.clear_selection();
+            record(before, "delete");
         }
+        if (ui.window_focused()) {
+            if (ui.key_pressed(key::z, true)) { (void)s.graph_history.undo(); }
+            if (ui.key_pressed(key::y, true)) { (void)s.graph_history.redo(); }
+        }
+        ui.checkbox("snap to grid", s.graph.snap_to_grid);
+        ui.same_line();
+        ui.checkbox("minimap", s.graph.show_minimap);
+        ui.same_line();
+        if (ui.button("frame all")) { s.graph.frame_nodes(); }
+        ui.same_line();
+        ui.text_dim(std::format("undo: {}", s.graph_history.can_undo() ? s.graph_history.undo_name() : std::string_view{"-"}));
         ui.checkbox("inspector", s.show_inspector);
     }
     ui.debug_inspector_window(s.show_inspector);

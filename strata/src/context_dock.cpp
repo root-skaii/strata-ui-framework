@@ -193,8 +193,17 @@ rect context::dock_edge(std::string_view name, dock_side side, f32 size, const r
         }
         sp.edge_size = std::clamp(want, min_node_size, room);
     }
-    const color line = lerp(m_->style_.border, m_->style_.accent, in.held ? 1.0f : (in.hovered ? 0.7f : 0.0f));
-    m_->dl_.rect_filled(gap, line.scaled_alpha(in.hovered || in.held ? 0.9f : 0.55f));
+    // the line warms up and brightens under the pointer instead of switching
+    anim_slot* hs = anim_find(*this, key);
+    if (hs == nullptr && (in.hovered || in.held)) { hs = &anim_for(*this, key); }
+    f32 warm = 0.0f;
+    if (hs != nullptr) {
+        hs->hover      = approach(*this, hs->hover, (in.hovered || in.held) ? 1.0f : 0.0f);
+        hs->last_frame = (hs->hover == 0.0f && !in.hovered && !in.held) ? 0 : m_->frame_;
+        warm           = hs->hover;
+    }
+    const color line = lerp(m_->style_.border, m_->style_.accent, in.held ? 1.0f : 0.7f * warm);
+    m_->dl_.rect_filled(gap, line.scaled_alpha(in.held ? 0.9f : 0.55f + 0.35f * warm));
     return remaining;
 }
 
@@ -339,7 +348,7 @@ static void dock_relayout(context& ui) noexcept
     }
     // what is drawn is the layout, unless panes are meant to slide there (dock_animate moves them)
     for (dock_node& n : m.dock_->nodes) {
-        if (n.used && (!m.dock_animation_ || n.fresh)) {
+        if (n.used && (!(m.dock_animation_ && !m.style_.reduce_motion) || n.fresh)) {
             n.shown_area    = n.area;
             n.shown_content = n.content;
             n.fresh         = false;
@@ -351,7 +360,7 @@ static void dock_relayout(context& ui) noexcept
 static void dock_animate(context& ui)
 {
     auto& m = context_access::of(ui);
-    if (!m.dock_animation_) {
+    if (!(m.dock_animation_ && !m.style_.reduce_motion)) {
         return;
     }
     const f32 k = m.dock_->splitting ? 1.0f : 1.0f - std::exp(-16.0f * m.dt_);
@@ -426,7 +435,7 @@ static void dock_attach(context& ui, window_state& w, u8 space, u8 node, dock_zo
         }
     }
 
-    const bool slide = m.dock_animation_ && m.dock_->nodes[leaf].fresh && zone != dock_zone::center;
+    const bool slide = (m.dock_animation_ && !m.style_.reduce_motion) && m.dock_->nodes[leaf].fresh && zone != dock_zone::center;
     w.float_size = {w.width, w.height};
     w.dock       = static_cast<u32>(leaf) + 1;
     w.dock_order = ++m.dock_->counter;
@@ -786,8 +795,16 @@ void internal::dock_end_frame(context& ui)
                     n.ratio = std::clamp(pos / span, min_node_size / span, 1.0f - min_node_size / span);
                 }
             }
-            const color line = lerp(m.style_.border, m.style_.accent, in.held ? 1.0f : (in.hovered ? 0.7f : 0.0f));
-            m.dl_.rect_filled(gap, line.scaled_alpha(in.hovered || in.held ? 0.9f : 0.55f));
+            anim_slot* hs = anim_find(ui, skey);
+            if (hs == nullptr && (in.hovered || in.held)) { hs = &anim_for(ui, skey); }
+            f32 warm = 0.0f;
+            if (hs != nullptr) {
+                hs->hover      = approach(ui, hs->hover, (in.hovered || in.held) ? 1.0f : 0.0f);
+                hs->last_frame = (hs->hover == 0.0f && !in.hovered && !in.held) ? 0 : m.frame_;
+                warm           = hs->hover;
+            }
+            const color line = lerp(m.style_.border, m.style_.accent, in.held ? 1.0f : 0.7f * warm);
+            m.dl_.rect_filled(gap, line.scaled_alpha(in.held ? 0.9f : 0.55f + 0.35f * warm));
             continue;
         }
 

@@ -321,6 +321,13 @@ void test_editing_extra()
     strata::text::word_bounds(text, text.size(), first, last); // past the end: the last word
     CHECK(text.substr(first, last - first) == "ef");
 
+    // a range left over from before the text got shorter stays inside the text
+    std::size_t anchor = 0, cursor = 0;
+    strata::text::extend_unit_selection("ab", 2, 5, 9, 1, anchor, cursor);
+    CHECK(anchor <= 2 && cursor <= 2);
+    strata::text::extend_unit_selection("ab", 3, 5, 9, 40, anchor, cursor);
+    CHECK(anchor <= 2 && cursor <= 2);
+
     text = "hello world\nsecond line";
     h.click({700, 500}, build);
     h.move({23, 24}); // the very start of line 0

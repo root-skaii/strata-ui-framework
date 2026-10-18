@@ -17,6 +17,9 @@ struct graph_fixture {
     bool           delete_flag{};
     node_context_request req;
     bool           req_flag{};
+    std::vector<node_move> moves;
+    bool           copy_flag{}, dup_flag{}, paste_flag{};
+    vec2           paste_at;
 
     void build()
     {
@@ -37,6 +40,10 @@ struct graph_fixture {
             made_flag   = ed.link_created(made);
             delete_flag = ed.delete_requested();
             req_flag    = ed.context_requested(req);
+            if (auto m = ed.moved_nodes(); !m.empty()) { moves.assign(m.begin(), m.end()); }
+            copy_flag  = copy_flag || ed.copy_requested();
+            dup_flag   = dup_flag || ed.duplicate_requested();
+            paste_flag = paste_flag || ed.paste_requested(paste_at);
             if (made_flag) { links.push_back(made); }
         }
     }
@@ -383,6 +390,264 @@ void test_table_grip_cursor()
     CHECK(h.ui.cursor() != cursor_kind::resize_ew);
 }
 
+
+void test_table_autofit()
+{
+    std::fprintf(stderr, "[table: double click on a column border fits the column]\n");
+    harness h;
+    f32 probe_x = 0.0f;
+    const auto build = [&] {
+        if (auto w = h.ui.window("t", {10.0f, 10.0f}, {420.0f, 200.0f})) {
+            if (h.ui.begin_table("cols", 3, table_flags::resizable | table_flags::borders)) {
+                h.ui.table_setup_column("a", 200.0f);
+                h.ui.table_setup_column("b", 100.0f);
+                h.ui.table_setup_column("c");
+                h.ui.table_headers_row();
+                for (int r = 0; r < 3; ++r) {
+                    h.ui.table_next_row();
+                    h.ui.table_next_column();
+                    h.ui.text("ab");
+                    h.ui.table_next_column();
+                    probe_x = h.ui.custom_item("probe", {10.0f, 10.0f}).bounds.min.x;
+                    h.ui.table_next_column();
+                }
+                h.ui.end_table();
+            }
+        }
+    };
+    h.frames(build, 3);
+    const f32 before = probe_x;
+
+    vec2 grip{};
+    bool found = false;
+    for (f32 x = before - 14.0f; x < before + 2.0f && !found; x += 1.0f) {
+        for (f32 y = 36.0f; y < 72.0f && !found; y += 4.0f) {
+            h.move({x, y});
+            h.frames(build, 2);
+            if (h.ui.cursor() == cursor_kind::resize_ew) { grip = {x, y}; found = true; }
+        }
+    }
+    CHECK(found);
+    h.move(grip);
+    h.frames(build, 2);
+    h.click(grip, build);
+    h.click(grip, build); // quickly again: a double click
+    h.frames(build, 3);
+    CHECK(probe_x < before - 40.0f); // "ab" needs far less than 200 px
+}
+
+void test_inspector_pick_swallows_click()
+{
+    std::fprintf(stderr, "[inspector: a pick click does not reach the widget]\n");
+    harness h;
+    bool open = true;
+    int  presses = 0;
+    rect target;
+    const auto build = [&] {
+        if (auto w = h.ui.window("app", {20.0f, 20.0f}, {300.0f, 200.0f})) {
+            const item_result it = h.ui.custom_item("target", {120.0f, 30.0f});
+            target = it.bounds;
+            if (it.pressed) { ++presses; }
+        }
+        h.ui.debug_inspector_window(open);
+    };
+    h.frames(build, 4);
+    const vec2 at = target.center();
+
+    h.click(at, build);
+    CHECK(presses == 1);
+
+    h.ui.debug_inspector_pick(true);
+    h.frames(build, 3);
+    h.frames(build, 40); // out of the double-click time
+    h.click(at, build);
+    CHECK(presses == 1); // swallowed
+    CHECK(h.ui.debug_inspector_picked() != 0);
+
+    h.ui.debug_inspector_pick(false);
+    h.frames(build, 40);
+    h.click(at, build);
+    CHECK(presses == 2);
+}
+
+void test_node_editor_extras()
+{
+    std::fprintf(stderr, "[node editor: snap, moves, clipboard keys, frame, minimap, saved view]\n");
+    graph_fixture g;
+    g.settle();
+
+    // a drag is reported once, on release, with where the node came from
+    const vec2 before = g.pos_a;
+    const vec2 grab   = g.title_of(1);
+    g.drag(grab, grab + vec2{37.0f, 11.0f});
+    CHECK(g.moves.size() == 1 && g.moves[0].id == 1);
+    CHECK(g.moves[0].from == before && near_eq(g.moves[0].to.x, before.x + 37.0f, 1.0f));
+
+    // with snapping the node ends on a grid line
+    g.ed.snap_to_grid = true;
+    g.ed.grid_spacing = 20.0f;
+    g.moves.clear();
+    const vec2 grab2 = g.title_of(1);
+    g.drag(grab2, grab2 + vec2{33.0f, 9.0f});
+    CHECK(std::fmod(g.pos_a.x, 20.0f) == 0.0f && std::fmod(g.pos_a.y, 20.0f) == 0.0f);
+    g.ed.snap_to_grid = false;
+
+    // Ctrl+A selects everything; the clipboard keys are reported for the application to answer
+    g.h.key(key::a, true);
+    g.frame();
+    CHECK(g.ed.node_selected(1) && g.ed.node_selected(2));
+    g.h.key(key::c, true);
+    g.frame();
+    CHECK(g.copy_flag);
+    g.h.key(key::d, true);
+    g.frame();
+    CHECK(g.dup_flag);
+    g.h.move({g.ed.canvas_rect().min.x + 100.0f, g.ed.canvas_rect().min.y + 80.0f});
+    g.settle();
+    g.h.key(key::v, true);
+    g.frame();
+    CHECK(g.paste_flag && near_eq(g.paste_at.x, 100.0f - g.ed.pan.x, 1.0f) && near_eq(g.paste_at.y, 80.0f - g.ed.pan.y, 1.0f));
+
+    // F frames the selection: both nodes end up inside the canvas
+    g.ed.clear_selection();
+    g.ed.zoom = 0.4f;
+    g.ed.pan  = {400.0f, 300.0f};
+    g.settle();
+    g.h.key(key::f);
+    g.settle();
+    const rect c = g.ed.canvas_rect();
+    CHECK(g.ed.zoom > 0.4f);
+    CHECK(g.ed.node_rect(1).min.x >= c.min.x && g.ed.node_rect(2).max.x <= c.max.x);
+    CHECK(g.ed.node_rect(1).min.y >= c.min.y && g.ed.node_rect(2).max.y <= c.max.y);
+
+    // the view round-trips through text and bad text changes nothing
+    g.ed.pan  = {12.5f, -30.0f};
+    g.ed.zoom = 1.25f;
+    const std::string saved = g.ed.save_view();
+    g.ed.pan  = {};
+    g.ed.zoom = 1.0f;
+    CHECK(g.ed.load_view(saved) && g.ed.pan == vec2(12.5f, -30.0f) && g.ed.zoom == 1.25f);
+    CHECK(!g.ed.load_view("1 two 3") && !g.ed.load_view("") && !g.ed.load_view("1 2"));
+    CHECK(g.ed.pan == vec2(12.5f, -30.0f));
+
+    // the minimap moves the view when dragged
+    g.ed.show_minimap = true;
+    g.ed.pan  = {};
+    g.ed.zoom = 1.0f;
+    g.settle();
+    const rect cv = g.ed.canvas_rect();
+    const vec2 in_map{cv.max.x - 40.0f, cv.max.y - 30.0f};
+    g.h.move(in_map);
+    g.settle();
+    g.h.down();
+    g.frame();
+    g.h.move({in_map.x - 40.0f, in_map.y - 20.0f});
+    g.frame();
+    g.h.up();
+    g.settle();
+    CHECK(g.ed.pan != vec2(0.0f, 0.0f));
+}
+
+void test_undo_stack()
+{
+    std::fprintf(stderr, "[undo stack]\n");
+    undo_stack h;
+    int value = 0;
+    const auto set = [&](int from, int to, std::string_view name) {
+        value = to;
+        h.push([&value, from] { value = from; }, [&value, to] { value = to; }, name);
+    };
+    CHECK(!h.can_undo() && !h.can_redo() && !h.undo() && !h.redo());
+
+    set(0, 1, "one");
+    set(1, 2, "two");
+    CHECK(h.undo_name() == "two" && h.size() == 2);
+    CHECK(h.undo() && value == 1 && h.can_redo() && h.redo_name() == "two");
+    CHECK(h.redo() && value == 2);
+    CHECK(h.undo() && h.undo() && value == 0 && !h.can_undo());
+
+    // a new edit drops the redo history
+    set(0, 5, "five");
+    CHECK(!h.can_redo() && h.undo_name() == "five");
+
+    // a group is one step, undone in reverse order
+    h.begin_group("move all");
+    set(5, 6, "a");
+    set(6, 7, "b");
+    CHECK(!h.undo()); // not while the group is open
+    h.end_group();
+    CHECK(h.size() == 2 && h.undo_name() == "move all");
+    CHECK(h.undo() && value == 5);
+    CHECK(h.redo() && value == 7);
+    h.begin_group();
+    h.end_group(); // empty: nothing recorded
+    CHECK(h.size() == 2);
+
+    // the oldest steps fall off a bounded history
+    undo_stack small{3};
+    for (int i = 0; i < 10; ++i) { small.push({}, {}, "x"); }
+    CHECK(small.size() == 3);
+    small.clear();
+    CHECK(!small.can_undo());
+}
+
+void test_accessibility()
+{
+    std::fprintf(stderr, "[accessibility: contrast, reduced motion, large scales]\n");
+    const color black{0, 0, 0, 255}, white{255, 255, 255, 255};
+    CHECK(near_eq(themes::contrast_ratio(black, white), 21.0f, 0.05f));
+    CHECK(near_eq(themes::contrast_ratio(white, white), 1.0f, 0.001f));
+    CHECK(near_eq(themes::contrast_ratio(black, white), themes::contrast_ratio(white, black), 0.001f));
+
+    style bad = themes::midnight();
+    bad.text = {70, 74, 90, 255}; // grey on dark grey
+    const auto issues = themes::check_contrast(bad);
+    CHECK(!issues.empty());
+    CHECK(std::any_of(issues.begin(), issues.end(), [](const themes::contrast_issue& i) { return i.pair == "text on window"; }));
+    CHECK(themes::check_contrast(themes::high_contrast()).empty());
+
+    // reduced motion: values jump to their target at once; otherwise they ease
+    for (const bool reduce : {false, true}) {
+        harness h;
+        h.ui.theme().reduce_motion = reduce;
+        f32 value = 0.0f;
+        const auto build = [&] {
+            if (auto w = h.ui.window("w", {10.0f, 10.0f}, {200.0f, 100.0f})) {
+                value = h.ui.animate("k", h.ui.frame_index() < 3 ? 0.0f : 1.0f);
+            }
+        };
+        h.frames(build, 4);
+        CHECK(reduce ? value == 1.0f : value < 1.0f);
+    }
+    CHECK(themes::for_appearance(true, false, {0, 0, 0, 0}, true).reduce_motion);
+    CHECK(themes::for_appearance(true, true, {0, 0, 0, 0}, true).reduce_motion);
+    CHECK(!themes::for_appearance(false, false).reduce_motion);
+
+    // layouts hold up at large ui scales: nothing hits a fixed limit and the controls stay inside the window
+    for (const f32 scale : {1.5f, 2.0f}) {
+        harness h;
+        CHECK(h.ui.set_scale(scale).has_value());
+        std::string text = "hello";
+        bool flag = true;
+        f32 level = 0.5f;
+        int pick = 1;
+        rect last;
+        const auto build = [&] {
+            if (auto w = h.ui.window("settings", {10.0f, 10.0f}, {360.0f, 0.0f})) {
+                h.ui.text("a line of ordinary text");
+                (void)h.ui.button("button");
+                (void)h.ui.checkbox("checkbox", flag);
+                (void)h.ui.slider("slider", level, 0.0f, 1.0f);
+                (void)h.ui.input_text("field", text);
+                (void)h.ui.combo("combo", pick, item_list{"one", "two", "three"});
+                last = h.ui.custom_item("end", {0.0f, 4.0f}).bounds;
+            }
+        };
+        h.frames(build, 4);
+        CHECK(h.ui.stats().limits_hit == 0 && h.ui.stats().draw_overflow == 0);
+        CHECK(last.max.x <= 10.0f + 360.0f && last.min.y > 10.0f);
+    }
+}
 } // namespace
 
 void run_tool_tests()
@@ -394,4 +659,9 @@ void run_tool_tests()
     test_node_zoom_and_context();
     test_input_record();
     test_table_grip_cursor();
+    test_table_autofit();
+    test_inspector_pick_swallows_click();
+    test_node_editor_extras();
+    test_undo_stack();
+    test_accessibility();
 }

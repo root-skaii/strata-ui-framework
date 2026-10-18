@@ -39,6 +39,7 @@ public:
     struct appearance_settings {
         bool  dark{true};
         bool  high_contrast{};
+        bool  reduced_motion{}; // "show animations in Windows" is off
         color accent{0, 0, 0, 0};
     };
     [[nodiscard]] static appearance_settings appearance() noexcept;

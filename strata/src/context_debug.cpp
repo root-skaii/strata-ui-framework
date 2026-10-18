@@ -5,6 +5,7 @@
 
 #include "context_impl.hpp"
 #include "context_helpers.hpp"
+#include "strata/themes.hpp"
 
 #include <algorithm>
 
@@ -227,8 +228,25 @@ void context::debug_inspector_window(bool& open)
             text_dim(info->flags == 0 ? "idle"
                                       : std::format("{}{}{}", (info->flags & 1) != 0 ? "hovered " : "", (info->flags & 2) != 0 ? "held " : "",
                                                     (info->flags & 4) != 0 ? "pressed" : ""));
+            if (info->color_overrides != 0 || info->var_overrides != 0) {
+                text_dim(std::format("style overrides: {} colors, {} values", info->color_overrides, info->var_overrides));
+            }
+            if (button("copy id")) { (void)copy_text(std::format("{:#018x}", info->key)); }
+            same_line();
+            if (info->label_len != 0 && button("copy label")) { (void)copy_text(info->name()); }
         }
         separator();
+
+        if (tree_node("theme contrast", "contrast", tree_flags::none)) {
+            const auto issues = themes::check_contrast(m_->style_);
+            if (issues.empty()) {
+                text_dim("every text and accent pair meets its minimum");
+            }
+            for (const themes::contrast_issue& c : issues) {
+                text_colored(m_->style_.warning, std::format("{}: {:.1f}:1, needs {:.1f}:1", c.pair, c.ratio, c.required));
+            }
+            tree_pop();
+        }
 
         // grouped by window, in the order the windows were first seen
         std::vector<id> windows;
@@ -268,5 +286,12 @@ void context::debug_inspector_window(bool& open)
     outline(picked, m_->style_.warning);
     outline(hovered != nullptr ? hovered : listed, m_->style_.accent);
 }
+
+} // namespace strata
+
+namespace strata {
+
+void context::debug_inspector_pick(bool on) noexcept { m_->inspect_.pick = on; }
+id   context::debug_inspector_picked() const noexcept { return m_->inspect_.picked; }
 
 } // namespace strata

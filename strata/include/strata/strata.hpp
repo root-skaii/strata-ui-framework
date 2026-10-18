@@ -19,5 +19,6 @@
 #include "strata/node_editor.hpp"
 #include "strata/texture.hpp"
 #include "strata/themes.hpp"
+#include "strata/undo.hpp"
 #include "strata/types.hpp"
 #include "strata/vmem.hpp"

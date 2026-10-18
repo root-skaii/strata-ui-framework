@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <thread>
 #include <vector>
 
 namespace strata {
@@ -248,10 +249,30 @@ struct software_renderer::impl {
         return out;
     }
 
-    void draw(const draw_data& d, const draw_cmd& cmd);
+    // the frame so far, blurred, under a backdrop command; false if the command is malformed or off the target
+    [[nodiscard]] bool backdrop_blur(const draw_data& d, const draw_cmd& cmd, blur_copy& out) const
+    {
+        if (static_cast<std::size_t>(cmd.idx_offset) + cmd.idx_count > d.indices.size() || cmd.vtx_offset >= d.vertices.size()) {
+            return false;
+        }
+        const std::span<const vertex> verts = d.vertices.subspan(cmd.vtx_offset);
+        rect bounds{{1.0e9f, 1.0e9f}, {-1.0e9f, -1.0e9f}};
+        for (u32 i = 0; i < cmd.idx_count; ++i) {
+            const u32 vi = d.indices[cmd.idx_offset + i];
+            if (vi >= verts.size()) { return false; }
+            bounds.min = {std::min(bounds.min.x, verts[vi].pos.x), std::min(bounds.min.y, verts[vi].pos.y)};
+            bounds.max = {std::max(bounds.max.x, verts[vi].pos.x), std::max(bounds.max.y, verts[vi].pos.y)};
+        }
+        out = make_blur(bounds.intersect(cmd.clip), cmd.blur);
+        return !out.empty();
+    }
+
+    // rows [y_lo, y_hi) of one command; `blurred` is the snapshot a backdrop command reads. commands touch rows
+    // independently, so bands of rows can run on separate threads
+    void draw(const draw_data& d, const draw_cmd& cmd, const blur_copy* blurred, i32 y_lo, i32 y_hi);
 };
 
-void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd)
+void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, const blur_copy* blurred, i32 y_lo, i32 y_hi)
 {
     if (cmd.idx_count < 3 || static_cast<std::size_t>(cmd.idx_offset) + cmd.idx_count > d.indices.size() ||
         cmd.vtx_offset >= d.vertices.size()) {
@@ -261,29 +282,17 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd)
 
     // pixels whose centre lies inside the clip
     const i32 cx0 = std::max<i32>(0, static_cast<i32>(std::ceil(cmd.clip.min.x - 0.5f)));
-    const i32 cy0 = std::max<i32>(0, static_cast<i32>(std::ceil(cmd.clip.min.y - 0.5f)));
+    const i32 cy0 = std::max<i32>(y_lo, static_cast<i32>(std::ceil(cmd.clip.min.y - 0.5f)));
     const i32 cx1 = std::min<i32>(static_cast<i32>(width), static_cast<i32>(std::ceil(cmd.clip.max.x - 0.5f)));
-    const i32 cy1 = std::min<i32>(static_cast<i32>(height), static_cast<i32>(std::ceil(cmd.clip.max.y - 0.5f)));
+    const i32 cy1 = std::min<i32>(y_hi, static_cast<i32>(std::ceil(cmd.clip.max.y - 0.5f)));
     if (cx1 <= cx0 || cy1 <= cy0) { return; }
 
     const bool backdrop = cmd.blur > 0.0f;
+    if (backdrop && blurred == nullptr) { return; }
     const texture_image* user_tex = nullptr;
     if (cmd.texture != 0) {
         if (cmd.texture > textures.size() || !textures[cmd.texture - 1].image.valid()) { return; }
         user_tex = &textures[cmd.texture - 1].image;
-    }
-
-    blur_copy blurred;
-    if (backdrop) {
-        rect bounds{{1.0e9f, 1.0e9f}, {-1.0e9f, -1.0e9f}};
-        for (u32 i = 0; i < cmd.idx_count; ++i) {
-            const u32 vi = d.indices[cmd.idx_offset + i];
-            if (vi >= verts.size()) { return; }
-            bounds.min = {std::min(bounds.min.x, verts[vi].pos.x), std::min(bounds.min.y, verts[vi].pos.y)};
-            bounds.max = {std::max(bounds.max.x, verts[vi].pos.x), std::max(bounds.max.y, verts[vi].pos.y)};
-        }
-        blurred = make_blur(bounds.intersect(cmd.clip), cmd.blur);
-        if (blurred.empty()) { return; }
     }
 
     for (u32 t = 0; t + 2 < cmd.idx_count; t += 3) {
@@ -330,6 +339,20 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd)
         const vec4 ca = unpack(a->col), cb = unpack(b->col), cc = unpack(c->col);
         const f32 inv_uv = 1.0f / 32767.0f;
 
+        // a solid fill (one colour, one atlas texel, no shape) is the same premultiplied colour at every pixel
+        const bool solid = rec == nullptr && a->u == b->u && a->u == c->u && a->v == b->v && a->v == c->v &&
+                           a->col == b->col && a->col == c->col;
+        vec4 solid_out;
+        if (solid) {
+            f32 cov = atlas_coverage({static_cast<f32>(a->u) * inv_uv, static_cast<f32>(a->v) * inv_uv});
+            if (d.text_contrast > 0.0f) {
+                const f32 k = d.text_contrast * luma(ca.r, ca.g, ca.b);
+                cov = cov * (1.0f + k) / (1.0f + k * cov);
+            }
+            const f32 al = ca.a * cov;
+            solid_out = {ca.r * al, ca.g * al, ca.b * al, al};
+        }
+
         for (i32 y = y0; y < y1; ++y) {
             for (i32 x = x0; x < x1; ++x) {
                 const vec2 p{static_cast<f32>(x) + 0.5f, static_cast<f32>(y) + 0.5f};
@@ -338,6 +361,10 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd)
                 const f32 e_ca = edge(c->pos, a->pos, p);
                 if (!(e_ab > 0.0f || (e_ab == 0.0f && tl_ab)) || !(e_bc > 0.0f || (e_bc == 0.0f && tl_bc)) ||
                     !(e_ca > 0.0f || (e_ca == 0.0f && tl_ca))) {
+                    continue;
+                }
+                if (solid) {
+                    blend(static_cast<u32>(x), static_cast<u32>(y), solid_out);
                     continue;
                 }
                 const f32 wa = e_bc * inv_area;
@@ -350,7 +377,7 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd)
                 if (rec != nullptr && backdrop) {
                     const vec2 q   = p - rec->center;
                     const f32  cov = saturate(0.5f - sd_round_box(q, rec->half_size, rec->radius));
-                    const f32* bg  = blurred.at(x, y);
+                    const f32* bg  = blurred->at(x, y);
                     f32 r = bg[0], g = bg[1], b2 = bg[2];
                     const f32 lum = luma(r, g, b2);
                     r  = mix(lum, r, rec->shadow_offset.x) * rec->shadow_offset.y;
@@ -452,7 +479,43 @@ void software_renderer::render(const draw_data& data)
     const u32 h = static_cast<u32>(std::max(data.display_size.y, 0.0f) + 0.5f);
     if (w != impl_->width || h != impl_->height) { impl_->resize(w, h); }
     if (w == 0 || h == 0) { return; }
-    for (const draw_cmd& cmd : data.commands) { impl_->draw(data, cmd); }
+    impl& im = *impl_;
+
+    // rows are independent, so the target is cut into bands drawn on their own threads. a backdrop command reads the
+    // frame so far: everything before it finishes first, and its blur is made once
+    const u32 bands = std::min<u32>(std::clamp<u32>(std::thread::hardware_concurrency(), 1, 8), std::max<u32>(h / 48, 1));
+    const auto run_bands = [&](const auto& fn) {
+        const i32 rows = static_cast<i32>(h);
+        if (bands <= 1) { fn(0, rows); return; }
+        const i32 step = (rows + static_cast<i32>(bands) - 1) / static_cast<i32>(bands);
+        std::vector<std::thread> pool;
+        pool.reserve(bands - 1);
+        for (u32 b = 1; b < bands; ++b) {
+            const i32 lo = static_cast<i32>(b) * step;
+            if (lo < rows) { pool.emplace_back([&fn, lo, hi = std::min(lo + step, rows)] { fn(lo, hi); }); }
+        }
+        fn(0, std::min(step, rows));
+        for (std::thread& t : pool) { t.join(); }
+    };
+
+    const std::span<const draw_cmd> cmds = data.commands;
+    std::size_t i = 0;
+    while (i < cmds.size()) {
+        if (cmds[i].blur > 0.0f) {
+            blur_copy blurred;
+            if (im.backdrop_blur(data, cmds[i], blurred)) {
+                run_bands([&](i32 lo, i32 hi) { im.draw(data, cmds[i], &blurred, lo, hi); });
+            }
+            ++i;
+            continue;
+        }
+        std::size_t j = i;
+        while (j < cmds.size() && cmds[j].blur <= 0.0f) { ++j; }
+        run_bands([&](i32 lo, i32 hi) {
+            for (std::size_t k = i; k < j; ++k) { im.draw(data, cmds[k], nullptr, lo, hi); }
+        });
+        i = j;
+    }
 }
 
 void software_renderer::set_output(const output_desc& output) noexcept

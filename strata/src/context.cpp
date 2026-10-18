@@ -264,7 +264,7 @@ void context::begin_frame(const input_state& in)
     // smooth scrolling: notches add to the backlog and a share of it is applied per frame (all of it when small).
     // reversing direction drops the old backlog
     const auto smooth = [this](f32& pending, f32 fresh) noexcept {
-        if (!m_->scroll_smoothing_) {
+        if (!m_->scroll_smoothing_ || m_->style_.reduce_motion) {
             pending = 0.0f;
             return fresh;
         }
@@ -660,6 +660,7 @@ anim_slot& internal::anim_for(context& ui, id key) noexcept
 f32 internal::approach(const context& ui, f32 current, f32 target, f32 speed) noexcept
 {
     auto& m = context_access::of(ui);
+    if (m.style_.reduce_motion) { return target; }
     const f32 k = 1.0f - std::exp(-(speed > 0.0f ? speed : m.style_.anim_speed) * m.dt_);
     const f32 v = current + (target - current) * k;
     if (std::abs(target - v) < 0.002f) {
@@ -1164,7 +1165,8 @@ interaction internal::interact_impl(context& ui, id key, const rect& r, bool in_
     auto& m = context_access::of(ui);
     if (m.inspect_.recording && key != 0) {
         m.inspect_.note_item(key, r.intersect(m.dl_.clip()), m.cur_window_, static_cast<u8>(m.ids_.depth()),
-                               static_cast<u8>((out.hovered ? 1 : 0) | (out.held ? 2 : 0) | (out.pressed ? 4 : 0)));
+                               static_cast<u8>((out.hovered ? 1 : 0) | (out.held ? 2 : 0) | (out.pressed ? 4 : 0)),
+                               static_cast<u8>(m.style_stack_.color_depth()), static_cast<u8>(m.style_stack_.var_depth()));
     }
     return out;
 }

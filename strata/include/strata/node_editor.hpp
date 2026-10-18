@@ -20,13 +20,14 @@
 //   if (graph.delete_requested()) { /* remove graph.selected_nodes() and their links */ }
 //
 // gestures: left-drag a node moves the selection; left-drag from a pin makes a link; left-drag on empty canvas
-// box-selects (Ctrl adds); middle-drag or Alt + left-drag pans; the wheel zooms; right-click asks for a context menu;
+// box-selects (Ctrl adds); F frames the selection, Ctrl+A selects all; middle-drag or Alt + left-drag pans; the wheel zooms; right-click asks for a context menu;
 // Delete reports the selected link or nodes; Esc cancels a link in progress.
 
 #include "strata/context.hpp"
 
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace strata {
@@ -37,6 +38,13 @@ struct node_link {
     u64 to{};
 
     [[nodiscard]] friend constexpr bool operator==(const node_link&, const node_link&) noexcept = default;
+};
+
+// a node a drag moved: positions in canvas coordinates, for an undo step
+struct node_move {
+    u64  id{};
+    vec2 from;
+    vec2 to;
 };
 
 enum class node_target : u8 { none, canvas, node, link };
@@ -66,6 +74,10 @@ public:
     f32  zoom{1.0f};
     f32  min_zoom{0.25f};
     f32  max_zoom{2.0f};
+    // while dragging, the node under the pointer lands on a grid line (grid_spacing, canvas units)
+    bool snap_to_grid{false};
+    // an overview in the bottom-right corner: click or drag in it to move the view
+    bool show_minimap{false};
 
     // reserves the canvas (width 0 = full width) and starts collecting nodes; false if the canvas is not visible.
     // identity comes from `label`. end() is needed after every true return
@@ -89,6 +101,14 @@ public:
     [[nodiscard]] bool link_deleted(node_link& out) const noexcept;
     // Delete was pressed with nodes selected (selected_nodes() names them)
     [[nodiscard]] bool delete_requested() const noexcept;
+    // keyboard (while the canvas has focus): Ctrl+C / Ctrl+X ask to copy, Ctrl+V to paste at the pointer, Ctrl+D to
+    // duplicate; the application owns the nodes, so it does the work. Ctrl+X also reports delete_requested()
+    [[nodiscard]] bool copy_requested() const noexcept;
+    [[nodiscard]] bool paste_requested(vec2& canvas_pos) const noexcept;
+    [[nodiscard]] bool duplicate_requested() const noexcept;
+    // nodes a drag moved, reported on the frame the button was released
+    [[nodiscard]] std::span<const node_move> moved_nodes() const noexcept;
+
     // a right-click this frame. the clicked node or link is selected; open the application's popup from here
     [[nodiscard]] bool context_requested(node_context_request& out) const noexcept;
     [[nodiscard]] u64  hovered_node() const noexcept; // 0 = none
@@ -105,6 +125,13 @@ public:
     // the selected link, if any (both ids 0 otherwise)
     [[nodiscard]] node_link selected_link() const noexcept;
     void select_node(u64 id, bool additive = false);
+    void select_all_nodes();
+    // pan and zoom so the nodes (or the selection) fit; takes effect on the next end(). F does this for the selection
+    void frame_nodes(bool selected_only = false);
+
+    // pan and zoom as text, for a settings file; load_view returns false (and changes nothing) for bad text
+    [[nodiscard]] std::string save_view() const;
+    bool load_view(std::string_view text);
     void clear_selection() noexcept;
 
 private:

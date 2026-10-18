@@ -24,6 +24,17 @@ using namespace internal;
 [[nodiscard]] static table_state* table_for(context& ui, id key) noexcept;
 static void table_recompute_x(context& ui) noexcept;
 
+// the widest the cell just finished has been, for double-click auto-fit on the column border
+static void note_fit(context& ui) noexcept
+{
+    auto& m = context_access::of(ui);
+    auto& tbl = m.tree_table_.table_;
+    if (tbl.col < 0 || static_cast<u32>(tbl.col) >= tbl.ncols) { return; }
+    const auto c = static_cast<u32>(tbl.col);
+    f32& fit = tbl.state->fit_cur[c];
+    fit = std::max(fit, m.layout_.right - tbl.x0[c] - tbl.pad_x);
+}
+
 table_scope::~table_scope()
 {
     if (open_) {
@@ -74,6 +85,11 @@ bool context::begin_table(std::string_view id_label, u32 columns, table_flags fl
     tbl = {};
     tbl.active       = true;
     tbl.state        = table_for(*this, key);
+    if (tbl.state->fit_frame != m_->frame_) {
+        tbl.state->fit_prev  = tbl.state->fit_cur;
+        tbl.state->fit_cur   = {};
+        tbl.state->fit_frame = m_->frame_;
+    }
     tbl.flags        = flags;
     tbl.ncols        = columns;
     tbl.height_limit = height;
@@ -327,11 +343,11 @@ int context::table_headers_row(int sort_column, bool ascending)
             const u32 b = tbl.vis[k + 1];
             const rect grip = {{tbl.col_x[k + 1] - 4.0f, y0}, {tbl.col_x[k + 1] + 4.0f, y0 + hh}};
             const interaction in = interact(*this, part_id(part::column_grip, hash_id({reinterpret_cast<const char*>(&a), sizeof(a)}, current_seed(*this))), grip);
-            if (in.held && m_->input_.mouse_delta_.x != 0.0f) {
+            const auto resize_by = [&](f32 dx_px) {
                 const f32 per_px   = tbl.frac_total / tbl.width; // what a pixel is worth in `frac` units
                 const f32 min_frac = 36.0f * per_px;
                 if (has_flag(tbl.flags, table_flags::scroll_x)) { // the neighbour keeps its width, the table grows
-                    const f32 dx = std::max(m_->input_.mouse_delta_.x * per_px, min_frac - st.frac[a]);
+                    const f32 dx = std::max(dx_px * per_px, min_frac - st.frac[a]);
                     st.frac[a] += dx;
                     st.content_w = std::max(tbl.span + dx / per_px, tbl.width);
                 } else {
@@ -341,11 +357,16 @@ int context::table_headers_row(int sort_column, bool ascending)
                         lo = -std::max(st.frac[a], 0.0f);
                         hi = std::max(st.frac[b], 0.0f);
                     }
-                    const f32 dx = std::clamp(m_->input_.mouse_delta_.x * per_px, lo, hi);
+                    const f32 dx = std::clamp(dx_px * per_px, lo, hi);
                     st.frac[a] += dx;
                     st.frac[b] -= dx;
                 }
                 table_recompute_x(*this);
+            };
+            if (in.held && m_->input_.mouse_delta_.x != 0.0f) { resize_by(m_->input_.mouse_delta_.x); }
+            // a double click on the border fits the column to its widest cell (as of the last frame)
+            if (m_->last_item_double_ && st.fit_prev[a] > 0.0f && tbl.width > 0.0f) {
+                resize_by(st.fit_prev[a] + 2.0f * tbl.pad_x + 1.0f - (tbl.col_x[k + 1] - tbl.col_x[k]));
             }
             // eased like the header cells: the bar grows and brightens under the pointer, and the cursor says "resize"
             const id grip_key = part_id(part::column_grip, hash_id({reinterpret_cast<const char*>(&a), sizeof(a)}, current_seed(*this)));
@@ -377,6 +398,12 @@ int context::table_headers_row(int sort_column, bool ascending)
         const id   key  = hash_id(tbl.cols[c].label, hash_id({reinterpret_cast<const char*>(&c), sizeof(c)}, current_seed(*this)));
         const interaction in = interact(*this, key, {{cell.min.x + 4.0f, cell.min.y}, {cell.max.x - 4.0f, cell.max.y}});
         hits[c] = {key, in.pressed && was_dragging != c + 1};
+        if (in.hovered && st.drag_col1 == 0) { // a header cut with ".." shows its whole text
+            const std::string_view full = visible_label(tbl.cols[c].label);
+            if (m_->font_.measure(f, full).x > cell.width() - 2.0f * tbl.pad_x - (static_cast<int>(c) == sort_column ? 14.0f : 0.0f)) {
+                tooltip(full);
+            }
+        }
         anim_slot* a = anim_find(*this, key);
         if (a == nullptr && in.hovered) { a = &anim_for(*this, key); }
         if (a != nullptr) {
@@ -428,6 +455,8 @@ int context::table_headers_row(int sort_column, bool ascending)
     m_->dl_.shape({{tbl.origin.x, y0}, {tbl.origin.x + tbl.width, y0 + hh}}, bg);
 
     int clicked = -1;
+    rect ghost{};
+    std::string_view ghost_label;
     for (u32 k = 0; k < tbl.nvis; ++k) {
         const u32  c    = tbl.vis[k];
         const rect cell = {{tbl.col_x[k], y0}, {tbl.col_x[k + 1], y0 + hh}};
@@ -440,6 +469,8 @@ int context::table_headers_row(int sort_column, bool ascending)
         }
         if (st.drag_col1 == c + 1 && m_->input_.mouse_down_) {
             m_->dl_.rect_filled(cell, m_->style_.accent.scaled_alpha(0.22f));
+            ghost       = cell;
+            ghost_label = visible_label(tbl.cols[c].label);
         }
 
         const std::string_view label = visible_label(tbl.cols[c].label);
@@ -482,6 +513,26 @@ int context::table_headers_row(int sort_column, bool ascending)
                 m_->dl_.triangle_filled({sc.x - 4.0f, sc.y - 2.5f}, {sc.x + 4.0f, sc.y - 2.5f}, {sc.x, sc.y + 3.0f}, m_->style_.accent_hover);
             }
         }
+    }
+
+    // the column being dragged: a lifted copy of its header follows the pointer
+    if (!ghost.empty()) {
+        const f32 gw = ghost.width();
+        const f32 gx = std::clamp(m_->input_.mouse_.x - gw * 0.5f, tbl.origin.x, std::max(tbl.origin.x + tbl.width - gw, tbl.origin.x));
+        shape_style lift;
+        lift.radius        = radii(m_->style_.rounding * 0.5f);
+        lift.fill_top      = m_->style_.widget_active.scaled_alpha(0.92f);
+        lift.fill_bottom   = lift.fill_top;
+        lift.border        = m_->style_.accent;
+        lift.border_width  = 1.0f;
+        lift.shadow        = m_->style_.shadow;
+        lift.shadow_blur   = 8.0f;
+        lift.shadow_offset = {0.0f, 3.0f};
+        const rect lifted{{gx, y0 - 2.0f}, {gx + gw, y0 + hh - 2.0f}};
+        m_->dl_.shape(lifted, lift);
+        m_->dl_.push_clip(lifted);
+        m_->dl_.text({lifted.min.x + tbl.pad_x, lifted.min.y + (hh - lh) * 0.5f}, m_->style_.text, ghost_label, f);
+        m_->dl_.pop_clip();
     }
 
     m_->dl_.rect_filled({{tbl.origin.x, y0 + hh - 1.0f}, {tbl.origin.x + tbl.width, y0 + hh}}, m_->style_.border);
@@ -535,6 +586,7 @@ void internal::table_finish_row(context& ui)
     }
     if (tbl.col >= 0 && !m.layout_.first) {
         tbl.row_bottom    = std::max(tbl.row_bottom, m.layout_.bottom + tbl.pad_y);
+        note_fit(ui);
         tbl.row_had_content = true;
     }
 
@@ -604,6 +656,7 @@ bool context::table_next_column()
     }
     if (tbl.col >= 0 && !m_->layout_.first) {
         tbl.row_bottom      = std::max(tbl.row_bottom, m_->layout_.bottom + tbl.pad_y);
+        note_fit(*this);
         tbl.row_had_content = true;
     }
     if (tbl.col + 1 >= static_cast<int>(tbl.ncols)) {

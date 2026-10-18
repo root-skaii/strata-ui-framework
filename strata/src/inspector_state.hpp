@@ -21,6 +21,8 @@ struct inspected_item {
     u8                    label_len{};
     u8                    depth{};   // id scopes (push_id / windows) the widget sits in
     u8                    flags{};   // bit 0 hovered, 1 held, 2 pressed
+    u8                    color_overrides{}; // style overrides in effect (push_color / push_var) when it was submitted
+    u8                    var_overrides{};
 
     [[nodiscard]] std::string_view name() const noexcept { return {label.data(), label_len}; }
 };
@@ -67,7 +69,7 @@ struct inspector_state {
         labels.push_back(e);
     }
 
-    void note_item(id key, const rect& box, id window, u8 depth, u8 flags)
+    void note_item(id key, const rect& box, id window, u8 depth, u8 flags, u8 colors, u8 vars)
     {
         if (cur.size() >= max_items) { return; }
         inspected_item it;
@@ -76,6 +78,8 @@ struct inspector_state {
         it.window = window;
         it.depth  = depth;
         it.flags  = flags;
+        it.color_overrides = colors;
+        it.var_overrides   = vars;
         // the label is noted just before its widget asks for interaction, so the newest match is the one
         for (auto i = labels.rbegin(); i != labels.rend(); ++i) {
             if (i->key == key) {

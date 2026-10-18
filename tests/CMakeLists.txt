@@ -4,6 +4,7 @@
 if(STRATA_BUILD_FUZZERS)
     add_executable(strata_fuzz fuzz/fuzz_main.cpp)
     target_link_libraries(strata_fuzz PRIVATE strata::strata $<BUILD_INTERFACE:strata_options>)
+    target_include_directories(strata_fuzz PRIVATE "${PROJECT_SOURCE_DIR}/strata/src")
     target_compile_options(strata_fuzz PRIVATE /fsanitize=fuzzer)
     add_custom_command(TARGET strata_fuzz POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus" "${CMAKE_CURRENT_BINARY_DIR}/fuzz_corpus")

@@ -46,6 +46,8 @@ struct table_state { // persists across frames
     f32                                scroll_x{};
     f32                                grab_x{};
     f32                                content_w{}; // scroll_x tables: the preferred width of all columns together (0: the table's)
+    std::array<f32, max_table_columns> fit_cur{}, fit_prev{}; // widest cell content per column (this / last frame), for auto-fit
+    u64                                fit_frame{};
     bool                               inited{};
 };
 

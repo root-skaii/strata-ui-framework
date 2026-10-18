@@ -116,6 +116,10 @@ inline void word_bounds(std::string_view s, std::size_t idx, std::size_t& first,
 inline void extend_unit_selection(std::string_view s, u32 clicks, std::size_t from, std::size_t to, std::size_t idx,
                                   std::size_t& anchor, std::size_t& cursor) noexcept
 {
+    // the text may have changed under a held button since the press: keep the range inside it
+    from = std::min(from, s.size());
+    to   = std::min(to, s.size());
+    idx  = std::min(idx, s.size());
     const auto lo = [&](std::size_t i) {
         if (clicks >= 3) { return i == 0 ? std::size_t{0} : (s.substr(0, i).rfind('\n') == std::string_view::npos ? 0 : s.substr(0, i).rfind('\n') + 1); }
         std::size_t a = 0, b = 0;

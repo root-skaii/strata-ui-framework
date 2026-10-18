@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
+#include <format>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -123,6 +125,16 @@ struct node_editor::impl {
     vec2             box_origin;
     u64              link_from{}; // pin being dragged from
     vec2             last_mouse;
+    // a node drag: where the dragged nodes started and how far the pointer went (screen pixels)
+    struct drag_start { u64 id{}; vec2 pos; };
+    std::vector<drag_start> drag_origin;
+    vec2             drag_total;
+    u64              drag_lead{};
+    bool             minimap_drag{};
+    bool             want_frame{};
+    bool             frame_selected{};
+    rect             all_box;      // canvas units, as of the last end()
+    rect             selected_box;
 
     // results
     node_link created{};
@@ -132,6 +144,9 @@ struct node_editor::impl {
     u64       hover_pin{};
     node_context_request request{};
     bool                 request_made{};
+    std::vector<node_move> moved;
+    bool                   copy{}, paste{}, duplicate{};
+    vec2                   paste_at;
 
     [[nodiscard]] bool is_selected(u64 id) const noexcept
     {
@@ -160,6 +175,8 @@ struct node_editor::impl {
         want_delete = false;
         hover_node = hover_pin = 0;
         request_made = false;
+        moved.clear();
+        copy = paste = duplicate = false;
         in_node = false;
     }
 };
@@ -234,10 +251,26 @@ void node_editor::end()
     const font_id     f     = ui.current_font();
     const f32         lh    = atlas.line_height(f);
     const vec2        mouse   = ui.mouse_pos();
-    const bool        inside  = s.hovered && s.bounds.contains(mouse);
+    const vec2        map_size{150.0f, 100.0f};
+    const bool        has_map = show_minimap && s.bounds.width() > 2.5f * map_size.x && s.bounds.height() > 2.5f * map_size.y;
+    const rect        map{s.bounds.max - map_size - vec2{8.0f, 8.0f}, s.bounds.max - vec2{8.0f, 8.0f}};
+    const bool        over_map = has_map && map.contains(mouse);
+    const bool        inside  = s.hovered && s.bounds.contains(mouse) && !over_map;
+
+    zoom = std::clamp(zoom, min_zoom, max_zoom);
+
+    // fit the nodes (or the selection) in the view; uses the extents of the last frame
+    if (s.want_frame) {
+        s.want_frame = false;
+        const rect box = s.frame_selected && !s.selected.empty() ? s.selected_box : s.all_box;
+        if (!box.empty() && s.bounds.width() > 1.0f && s.bounds.height() > 1.0f) {
+            const f32 fit = std::min(s.bounds.width() * 0.85f / box.width(), s.bounds.height() * 0.85f / box.height());
+            zoom = std::clamp(fit, min_zoom, max_zoom);
+            pan  = s.bounds.size() * 0.5f - box.center() * zoom;
+        }
+    }
 
     // wheel zoom keeps the canvas point under the pointer where it is
-    zoom = std::clamp(zoom, min_zoom, max_zoom);
     if (allow_zoom && inside) {
         if (const f32 notches = ui.take_wheel(); notches != 0.0f) {
             const f32  next   = std::clamp(zoom * std::pow(1.1f, notches), min_zoom, max_zoom);
@@ -259,13 +292,28 @@ void node_editor::end()
         else { s.panning = false; }
     }
     if (s.dragging_nodes) {
+        const auto start_of = [&](u64 id) -> const impl::drag_start* {
+            for (const impl::drag_start& d : s.drag_origin) { if (d.id == id) { return &d; } }
+            return nullptr;
+        };
         if (ui.mouse_down()) {
-            const vec2 delta = mouse - s.last_mouse;
+            s.drag_total += mouse - s.last_mouse;
+            vec2 d = s.drag_total * (1.0f / z);
+            if (snap_to_grid && grid_spacing > 0.0f) { // the node under the pointer lands on a grid line, the rest keep their offsets
+                if (const auto* lead = start_of(s.drag_lead)) {
+                    const vec2 want = lead->pos + d;
+                    d = vec2{std::round(want.x / grid_spacing), std::round(want.y / grid_spacing)} * grid_spacing - lead->pos;
+                }
+            }
             for (const node_rec& n : s.nodes) {
-                if (s.is_selected(n.id)) { *n.pos += delta * (1.0f / z); }
+                if (const auto* o = start_of(n.id)) { *n.pos = o->pos + d; }
             }
         } else {
+            for (const node_rec& n : s.nodes) {
+                if (const auto* o = start_of(n.id); o != nullptr && *n.pos != o->pos) { s.moved.push_back({n.id, o->pos, *n.pos}); }
+            }
             s.dragging_nodes = false;
+            s.drag_origin.clear();
         }
     }
 
@@ -296,6 +344,22 @@ void node_editor::end()
             s.pin_index[row.pin] = static_cast<u32>(s.pins.size());
             s.pins.push_back({row.pin, at, ni, row.type, input, false});
         }
+    }
+
+    {
+        bool any = false, any_sel = false;
+        rect all, sel;
+        for (const node_rec& n : s.nodes) {
+            const rect cb{(n.box.min - origin) * (1.0f / z), (n.box.max - origin) * (1.0f / z)};
+            all = any ? rect{{std::min(all.min.x, cb.min.x), std::min(all.min.y, cb.min.y)}, {std::max(all.max.x, cb.max.x), std::max(all.max.y, cb.max.y)}} : cb;
+            any = true;
+            if (s.is_selected(n.id)) {
+                sel = any_sel ? rect{{std::min(sel.min.x, cb.min.x), std::min(sel.min.y, cb.min.y)}, {std::max(sel.max.x, cb.max.x), std::max(sel.max.y, cb.max.y)}} : cb;
+                any_sel = true;
+            }
+        }
+        s.all_box      = any ? all : rect{};
+        s.selected_box = any_sel ? sel : rect{};
     }
 
     s.links.clear();
@@ -330,6 +394,26 @@ void node_editor::end()
     if (over_pin >= 0)  { s.hover_pin = s.pins[static_cast<u32>(over_pin)].id; }
     if (over_node >= 0) { s.hover_node = s.nodes[static_cast<u32>(over_node)].id; }
     else if (over_pin >= 0) { s.hover_node = s.nodes[s.pins[static_cast<u32>(over_pin)].node].id; }
+
+    // the minimap shows every node and the view; dragging in it moves the view
+    const rect view_c{(s.bounds.min - origin) * (1.0f / z), (s.bounds.max - origin) * (1.0f / z)};
+    rect  map_world = view_c;
+    f32   map_k     = 1.0f;
+    vec2  map_off;
+    if (has_map) {
+        if (!s.all_box.empty()) {
+            map_world = {{std::min(s.all_box.min.x, view_c.min.x), std::min(s.all_box.min.y, view_c.min.y)},
+                         {std::max(s.all_box.max.x, view_c.max.x), std::max(s.all_box.max.y, view_c.max.y)}};
+        }
+        map_world = map_world.expanded(std::max(map_world.width(), map_world.height()) * 0.05f);
+        map_k     = std::min(map.width() / map_world.width(), map.height() / map_world.height());
+        map_off   = map.min + (map.size() - map_world.size() * map_k) * 0.5f - map_world.min * map_k;
+        if (ui.mouse_clicked() && over_map && s.hovered) { s.minimap_drag = true; s.focus = true; }
+        if (s.minimap_drag) {
+            if (ui.mouse_down()) { pan = s.bounds.size() * 0.5f - (mouse - map_off) * (1.0f / map_k) * z; }
+            else                 { s.minimap_drag = false; }
+        }
+    }
 
     // pressing
     if (ui.mouse_clicked(mouse_button::middle) && inside) { s.panning = true; s.focus = true; }
@@ -373,6 +457,12 @@ void node_editor::end()
                     if (!s.is_selected(id)) { s.select(id, additive); }
                     s.selected_link  = {};
                     s.dragging_nodes = true;
+                    s.drag_total     = {};
+                    s.drag_lead      = id;
+                    s.drag_origin.clear();
+                    for (const node_rec& m : s.nodes) {
+                        if (s.is_selected(m.id)) { s.drag_origin.push_back({m.id, *m.pos}); }
+                    }
                 }
             } else if (over_link >= 0) {
                 s.selected.clear();
@@ -427,6 +517,22 @@ void node_editor::end()
     if (s.focus && ui.key_pressed(key::del)) {
         if (s.selected_link != node_link{}) { s.deleted = s.selected_link; s.selected_link = {}; }
         else if (!s.selected.empty())       { s.want_delete = true; }
+    }
+
+    if (s.focus && !s.minimap_drag) {
+        if (ui.key_pressed(key::f)) { s.want_frame = true; s.frame_selected = true; }
+        if (ui.key_pressed(key::a, true)) {
+            s.selected.clear();
+            for (const node_rec& n : s.nodes) { s.selected.push_back(n.id); }
+            s.selected_link = {};
+        }
+        if (ui.key_pressed(key::c, true)) { s.copy = true; }
+        if (ui.key_pressed(key::x, true) && !s.selected.empty()) { s.copy = true; s.want_delete = true; }
+        if (ui.key_pressed(key::v, true)) {
+            s.paste    = true;
+            s.paste_at = ((inside ? mouse : s.bounds.center()) - origin) * (1.0f / z);
+        }
+        if (ui.key_pressed(key::d, true)) { s.duplicate = true; }
     }
 
     // drawing
@@ -513,6 +619,19 @@ void node_editor::end()
         dl.rect_filled(box_rect, st.accent.scaled_alpha(0.16f));
         dl.rect_outline(box_rect, st.accent.scaled_alpha(0.7f));
     }
+
+    if (has_map) {
+        const auto to_map = [&](vec2 canvas) { return canvas * map_k + map_off; };
+        dl.rect_filled(map, color{st.window_bg.r, st.window_bg.g, st.window_bg.b, 225}, 4.0f);
+        dl.push_clip(map);
+        for (const node_rec& n : s.nodes) {
+            const rect r{to_map((n.box.min - origin) * (1.0f / z)), to_map((n.box.max - origin) * (1.0f / z))};
+            dl.rect_filled(r, s.is_selected(n.id) ? st.accent : st.widget_border.scaled_alpha(0.95f), 1.0f);
+        }
+        dl.rect_outline({to_map(view_c.min), to_map(view_c.max)}, st.accent_hover, 0.0f, 1.0f);
+        dl.pop_clip();
+        dl.rect_outline(map, st.border, 4.0f, 1.0f);
+    }
     dl.pop_clip();
     dl.rect_outline(s.bounds, st.border, st.rounding * 0.5f, st.border_width);
 
@@ -569,6 +688,52 @@ void node_editor::clear_selection() noexcept
 {
     impl_->selected.clear();
     impl_->selected_link = {};
+}
+
+} // namespace strata
+
+namespace strata {
+
+bool node_editor::copy_requested() const noexcept { return impl_->copy; }
+bool node_editor::duplicate_requested() const noexcept { return impl_->duplicate; }
+
+bool node_editor::paste_requested(vec2& canvas_pos) const noexcept
+{
+    canvas_pos = impl_->paste_at;
+    return impl_->paste;
+}
+
+std::span<const node_move> node_editor::moved_nodes() const noexcept { return impl_->moved; }
+
+void node_editor::frame_nodes(bool selected_only)
+{
+    impl_->want_frame     = true;
+    impl_->frame_selected = selected_only;
+}
+
+void node_editor::select_all_nodes()
+{
+    impl_->selected.clear();
+    for (const node_rec& n : impl_->nodes) { impl_->selected.push_back(n.id); }
+    impl_->selected_link = {};
+}
+
+std::string node_editor::save_view() const { return std::format("{} {} {}", pan.x, pan.y, zoom); }
+
+bool node_editor::load_view(std::string_view text)
+{
+    f32 v[3]{};
+    const char* p = text.data();
+    const char* const end = text.data() + text.size();
+    for (f32& out : v) {
+        while (p != end && *p == ' ') { ++p; }
+        const auto r = std::from_chars(p, end, out);
+        if (r.ec != std::errc{} || !std::isfinite(out)) { return false; }
+        p = r.ptr;
+    }
+    pan  = {v[0], v[1]};
+    zoom = std::clamp(v[2], min_zoom, max_zoom);
+    return true;
 }
 
 } // namespace strata

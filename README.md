@@ -363,7 +363,9 @@ if (ui.table_tree_node("src", tree_flags::default_open)) {
 
 - **list_clipper** submits only visible rows (uniform height), so even 100k-row lists are cheap -- works in windows,
   `child` regions and tables with a fixed height.
-- **Table columns** can be hideable / reorderable, with a save / load layout round-trip.
+- **Table columns** can be hideable / reorderable (a lifted copy of the header follows the pointer), with a save / load layout
+  round-trip. Resizable tables show the resize cursor over a border, and a double click on it fits the column to its widest
+  cell; a header cut with ".." shows its full text in a tooltip.
 - **Tree tables:** `table_tree_node` / `table_tree_leaf` / `table_tree_pop` for expandable rows inside a table.
 - **Keyboard navigation** is opt-in: `nav_begin()` / `nav_end()` gives Up / Down / Home / End / PageUp / PageDown and
   Enter-to-click over a region.
@@ -653,6 +655,10 @@ ui.debug_draw_list_window(show_commands); // the live commands: clip, index coun
 ui.debug_inspector_window(show_inspector); // every widget of the last frame (label, id, rect); "pick" outlines the one under the pointer
 ```
 
+The inspector groups widgets by window, shows state, id depth and active style overrides, copies an id or label, and
+lists theme colour pairs below WCAG contrast (`themes::check_contrast`). `ui.debug_inspector_pick(true)` starts pick mode
+from code.
+
 `ui.stats()` gives the same numbers as a struct, plus overflow counters for fixed-size tables (`draw_overflow`,
 `clip_overflows`, `alpha_overflows`) and, in debug builds, `id_collisions` when two widgets hash to the same id.
 A `begin_*` without its `end_*` is reported as `diagnostic_kind::misuse` and closed by `end_frame()`.
@@ -677,7 +683,13 @@ if (strata::node_link made; graph.link_created(made)) { links.push_back({made.fr
 The application owns the graph; the editor draws it and reports edits (`link_created`, `link_deleted`, `delete_requested`,
 `selected_nodes`). Pins link only to the opposite kind with the same `type`. Left-drag moves nodes, box-selects and
 links; middle-drag or Alt + left-drag pans; the wheel zooms (`zoom`, `allow_zoom`); a right-click is reported by
-`context_requested` (canvas, node or link) so the application can open its own popup. `--scene nodes` in the sandbox.
+`context_requested` (canvas, node or link) so the application can open its own popup. Also: `snap_to_grid`, a
+`show_minimap` overview, F to frame the selection (`frame_nodes`), Ctrl+C / V / D reported as `copy_requested` /
+`paste_requested` / `duplicate_requested`, `moved_nodes` after a drag, and `save_view` / `load_view` for pan and zoom in a
+settings file. `--scene nodes` in the sandbox.
+
+`strata::undo_stack` (`strata/undo.hpp`) is a small history for such tools: `push(undo, redo, name)` after an edit, groups
+for multi-part edits, `undo()` / `redo()`.
 
 ## Headless rendering
 
@@ -693,7 +705,8 @@ r.render(ui.render_data());     // r.pixels(): rgba8; the sandbox's --software -
 ```
 
 Output follows the shaders but is not bit-identical to the gpu renderers; compare it against goldens made by itself
-(`ctest -L software`).
+(`ctest -L software`). It draws on up to 8 threads, in bands of rows. `strata_sandbox --diff A.png --against B.png
+[--diff-out OUT.png]` compares two screenshots, e.g. a gpu one against a software one.
 
 `input_recorder` / `input_replayer` (`strata/input_record.hpp`) save the `input_state` of each frame and play it back, so a
 bug report or a test is a file; the sandbox has `--record FILE` and `--replay FILE [--shot out.png]`.
@@ -711,6 +724,19 @@ if (strata_begin_window(ui, "hello", 20, 20, 300, 160, 0)) { if (strata_button(u
 strata_end_window(ui);
 strata_end_frame(ui);
 ```
+
+## Accessibility basics
+
+```cpp
+const auto a = strata::win32_platform::appearance();
+ui.theme() = strata::themes::for_appearance(a.dark, a.high_contrast, a.accent, a.reduced_motion);
+for (const auto& issue : strata::themes::check_contrast(ui.theme())) { /* issue.pair, issue.ratio, issue.required */ }
+```
+
+`style::reduce_motion` makes hover, toggle, scroll and dock animations jump to their end state; `for_appearance` takes it
+from the Windows "show animations" setting. `check_contrast` flags text and accent pairs below WCAG 4.5:1 / 3:1.
+Layouts are exercised at 150 % and 200 % scale (`ui.set_scale`). Screen readers (UI Automation) and keyboard focus
+rings for every widget are not there yet: only text fields and combos take the keyboard.
 
 ## Footprint
 

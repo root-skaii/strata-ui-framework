@@ -200,6 +200,9 @@ struct style {
     f32  shadow_blur  = 16.0f;   // 0 disables window / knob shadows
     f32  gradient     = 0.10f;   // vertical lighten/darken applied to widget fills
     f32  anim_speed   = 12.0f;
+    // no easing: hover, toggle, scroll and dock animations jump to their end state (win32_platform::appearance() reports the
+    // system setting)
+    bool reduce_motion = false;
     f32  tooltip_delay_s = 0.4f; // hover time before a tooltip shows
     // thickens glyph edges in proportion to text lightness (light-on-dark reads thin). 0 = as rasterised, 1 = strong
     f32  text_contrast = 0.0f;
@@ -1897,6 +1900,9 @@ public:
     // application's widgets). records widgets only while open; shows the previous frame, so a widget appears one frame
     // after it is first submitted
     void debug_inspector_window(bool& open);
+    // pick mode from code (a hotkey), and the id of the item last clicked in it (0 = none)
+    void debug_inspector_pick(bool on) noexcept;
+    [[nodiscard]] id debug_inspector_picked() const noexcept;
 
     // per-key value easing toward `target` at the theme's speed (or `speed`, 1/s); starts at `target`
     [[nodiscard]] f32 animate(std::string_view key, f32 target, f32 speed = 0.0f);

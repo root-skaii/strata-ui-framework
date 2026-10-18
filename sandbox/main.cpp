@@ -43,6 +43,7 @@ struct options {
     float          scroll_speed = 1.0f; // how far a wheel notch scrolls, as a multiple of the mouse settings' lines
     std::string    scene;               // start with one scene: default, features, visuals, ...
     int            icon_page  = -1;     // --scene icons: show this 256-code-point page (hex)
+    std::string    diff_a, diff_b, diff_out; // --diff A --against B [--diff-out FILE]: compare two screenshots and exit
     std::string    record;              // save every frame's input to this file on exit
     std::string    replay;              // feed the input in this file instead of the real one; exit after the last frame
     std::string    shot;                // write a screenshot (png) of the last frame and exit
@@ -101,6 +102,7 @@ constexpr const wchar_t* usage_text =
     L"  --icon-page HEX          with --scene icons: show that page of 256 code points instead of the named set\n"
     L"  --record FILE            save each frame's input to FILE on exit (play it back with --replay)\n"
     L"  --replay FILE            use the input recorded in FILE; with --shot, the screenshot is the frame after the last one\n"
+    L"  --diff A.png --against B.png [--diff-out OUT.png]   compare two screenshots (--golden-tolerance / --golden-allowed apply) and exit\n"
     L"  --shot FILE              render --shot-frames fixed steps, save the last frame as a png and exit\n"
     L"  --golden FILE            same, but compare with the png FILE (exit code 0 = match); --update-golden rewrites it\n"
     L"  --golden-tolerance N     a pixel matches when every channel is within N of the golden (default 6, of 255)\n"
@@ -196,6 +198,9 @@ struct app {
         else if (a == L"--icon-page")      { opt.icon_page = static_cast<int>(std::wcstol(value(i), nullptr, 16)); }
         else if (a == L"--shot")           { opt.shot = to_utf8(value(i)); }
         else if (a == L"--record")         { opt.record = to_utf8(value(i)); }
+        else if (a == L"--diff")           { opt.diff_a = to_utf8(value(i)); }
+        else if (a == L"--against")        { opt.diff_b = to_utf8(value(i)); }
+        else if (a == L"--diff-out")       { opt.diff_out = to_utf8(value(i)); }
         else if (a == L"--replay")         { opt.replay = to_utf8(value(i)); }
         else if (a == L"--golden")         { opt.golden = to_utf8(value(i)); }
         else if (a == L"--update-golden")  { opt.update_golden = true; }
@@ -1268,6 +1273,30 @@ int finish_shot(gfx_host& host, const options& opt)
     return 0;
 }
 
+// --diff A.png --against B.png [--diff-out OUT.png]: how far two screenshots are apart (a gpu shot against a software
+// one shows where the rasteriser and the shaders disagree). exit 0 when within --golden-tolerance / --golden-allowed
+int run_diff(const options& opt)
+{
+    std::vector<strata::u8> a, b;
+    strata::u32 aw = 0, ah = 0, bw = 0, bh = 0;
+    if (!imgio::read_png(opt.diff_a, a, aw, ah) || !imgio::read_png(opt.diff_b, b, bw, bh)) {
+        std::fprintf(stderr, "[diff] cannot read %s or %s\n", opt.diff_a.c_str(), opt.diff_b.c_str());
+        return 2;
+    }
+    if (aw != bw || ah != bh) {
+        std::fprintf(stderr, "[diff] sizes differ: %ux%u against %ux%u\n", aw, ah, bw, bh);
+        return 1;
+    }
+    const imgio::compare_result r = imgio::compare(a, b, aw, ah, opt.golden_tolerance);
+    std::fprintf(stderr, "[diff] %.3f %% of the pixels differ by more than %u (max channel difference %u, allowed %.3f %%)\n",
+                 r.fraction() * 100.0, opt.golden_tolerance, r.max_difference, opt.golden_allowed);
+    if (!opt.diff_out.empty() && !imgio::write_png(opt.diff_out, imgio::diff_image(a, b, aw, ah), aw, ah)) {
+        std::fprintf(stderr, "[diff] cannot write %s\n", opt.diff_out.c_str());
+        return 2;
+    }
+    return r.fraction() * 100.0 > opt.golden_allowed ? 1 : 0;
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 {
     ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1288,6 +1317,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         (void)_wfreopen_s(&unused, opt.log_path, L"w", stderr);
     } else if (::AttachConsole(ATTACH_PARENT_PROCESS)) {
         (void)freopen_s(&unused, "CONOUT$", "w", stderr);
+    }
+
+    if (!opt.diff_a.empty()) {
+        return run_diff(opt);
     }
 
     if (opt.selftest) {

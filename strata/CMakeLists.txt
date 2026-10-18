@@ -44,6 +44,7 @@ add_library(strata STATIC
     src/input_record.cpp
     src/keybinds.cpp
     src/node_editor.cpp
+    src/undo.cpp
     src/limits.cpp
     src/platform_win32.cpp
     src/texture.cpp
@@ -79,6 +80,7 @@ target_sources(strata PUBLIC
         include/strata/log.hpp
         include/strata/log_queue.hpp
         include/strata/node_editor.hpp
+        include/strata/undo.hpp
         include/strata/strata.hpp
         include/strata/texture.hpp
         include/strata/themes.hpp

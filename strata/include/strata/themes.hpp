@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // ready-made themes and a text theme format. `ui.theme() = strata::themes::light();` between frames, or tweak members.
 namespace strata::themes {
@@ -248,7 +249,20 @@ namespace strata::themes {
 
 // the theme matching system settings (win32_platform::appearance()): high contrast if on, else midnight / light,
 // with the system accent if known (alpha 0 = theme's). re-apply on win32_platform::appearance_changed()
-[[nodiscard]] style for_appearance(bool dark, bool high_contrast, color accent = color{0, 0, 0, 0}) noexcept;
+[[nodiscard]] style for_appearance(bool dark, bool high_contrast, color accent = color{0, 0, 0, 0},
+                                   bool reduced_motion = false) noexcept;
+
+// WCAG contrast ratio of two colours, 1 (same) to 21 (black on white); alpha is ignored
+[[nodiscard]] f32 contrast_ratio(color a, color b) noexcept;
+
+// a colour pair of a theme that reads poorly
+struct contrast_issue {
+    std::string_view pair;     // "text on window", "dim text on widget", ...
+    f32              ratio{};
+    f32              required{}; // 4.5 for text, 3 for the accent and status colours
+};
+// the pairs of `s` below their minimum; empty = fine. the inspector window lists them for the live theme
+[[nodiscard]] std::vector<contrast_issue> check_contrast(const style& s);
 
 // theme files: `key = value` per line; blank lines and `#`, `;`, `//` lines are comments.
 //     # my theme

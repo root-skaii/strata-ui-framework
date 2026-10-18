@@ -70,6 +70,8 @@ struct demo4_state {
     std::vector<graph_node>        graph_nodes;
     std::vector<strata::node_link> graph_links;
     strata::node_context_request   graph_request;
+    strata::undo_stack             graph_history;
+    std::vector<graph_node>        graph_clip;
     std::uint64_t                  next_node_id = 10;
     bool                           show_inspector = false;
 
