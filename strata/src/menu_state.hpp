@@ -33,6 +33,8 @@ struct menu_frame { // a popup being built
     u32          level{};
     bool         saved_overlay{};
     bool         keys_ok{};   // the deepest open popup: letter keys activate mnemonics here
+    bool         has_rows{};  // a row was placed: a separator before the first one has nothing to divide
+    bool         sep_pending{}; // a separator waits for the next row (none comes: it is never drawn)
 };
 
 struct menu_state {
@@ -46,6 +48,10 @@ struct menu_state {
     bool in_menu_bar_{};
     f32  menu_bar_h_{};
     f32  menu_bar_saved_spacing_{};
+    rect popup_bounds_{};      // where menus may open, when has_popup_bounds_ (else the display)
+    bool has_popup_bounds_{};
+    bool detach_overlay_{};    // popup layers are drawn last, for a host that shows them in a window of its own
+    u32  overlay_first_{};     // first draw command of those layers (set by the layer ordering)
 };
 
 } // namespace strata::internal

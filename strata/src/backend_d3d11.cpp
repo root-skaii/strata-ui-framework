@@ -826,7 +826,8 @@ void d3d11_renderer::render(const draw_data& data)
         }
 
         ps_mode want = cmd.texture != 0 ? ps_mode::image : ps_mode::main;
-        if (cmd.blur > 0.0f && s.blur_supported) {
+        // (no backdrop blur in a target that shows a part of the frame: there is nothing behind it to read)
+        if (cmd.blur > 0.0f && s.blur_supported && data.origin.x == 0.0f && data.origin.y == 0.0f) {
             if (!host_rt_fetched) {
                 ctx->OMGetRenderTargets(1, &host_rtv, &host_dsv);
                 host_rt_fetched = true;
@@ -878,8 +879,10 @@ void d3d11_renderer::render(const draw_data& data)
         if (want == ps_mode::main && cmd.texture == 0) { blur_dirty = true; }
         if (want == ps_mode::image) { blur_dirty = true; }
         mode = want;
-        const D3D11_RECT scissor{static_cast<LONG>(cmd.clip.min.x), static_cast<LONG>(cmd.clip.min.y),
-                                 static_cast<LONG>(cmd.clip.max.x), static_cast<LONG>(cmd.clip.max.y)};
+        // (clips are in the ui's pixels: shifted into the target, and kept inside it)
+        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(v, 0.0f, hi)); };
+        const D3D11_RECT scissor{fit(cmd.clip.min.x - data.origin.x, data.display_size.x), fit(cmd.clip.min.y - data.origin.y, data.display_size.y),
+                                 fit(cmd.clip.max.x - data.origin.x, data.display_size.x), fit(cmd.clip.max.y - data.origin.y, data.display_size.y)};
         ctx->RSSetScissorRects(1, &scissor);
         ctx->DrawIndexed(cmd.idx_count, cmd.idx_offset, static_cast<INT>(cmd.vtx_offset));
     }

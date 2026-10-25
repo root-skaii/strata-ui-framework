@@ -16,6 +16,9 @@ cbuffer transform : register(b0)
     // x: output_space: 0 as is (srgb target), 1 linear (*_SRGB view encodes), 2 scRGB (linear, 1.0 = 80 nits),
     //    3 HDR10 (BT.2020, PQ). y: white level (2: nits / 80, 3: nits / 10000). z: text contrast (0 = none)
     float4 output;
+    // xy: where this target's top-left sits in ui pixels (0 unless a layer is drawn into a window of its own); shapes are
+    // placed in ui pixels, so their pixel coordinate is the target's plus this
+    float4 view;
 };
 
 struct shape
@@ -164,7 +167,7 @@ float4 ps_main(ps_input i) : SV_Target
 {
     if (i.shape_index != no_shape)
     {
-        return encode_output(shade_shape(shapes[i.shape_index], i.pos.xy));
+        return encode_output(shade_shape(shapes[i.shape_index], i.pos.xy + view.xy));
     }
     float coverage = atlas.SampleLevel(sampler0, i.uv, 0.0f).r;
     if (output.z > 0.0f)
@@ -182,7 +185,7 @@ float4 ps_main(ps_input i) : SV_Target
 float4 ps_image(ps_input i) : SV_Target
 {
     shape  s   = shapes[i.shape_index];
-    float2 p   = i.pos.xy - s.center;
+    float2 p   = i.pos.xy + view.xy - s.center;
     float  cov = saturate(0.5f - sd_round_box(p, s.half_size, s.radius));
 
     float2 t    = saturate(p / (2.0f * s.half_size) + 0.5f);
@@ -205,7 +208,7 @@ float4 ps_image(ps_input i) : SV_Target
 float4 ps_backdrop(ps_input i) : SV_Target
 {
     shape  s   = shapes[i.shape_index];
-    float2 p   = i.pos.xy - s.center;
+    float2 p   = i.pos.xy + view.xy - s.center;
     float  cov = saturate(0.5f - sd_round_box(p, s.half_size, s.radius));
 
     float2 uv   = i.pos.xy / bp0.xy * bp0.zw;

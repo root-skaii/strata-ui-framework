@@ -15,8 +15,35 @@ draw_data context::render_data() const noexcept
     draw_data d = m_->dl_.data();
     d.content_hash = m_->geometry_hash_; // lets the renderers skip an upload of geometry they already hold
     d.text_contrast = m_->style_.text_contrast;
+    d.overlay_first = static_cast<u32>(d.commands.size());
+    if (m_->menu_.detach_overlay_) {
+        d.overlay_first = std::min(m_->menu_.overlay_first_, d.overlay_first);
+        // what the popup layers cover: the vertices their commands use (shadows included; clips are display-wide)
+        vec2 lo{1.0e9f, 1.0e9f};
+        vec2 hi{-1.0e9f, -1.0e9f};
+        for (std::size_t c = d.overlay_first; c < d.commands.size(); ++c) {
+            const draw_cmd& cmd = d.commands[c];
+            if (cmd.idx_count == 0 || cmd.clip.empty()) { continue; }
+            for (u32 i = 0; i < cmd.idx_count; ++i) {
+                const vertex& v = d.vertices[cmd.vtx_offset + d.indices[cmd.idx_offset + i]];
+                lo = {std::min(lo.x, v.pos.x), std::min(lo.y, v.pos.y)};
+                hi = {std::max(hi.x, v.pos.x), std::max(hi.y, v.pos.y)};
+            }
+        }
+        if (hi.x > lo.x && hi.y > lo.y) { d.overlay_bounds = {lo, hi}; }
+    }
     return d;
 }
+
+void context::set_popup_bounds(const rect& bounds) noexcept
+{
+    m_->menu_.popup_bounds_     = bounds;
+    m_->menu_.has_popup_bounds_ = !bounds.empty();
+}
+
+void context::clear_popup_bounds() noexcept { m_->menu_.has_popup_bounds_ = false; }
+
+void context::set_detach_overlay(bool on) noexcept { m_->menu_.detach_overlay_ = on; }
 
 bool context::want_capture_mouse() const noexcept
 {

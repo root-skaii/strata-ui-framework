@@ -391,10 +391,12 @@ void draw_list::reorder_commands(std::span<const command_range> order)
 // a command whose geometry lies inside both its own clip and the previous command's draws the same under either, so
 // it joins that one: otherwise every table cell's clip costs a draw call. needs the two index ranges adjacent (true
 // within a window's run, not always across reordered runs) and the shifted indices to fit 16 bits
-void draw_list::merge_commands() noexcept
+void draw_list::merge_commands(u32* barrier) noexcept
 {
     const auto n = static_cast<u32>(commands_.size());
     if (n < 2) { return; }
+    const u32 fence = barrier != nullptr ? *barrier : ~0u; // nothing is joined across this command index
+    u32       moved = ~0u;                                  // ... which then sits at this index
     draw_cmd*     cmds = commands_.data();
     index_t*      idx  = indices_.data();
     const vertex* vtx  = vertices_.data();
@@ -405,7 +407,7 @@ void draw_list::merge_commands() noexcept
     for (u32 i = 1; i < n; ++i) {
         draw_cmd&       a = cmds[out];
         const draw_cmd& b = cmds[i];
-        bool join = a.blur == 0.0f && b.blur == 0.0f && a.texture == b.texture &&
+        bool join = i != fence && a.blur == 0.0f && b.blur == 0.0f && a.texture == b.texture &&
                     b.idx_offset == a.idx_offset + a.idx_count && b.vtx_offset >= a.vtx_offset;
         if (join && b.idx_count > 0) {
             const u32 shift = b.vtx_offset - a.vtx_offset;
@@ -426,9 +428,11 @@ void draw_list::merge_commands() noexcept
             a.idx_count += b.idx_count;
         } else {
             cmds[++out] = b;
+            if (i == fence) { moved = out; }
         }
     }
     commands_.shrink(n - (out + 1));
+    if (barrier != nullptr) { *barrier = moved != ~0u ? moved : static_cast<u32>(commands_.size()); } // (no command at the fence: it is the end)
 }
 
 void draw_list::fill_convex_aa(std::span<const vec2> logical_pts, color c) noexcept

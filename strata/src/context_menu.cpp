@@ -281,21 +281,34 @@ static bool menu_begin_level(context& ui, u32 level, id menu_key)
 
     const bool measured = m.size.x > 0.0f;
     vec2 size = measured ? m.size : vec2{160.0f, 40.0f};
-    // taller than the display: show what fits and scroll the rest with the wheel
-    const f32  max_h    = std::max(st.display_.y - 8.0f, 80.0f);
+    // where popups may open: the display, or what the host allows (a monitor, for popups in windows of their own)
+    const rect room = st.menu_.has_popup_bounds_ ? st.menu_.popup_bounds_ : rect{{0.0f, 0.0f}, st.display_};
+    // taller than the room: show what fits and scroll the rest with the wheel
+    const f32  max_h    = std::max(room.height() - 8.0f, 80.0f);
     const bool scrolls  = size.y > max_h;
     const f32  total_h  = size.y;
     if (scrolls) { size.y = max_h; }
     m.age += st.dt_; // (the opening fade: an animation, so the capped step)
 
+    // a submenu follows its parent's rect of this frame (the parent can have grown or moved since it was opened), beside it on the
+    // right, else on the left; where neither side has room it overlaps as little as the display allows
     vec2 pos = m.pos;
-    if (pos.x + size.x > st.display_.x - 4.0f) {
-        pos.x = level > 0 ? st.menu_.menu_open_[level - 1].rect_cur.min.x - size.x - submenu_gap : st.display_.x - 4.0f - size.x; // submenus flip to the left
+    const f32 left_edge   = room.min.x + 4.0f;
+    const f32 right_edge  = room.max.x - 4.0f;
+    const f32 top_edge    = room.min.y + 4.0f;
+    const f32 bottom_edge = room.max.y - 4.0f;
+    if (level > 0) {
+        const rect& parent = st.menu_.menu_open_[level - 1].rect_cur;
+        const f32 on_right = parent.max.x + submenu_gap;
+        const f32 on_left  = parent.min.x - size.x - submenu_gap;
+        if (on_right + size.x <= right_edge) { pos.x = on_right; }
+        else if (on_left >= left_edge)       { pos.x = on_left; }
+        else                                 { pos.x = right_edge - size.x; }
+    } else if (pos.x + size.x > right_edge) {
+        pos.x = right_edge - size.x;
     }
-    pos.x = std::max(pos.x, 4.0f);
-    if (pos.y + size.y > st.display_.y - 4.0f) {
-        pos.y = std::max(4.0f, st.display_.y - 4.0f - size.y);
-    }
+    pos.x = std::max(pos.x, left_edge);
+    pos.y = std::max(top_edge, std::min(pos.y, bottom_edge - size.y));
     m.rect_cur = {pos, pos + size};
     const f32 lin  = std::clamp(m.age / 0.12f, 0.0f, 1.0f);
     const f32 fade = measured ? lin * lin * (3.0f - 2.0f * lin) : 0.0f; // eased at both ends; the first frame only measures
@@ -313,7 +326,7 @@ static bool menu_begin_level(context& ui, u32 level, id menu_key)
 
     switch_run(ui, st.popup_.overlay_run());
     st.in_overlay_ = true;
-    st.dl_.push_clip_absolute({{0.0f, 0.0f}, st.display_});
+    st.dl_.push_clip_absolute(room);
     st.dl_.push_alpha(fade);
 
     shape_style body;
@@ -380,6 +393,18 @@ static void menu_end_level(context& ui)
 
 // rows -------------------------------------------------------------------------------------------------
 
+// called before a row is placed: draws the separator that waits for it, and marks that the popup has rows
+static void place_pending_separator(context& ui, menu_frame& frame)
+{
+    auto& st = context_access::of(ui);
+    if (frame.sep_pending) {
+        const rect r = layout_place(ui, {st.layout_.width, 7.0f});
+        st.dl_.rect_filled({{r.min.x + 6.0f, r.center().y}, {r.max.x - 6.0f, r.center().y + 1.0f}}, st.style_.border);
+        frame.sep_pending = false;
+    }
+    frame.has_rows = true;
+}
+
 bool context::menu_item(std::string_view label, std::string_view shortcut, bool selected, bool enabled)
 {
     menu_item_options o;
@@ -404,6 +429,7 @@ bool context::menu_item(std::string_view label, const menu_item_options& o)
     frame.content_w = std::max(frame.content_w, check_column + ts.x + (o.shortcut.empty() ? 0.0f : 28.0f + sw) + 12.0f);
 
     const f32  row_h = std::max(frame_height() - 2.0f, ts.y + 6.0f);
+    place_pending_separator(*this, frame);
     const rect row   = layout_place(*this, {m_->layout_.width, row_h});
     const interaction in = o.enabled ? interact(*this, key, row) : interaction{};
 
@@ -492,14 +518,17 @@ bool context::menu_item(std::string_view label, bool& checked, const menu_item_o
     return false;
 }
 
+// a separator only divides two rows: one before the first row, after the last, or next to another is never drawn
 void context::menu_separator()
 {
     if (m_->menu_.menu_depth_ == 0) {
         return;
     }
-    const rect r = layout_place(*this, {m_->layout_.width, 7.0f});
-    m_->dl_.rect_filled({{r.min.x + 6.0f, r.center().y}, {r.max.x - 6.0f, r.center().y + 1.0f}}, m_->style_.border);
+    menu_frame& frame = m_->menu_.menu_stack_[m_->menu_.menu_depth_ - 1];
+    if (frame.has_rows) { frame.sep_pending = true; }
 }
+
+void context::close_menus() noexcept { menu_close_all(*this); }
 
 // menus and submenus ---------------------------------------------------------------------------------------
 
@@ -519,6 +548,7 @@ bool context::begin_menu(std::string_view label, bool enabled)
         }
         frame.content_w = std::max(frame.content_w, check_column + ts.x + arrow_column + 12.0f);
         const f32  row_h = std::max(frame_height() - 2.0f, ts.y + 6.0f);
+        place_pending_separator(*this, frame);
         const rect row   = layout_place(*this, {m_->layout_.width, row_h});
         const interaction in = enabled ? interact(*this, key, row) : interaction{};
 
@@ -539,6 +569,11 @@ bool context::begin_menu(std::string_view label, bool enabled)
             sub.scroll = 0.0f;
             sub.age    = 0.0f;
             open = true;
+        }
+        if (open) { // (the row moves when the parent scrolls or is re-fitted: the submenu stays level with it)
+            menu_level& sub = m_->menu_.menu_open_[level + 1];
+            sub.anchor = row;
+            sub.pos.y  = row.min.y - menu_pad;
         }
         if (in.hovered || open) {
             shape_style bg;

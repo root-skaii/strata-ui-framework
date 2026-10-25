@@ -5,6 +5,7 @@
 #include "strata/types.hpp"
 #include "strata/vmem.hpp"
 
+#include <algorithm>
 #include <array>
 #include <span>
 #include <string>
@@ -62,6 +63,28 @@ struct draw_data {
     std::span<const draw_cmd> commands;
     std::span<const shape_record> shapes;
     vec2                      display_size; // physical pixels
+    // where the target's top-left sits in the ui's physical pixels. {0, 0} for a normal frame; a host that shows a part of the
+    // frame in a window of its own (see overlay_first) sets the window's offset and its size as display_size
+    vec2                      origin{};
+    // set by context::render_data() when context::set_detach_overlay(true): the commands from `overlay_first` on are the
+    // popup layers (menus, popups, tooltips) and `overlay_bounds` (physical pixels, shadows included) is what they cover.
+    // draw commands [0, overlay_first) into the window, [overlay_first, end) wherever the overlay is shown. no overlay: first
+    // == commands.size()
+    u32                       overlay_first{};
+    rect                      overlay_bounds{};
+    // a copy that holds only the commands [first, end) / [0, count)
+    [[nodiscard]] draw_data tail(u32 first) const noexcept
+    {
+        draw_data d = *this;
+        d.commands  = commands.subspan(std::min<std::size_t>(first, commands.size()));
+        return d;
+    }
+    [[nodiscard]] draw_data head(u32 count) const noexcept
+    {
+        draw_data d = *this;
+        d.commands  = commands.first(std::min<std::size_t>(count, commands.size()));
+        return d;
+    }
     // content hash so a renderer can skip re-uploading unchanged buffers (set by context::end_frame).
     // 0 = unknown, always upload. a hint only.
     u64                       content_hash{};
@@ -233,7 +256,8 @@ public:
     // rewrites the command list as `order`: slices covering every command exactly once
     void reorder_commands(std::span<const command_range> order);
     // joins neighbouring commands whose clips make no difference to their geometry (end_frame, after reordering)
-    void merge_commands() noexcept;
+    // `barrier`: a command index nothing is joined across; on return the index that command has after the merge
+    void merge_commands(u32* barrier = nullptr) noexcept;
 
     [[nodiscard]] draw_data data() const noexcept;
     // vertex / index / command reservation ran out this frame

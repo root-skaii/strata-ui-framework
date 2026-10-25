@@ -1780,6 +1780,8 @@ public:
     }
     [[nodiscard]] menu_scope popup_menu(std::string_view id) { return {*this, begin_popup_menu(id), menu_scope::kind::popup}; }
     [[nodiscard]] bool menu_open() const noexcept;
+    // closes every open menu (the host lost the foreground, or took the mouse away from them)
+    void close_menus() noexcept;
 
     // toasts -----------------------------------------------------------------------------------
     // notifications stacked in a corner. hover pauses, click dismisses.
@@ -1928,6 +1930,15 @@ public:
     [[nodiscard]] f32  frame_height() const noexcept;
     [[nodiscard]] vec2 mouse_pos() const noexcept;
     [[nodiscard]] vec2 display_size() const noexcept;
+
+    // popups in windows of their own ------------------------------------------
+    // where menus may open, in this ui's logical pixels (default: the display). a host that shows popups in windows of their own
+    // passes the work area of the monitor under the pointer, which can reach past the display (negative or larger coordinates)
+    void set_popup_bounds(const rect& bounds) noexcept;
+    void clear_popup_bounds() noexcept;
+    // draws the popup layers (menus, popups, tooltips) last and reports in render_data() where they start (overlay_first) and what
+    // they cover (overlay_bounds), so the host can draw them into a window of its own, per frame, only when they leave the main one
+    void set_detach_overlay(bool on) noexcept;
 
     // fonts ----------------------------------------------------------------
     // ids: context_config::font, then extra_fonts. applies to text and widget sizes until popped; titles use font 0.

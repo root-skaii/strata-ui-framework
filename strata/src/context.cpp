@@ -532,7 +532,8 @@ void context::end_frame()
         m_->menu_.menu_close_all_ = false;
     }
     apply_layer_order(*this);
-    m_->dl_.merge_commands();
+    // (the popup layers' first command stays the first of them: it is where a host splits the frame)
+    m_->dl_.merge_commands(m_->menu_.detach_overlay_ ? &m_->menu_.overlay_first_ : nullptr);
 
     if (!m_->input_.mouse_down_) {
         m_->active_       = 0; // a widget that vanished mid-drag must not stay active forever
@@ -592,7 +593,8 @@ void context::end_frame()
 
     // how long a sleeping host may wait: nothing below changes the picture before its deadline
     f64 wake = no_deadline;
-    if (!m_->frame_unchanged_ || m_->anim_moved_ || toast_moving) {
+    // (one queued key press is handed out per frame: the rest need frames of their own without waiting for more input)
+    if (!m_->frame_unchanged_ || m_->anim_moved_ || toast_moving || m_->input_.press_queued_ > 0) {
         wake = 0.0;
     } else {
         if (tooltip_pending) { wake = std::min(wake, static_cast<f64>(m_->style_.tooltip_delay_s - m_->hover_time_)); }
@@ -855,16 +857,19 @@ static void apply_layer_order(context& ui)
             break;
         }
     }
+    m.menu_.overlay_first_ = ~0u; // (no layering this frame: nothing to detach)
     if (m.runs_overflow_ || m.run_count_ == 0) {
         return;
     }
 
     std::array<draw_list::command_range, max_runs> ranges;
-    u32 count = 0;
+    u32 count  = 0;
+    u32 placed = 0; // commands in the ranges so far
     const auto add_owner = [&](u32 owner) {
         for (u32 i = 0; i < m.run_count_; ++i) {
             if (m.runs_[i].owner == owner) {
                 ranges[count++] = {m.runs_[i].first, m.runs_[i].count};
+                placed += m.runs_[i].count;
             }
         }
     };
@@ -878,11 +883,15 @@ static void apply_layer_order(context& ui)
         }
         add_owner(order[i]);
     }
+    // detached: the popup layers go last, so the commands from `overlay_first` on can be drawn somewhere else
+    // (what stays below them: foreground drawing such as toasts, which a popup window then covers where they meet)
+    if (m.menu_.detach_overlay_) { add_owner(run_foreground); }
+    m.menu_.overlay_first_ = placed;
     add_owner(run_overlay);
     for (u32 level = 1; level < popup_stack::max_popup_levels; ++level) { // nested popups, each above its parent
         add_owner(popup_stack::popup_run(level));
     }
-    add_owner(run_foreground);
+    if (!m.menu_.detach_overlay_) { add_owner(run_foreground); }
 
     // nothing to do when the emission order already is the draw order
     u32  cursor   = 0;

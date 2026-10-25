@@ -94,6 +94,7 @@ struct blur_plan {
 struct ui_constants {
     float transform[4]{};
     float output[4]{};
+    float view[4]{}; // xy: draw_data::origin
 };
 
 [[nodiscard]] inline ui_constants make_ui_constants(const draw_data& data, const output_desc& out) noexcept
@@ -101,8 +102,10 @@ struct ui_constants {
     ui_constants c;
     c.transform[0] = 2.0f / data.display_size.x;
     c.transform[1] = -2.0f / data.display_size.y;
-    c.transform[2] = -1.0f;
-    c.transform[3] = 1.0f;
+    c.transform[2] = -1.0f - data.origin.x * c.transform[0];
+    c.transform[3] = 1.0f - data.origin.y * c.transform[1];
+    c.view[0]      = data.origin.x;
+    c.view[1]      = data.origin.y;
     const f32 nits = std::clamp(out.paper_white_nits, 1.0f, 10000.0f);
     c.output[0] = static_cast<float>(out.space);
     c.output[1] = out.space == output_space::hdr10 ? nits / 10000.0f : nits / 80.0f;
