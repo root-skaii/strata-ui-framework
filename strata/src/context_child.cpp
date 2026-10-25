@@ -100,7 +100,7 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
 
     m_->layout_              = {};
     m_->layout_.origin       = {inner.min.x - st->scroll_x, inner.min.y - st->scroll};
-    m_->layout_.width        = std::max(inner.width() - (st->overflow && bars ? 10.0f : 0.0f), 1.0f);
+    m_->layout_.width        = std::max(inner.width() - (st->overflow && bars ? 16.0f : 0.0f), 1.0f); // (a gap between the content and the scrollbar, not just its width)
     m_->layout_.bound_bottom = inner.max.y - hbar;
     return true;
 }
@@ -153,8 +153,13 @@ void context::end_child()
     if (st.overflow) {
         const f32 max_scroll = st.content_h - view_h;
         if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(*this, f.bounds)) {
-            st.scroll = std::clamp(st.scroll - wheel_scroll(*this, m_->font_.line_height(0), view_h), 0.0f, max_scroll);
-            m_->wheel_consumed_ = true;
+            const f32 moved = std::clamp(st.scroll - wheel_scroll(*this, m_->font_.line_height(0), view_h), 0.0f, max_scroll);
+            // a scroller already at its end in the wheel's direction lets the wheel through to the one around it
+            // (scroll chaining); otherwise the pointer crossing an inner list would stall the page
+            if (moved != st.scroll) {
+                st.scroll           = moved;
+                m_->wheel_consumed_ = true;
+            }
         }
         if (bars) {
             const f32 y0 = f.bounds.min.y + 5.0f;

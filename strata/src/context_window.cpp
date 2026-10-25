@@ -175,6 +175,15 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
             st->float_size = {st->width, st->height};
         }
     }
+    if (has_flag(flags, window_flags::placed)) {
+        constexpr u16 drop = static_cast<u16>(window_flags::resizable) | static_cast<u16>(window_flags::drag_by_body);
+        flags = static_cast<window_flags>(static_cast<u16>(flags) & ~drop) | window_flags::no_move;
+        if (st->dock == 0) { // (a docked window takes its node's rect below)
+            st->pos    = initial_pos;
+            st->width  = size.x;
+            st->height = std::max(size.y, 0.0f);
+        }
+    }
     st->last_frame = m_->frame_;
     st->passive    = has_flag(flags, window_flags::no_inputs);
     if (st->passive) { // nothing to grab, move, resize or dock

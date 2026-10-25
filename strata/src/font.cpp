@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
@@ -566,6 +567,109 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
 font_atlas::~font_atlas()
 {
     discard_pixels();
+}
+
+namespace {
+
+constexpr u32 atlas_magic = 0x31414653; // "SFA1"
+
+struct byte_writer {
+    std::vector<u8>& out;
+    template <class T> void pod(const T& v)
+    {
+        const auto* p = reinterpret_cast<const u8*>(&v);
+        out.insert(out.end(), p, p + sizeof(T));
+    }
+    template <class T> void vec(const std::vector<T>& v)
+    {
+        pod<u64>(v.size());
+        const auto* p = reinterpret_cast<const u8*>(v.data());
+        out.insert(out.end(), p, p + v.size() * sizeof(T));
+    }
+};
+
+struct byte_reader {
+    std::span<const u8> in;
+    std::size_t         pos{};
+    bool                ok{true};
+    template <class T> T pod()
+    {
+        T v{};
+        if (!ok || in.size() - pos < sizeof(T)) { ok = false; return v; }
+        std::memcpy(&v, in.data() + pos, sizeof(T));
+        pos += sizeof(T);
+        return v;
+    }
+    template <class T> void vec(std::vector<T>& v)
+    {
+        const u64 n = pod<u64>();
+        if (!ok || n > (in.size() - pos) / sizeof(T)) { ok = false; return; }
+        v.resize(static_cast<std::size_t>(n));
+        std::memcpy(static_cast<void*>(v.data()), in.data() + pos, v.size() * sizeof(T));
+        pos += v.size() * sizeof(T);
+    }
+};
+
+} // namespace
+
+std::vector<u8> font_atlas::save() const
+{
+    std::vector<u8> out;
+    byte_writer     w{out};
+    w.pod(atlas_magic);
+    w.pod<u32>(sizeof(glyph));
+    w.pod<u32>(sizeof(range_entry));
+    w.pod<u32>(sizeof(kern_pair));
+    w.pod(width_);
+    w.pod(height_);
+    w.pod(scale_);
+    w.pod(inv_scale_);
+    w.pod(white_uv_);
+    w.pod<u64>(fonts_.size());
+    for (const font_data& f : fonts_) {
+        w.vec(f.ranges);
+        w.vec(f.glyphs);
+        w.vec(f.kern);
+        w.vec(f.kern_ascii);
+        w.pod<u64>(f.fallback);
+        w.pod(f.line_height);
+        w.pod(f.ascent);
+    }
+    w.vec(pixels_);
+    return out;
+}
+
+std::optional<font_atlas> font_atlas::load(std::span<const u8> bytes)
+{
+    byte_reader r{bytes};
+    if (r.pod<u32>() != atlas_magic || r.pod<u32>() != sizeof(glyph) || r.pod<u32>() != sizeof(range_entry) || r.pod<u32>() != sizeof(kern_pair)) {
+        return std::nullopt;
+    }
+    font_atlas a;
+    a.width_     = r.pod<u32>();
+    a.height_    = r.pod<u32>();
+    a.scale_     = r.pod<f32>();
+    a.inv_scale_ = r.pod<f32>();
+    a.white_uv_  = r.pod<std::array<u16, 2>>();
+    const u64 count = r.pod<u64>();
+    if (!r.ok || count == 0 || count > 64) { return std::nullopt; }
+    a.fonts_.resize(static_cast<std::size_t>(count));
+    for (font_data& f : a.fonts_) {
+        r.vec(f.ranges);
+        r.vec(f.glyphs);
+        r.vec(f.kern);
+        r.vec(f.kern_ascii);
+        f.fallback    = static_cast<std::size_t>(r.pod<u64>());
+        f.line_height = r.pod<f32>();
+        f.ascent      = r.pod<f32>();
+        if (!r.ok || f.glyphs.empty() || f.fallback >= f.glyphs.size()) { return std::nullopt; }
+        for (const range_entry& re : f.ranges) { // find() indexes the glyph table straight from these
+            if (re.last < re.first || re.offset + (re.last - re.first) >= f.glyphs.size()) { return std::nullopt; }
+        }
+    }
+    r.vec(a.pixels_);
+    if (!r.ok || r.pos != bytes.size() || a.pixels_.size() != static_cast<std::size_t>(a.width_) * a.height_) { return std::nullopt; }
+    return a;
 }
 
 void font_atlas::discard_pixels() noexcept

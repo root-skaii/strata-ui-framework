@@ -24,6 +24,17 @@ const keybinds::action* keybinds::find(std::string_view name) const noexcept
     return nullptr;
 }
 
+bool keybinds::set_title(std::string_view name, std::string_view title)
+{
+    for (action& a : actions_) {
+        if (a.name == name) {
+            a.title = std::string{title};
+            return true;
+        }
+    }
+    return false;
+}
+
 bool keybinds::bind(std::string_view name, const key_sequence& chord)
 {
     for (action& a : actions_) {
@@ -127,7 +138,7 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
         ui.push_id(a.name);
         if (ui.table_next_row()) {
             ui.table_next_column();
-            ui.text(a.name);
+            ui.text(a.title.empty() ? a.name : a.title);
             if (!a.description.empty()) { ui.tooltip(a.description); }
             if (!a.context.empty()) {
                 ui.same_line();
@@ -205,6 +216,8 @@ void command_palette::open() noexcept
     open_        = true;
     just_opened_ = true;
     selected_    = 0;
+    top_         = 0;
+    wheel_acc_   = 0.0f;
     query_.clear();
 }
 
@@ -234,7 +247,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         ui.request_text_focus("##palette_query");
         just_opened_ = false;
     }
-    if (ui.input_text("##palette_query", query_, ui.strings().palette_hint, input_flags::none, 96)) { selected_ = 0; }
+    if (ui.input_text("##palette_query", query_, ui.strings().palette_hint, input_flags::none, 96)) { selected_ = 0; top_ = 0; }
 
     struct hit {
         const keybinds::action* action;
@@ -245,7 +258,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         if (!binds.available(a)) { continue; }
         int score = 0;
         if (!query_.empty()) {
-            score = std::max({fuzzy_score(query_, action_title(a.name)), fuzzy_score(query_, a.name),
+            score = std::max({fuzzy_score(query_, a.title.empty() ? action_title(a.name) : a.title), fuzzy_score(query_, a.name),
                               fuzzy_score(query_, a.description) - 20});
             if (score < 0) { continue; }
         }
@@ -256,14 +269,23 @@ std::string command_palette::show(context& ui, const keybinds& binds)
     const int n     = static_cast<int>(hits.size());
     const int shown = std::min(n, std::max(max_rows, 1));
     selected_ = std::clamp(selected_ + move, 0, std::max(n - 1, 0));
-    const int first = std::clamp(selected_ - shown + 1, 0, n - shown);
+    // the window of rows: the arrow keys keep the selection inside it, the wheel slides it over the whole list
+    if (move != 0) { top_ = std::clamp(top_, selected_ - shown + 1, selected_); }
+    wheel_acc_ += ui.take_wheel() * 3.0f;
+    const int steps = static_cast<int>(wheel_acc_);
+    wheel_acc_ -= static_cast<f32>(steps);
+    top_ -= steps;
+    top_ = std::clamp(top_, 0, std::max(n - shown, 0));
+    const int first = top_;
 
     ui.spacing(2.0f);
     const style& theme = ui.theme();
     const f32    row_h = ui.frame_height();
+    f32          rows_top = 0.0f, rows_bottom = 0.0f, rows_right = 0.0f;
+    std::string  cut_description; // the full text of the hovered / selected row when its description did not fit
     for (int i = first; i < first + shown; ++i) {
         const keybinds::action& a = *hits[static_cast<std::size_t>(i)].action;
-        const item_result row = ui.custom_item("row " + a.name, {0.0f, row_h});
+        const item_result row = ui.custom_item("row " + a.name, {n > shown ? ui.content_width() - 14.0f : 0.0f, row_h});
         draw_list& dl = ui.draw();
         if (i == selected_ || row.hovered) {
             shape_style bg;
@@ -274,24 +296,51 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         }
         const font_id f     = ui.current_font();
         const f32     text_y = row.bounds.min.y + (row_h - ui.font().line_height(f)) * 0.5f;
-        const std::string name = action_title(a.name);
+        const std::string name = a.title.empty() ? action_title(a.name) : a.title;
         dl.text({row.bounds.min.x + 10.0f, text_y}, i == selected_ ? theme.accent_hover : theme.text, name, f);
         const std::string chord = sequence_to_string(a.chord);
         const f32 chord_w = chord.empty() ? 0.0f : ui.font().measure(f, chord).x;
+        if (i == first) { rows_top = row.bounds.min.y; }
+        rows_bottom = row.bounds.max.y;
+        rows_right  = row.bounds.max.x;
         if (!chord.empty()) { dl.text({row.bounds.max.x - 10.0f - chord_w, text_y}, theme.text_dim, chord, f); }
         if (!a.description.empty()) { // as much of the description as fits between the name and the shortcut
             const f32 x = row.bounds.min.x + 10.0f + ui.font().measure(f, name).x + 12.0f;
             const f32 room = row.bounds.max.x - 10.0f - chord_w - 12.0f - x;
             if (room > 40.0f) {
+                std::string desc = a.description;
+                if (ui.font().measure(f, desc).x > room) { // cut at a character boundary and say so with an ellipsis
+                    const f32 dots = ui.font().measure(f, "...").x;
+                    std::size_t lo = 0, hi = desc.size();
+                    while (lo < hi) { // (only utf-8 character starts are tried, so `lo` always sits on one)
+                        std::size_t mid = (lo + hi + 1) / 2;
+                        while (mid > lo && (static_cast<unsigned char>(desc[mid]) & 0xC0u) == 0x80u) { --mid; }
+                        if (mid == lo) { break; }
+                        if (ui.font().measure(f, std::string_view{desc}.substr(0, mid)).x + dots <= room) { lo = mid; } else { hi = mid - 1; }
+                    }
+                    desc = desc.substr(0, lo) + "...";
+                    if (i == selected_ || row.hovered) { cut_description = a.description; }
+                }
                 dl.push_clip({{x, row.bounds.min.y}, {x + room, row.bounds.max.y}});
-                dl.text({x, text_y}, theme.text_dim.scaled_alpha(0.75f), a.description, f);
+                dl.text({x, text_y}, theme.text_dim.scaled_alpha(0.75f), desc, f);
                 dl.pop_clip();
             }
         }
         if (row.pressed) { chosen = a.name; }
     }
+    if (n > shown) { // a thin scrollbar thumb along the right edge of the rows
+        const f32 track_h = rows_bottom - rows_top; // (the rows' real span, item spacing included)
+        const f32 thumb_h = std::max(18.0f, track_h * static_cast<f32>(shown) / static_cast<f32>(n));
+        const f32 thumb_y = rows_top + (track_h - thumb_h) * static_cast<f32>(first) / static_cast<f32>(n - shown);
+        const f32 x = rows_right + 5.0f; // (right of the rows, in the modal's padding)
+        ui.draw().rect_filled({{x, thumb_y}, {x + 3.0f, thumb_y + thumb_h}}, theme.text_dim.scaled_alpha(0.45f), 1.5f);
+    }
     if (n == 0) { ui.text_dim(ui.strings().no_commands); }
-    if (n > shown) { ui.text_dim(std::to_string(n) + " commands"); }
+    if (!cut_description.empty()) {
+        ui.text_dim(cut_description); // (the hovered / selected command, in full)
+    } else if (n > shown) {
+        ui.text_dim(std::to_string(n) + " " + std::string{ui.strings().commands});
+    }
 
     if (ui.input_submitted() && n > 0) { chosen = hits[static_cast<std::size_t>(selected_)].action->name; }
     if (esc || !chosen.empty()) {

@@ -321,6 +321,7 @@ struct ui_strings {
     std::string_view palette_title   = "Command palette";
     std::string_view palette_hint    = "Type a command...";
     std::string_view no_commands     = "no matching commands";
+    std::string_view commands        = "commands"; // "80 commands"
     // dialogs, docking, charts, toasts
     std::string_view confirm       = "Confirm";
     std::string_view drop_here     = "drop windows here";
@@ -343,6 +344,11 @@ struct context_config {
     font_config                  font{};          // font 0: window titles and the default
     std::span<const font_config> extra_fonts{};   // fonts 1, 2, ... (must outlive create())
     u32                          max_atlas_size = 4096;
+    // baked at this scale straight away (0.5 .. 4): saves the second bake a set_scale() right after create() costs
+    f32                          scale = 1.0f;
+    // an atlas from font_atlas::load() for these exact fonts and this scale, used instead of baking (a host cache). one
+    // that does not match the scale is ignored. must outlive create()
+    const font_atlas*            prebuilt = nullptr;
     strata::style                theme{};
     draw_list_limits             limits{};
     capacity_config              capacity{};
@@ -445,6 +451,9 @@ enum class window_flags : u16 {
     // wider content scrolls sideways (scrollbar, tilt wheel, Shift + wheel) instead of being clipped; like
     // child_flags::horizontal, full-width widgets still fit the visible width. see scroll_x() / set_scroll_x()
     horizontal    = 512,
+    // position and size are taken from the call every frame (a panel the application lays out itself, following the
+    // display): never moved or resized by the user, so it implies no_move and ignores resizable
+    placed        = 1024,
 };
 
 [[nodiscard]] constexpr window_flags operator|(window_flags a, window_flags b) noexcept

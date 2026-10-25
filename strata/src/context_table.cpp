@@ -720,9 +720,14 @@ void context::end_table()
         // the wheel goes to the innermost scroller under the pointer; nested tables already had their turn
         const rect region = {{tbl.origin.x, tbl.body_top}, {tbl.origin.x + tbl.width, tbl.body_top + tbl.body_h}};
         if (m_->input_.wheel_ != 0.0f && !m_->wheel_consumed_ && pointer_over(*this, region)) {
-            st.scroll -= wheel_scroll(*this, st.row_hint, tbl.body_h);
-            st.scroll_wanted    = -1.0f; // the user's scrolling wins over a table_set_scroll_y() still waiting
-            m_->wheel_consumed_ = true;
+            const f32 reach = std::max(0.0f, st.content_h - tbl.body_h);
+            const f32 moved = std::clamp(st.scroll - wheel_scroll(*this, st.row_hint, tbl.body_h), 0.0f, reach);
+            // at its end in the wheel's direction the table lets the wheel through to the scroller around it
+            if (moved != std::clamp(st.scroll, 0.0f, reach)) {
+                st.scroll           = moved;
+                st.scroll_wanted    = -1.0f; // the user's scrolling wins over a table_set_scroll_y() still waiting
+                m_->wheel_consumed_ = true;
+            }
         }
 
         const f32 max_scroll = std::max(0.0f, st.content_h - tbl.body_h);

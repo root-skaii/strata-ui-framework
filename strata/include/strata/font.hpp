@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -134,6 +135,11 @@ public:
     {
         return build(std::span<const font_config>{&font, 1}, max_atlas_size, scale);
     }
+
+    // the whole baked atlas (glyph tables, kerning, bitmap) as bytes, so a host can cache a slow build() on disk. needs the
+    // pixels (not yet discarded). load() takes only what the same build of this library wrote: anything else is nullopt
+    [[nodiscard]] std::vector<u8> save() const;
+    [[nodiscard]] static std::optional<font_atlas> load(std::span<const u8> bytes);
 
     // physical pixels per logical pixel baked for
     [[nodiscard]] f32 scale() const noexcept { return scale_; }

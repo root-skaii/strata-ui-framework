@@ -35,6 +35,7 @@ public:
         std::string  context;     // empty: always available
         key_sequence chord;
         key_sequence default_chord;
+        std::string  title;       // shown instead of the name in keybind_editor and the palette (empty: derived from the name)
     };
 
     // registers an action with its default in sequence_to_string() syntax ("" = unbound). with a `context` it works
@@ -44,6 +45,8 @@ public:
 
     [[nodiscard]] std::span<const action> actions() const noexcept { return actions_; }
     [[nodiscard]] const action*           find(std::string_view name) const noexcept;
+    // a display title for a registered action (localised names); false if unknown
+    bool set_title(std::string_view name, std::string_view title);
 
     // false if unknown
     bool bind(std::string_view name, const key_sequence& chord);
@@ -105,6 +108,8 @@ private:
     bool        open_{};
     bool        just_opened_{};
     int         selected_{};
+    int         top_{};        // first visible row (the wheel and the arrow keys move it)
+    float       wheel_acc_{};
     std::string query_;
 };
 

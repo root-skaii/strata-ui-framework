@@ -23,6 +23,7 @@ static void menu_open_root(context& ui, id key, vec2 pos, const rect& anchor, bo
 namespace {
 
 constexpr f32 menu_pad      = 4.0f;  // between the popup's edge and its rows
+constexpr f32 submenu_gap   = 2.0f;  // between a popup and the submenu it opens
 constexpr f32 check_column  = 26.0f; // room for the check mark / icon on the left of a row
 constexpr f32 arrow_column  = 22.0f; // and for the submenu arrow on the right
 
@@ -250,6 +251,7 @@ static void menu_open_root(context& ui, id key, vec2 pos, const rect& anchor, bo
     m.pos      = pos;
     m.anchor   = anchor;
     m.size     = {};
+    m.scroll   = 0.0f;
     m.age      = 0.0f;
     m.from_bar = from_bar;
     m.seen     = true;
@@ -278,12 +280,17 @@ static bool menu_begin_level(context& ui, u32 level, id menu_key)
     }
 
     const bool measured = m.size.x > 0.0f;
-    const vec2 size = measured ? m.size : vec2{160.0f, 40.0f};
+    vec2 size = measured ? m.size : vec2{160.0f, 40.0f};
+    // taller than the display: show what fits and scroll the rest with the wheel
+    const f32  max_h    = std::max(st.display_.y - 8.0f, 80.0f);
+    const bool scrolls  = size.y > max_h;
+    const f32  total_h  = size.y;
+    if (scrolls) { size.y = max_h; }
     m.age += st.dt_; // (the opening fade: an animation, so the capped step)
 
     vec2 pos = m.pos;
     if (pos.x + size.x > st.display_.x - 4.0f) {
-        pos.x = level > 0 ? m.anchor.min.x - size.x + 2.0f : st.display_.x - 4.0f - size.x; // submenus flip to the left
+        pos.x = level > 0 ? st.menu_.menu_open_[level - 1].rect_cur.min.x - size.x - submenu_gap : st.display_.x - 4.0f - size.x; // submenus flip to the left
     }
     pos.x = std::max(pos.x, 4.0f);
     if (pos.y + size.y > st.display_.y - 4.0f) {
@@ -322,9 +329,21 @@ static bool menu_begin_level(context& ui, u32 level, id menu_key)
 
     st.dl_.push_clip({{pos.x + 1.0f, pos.y + 1.0f}, {pos.x + size.x - 1.0f, pos.y + size.y - 1.0f}});
     st.style_.item_spacing = 1.0f; // rows touch
+    f32 shift = 0.0f;
+    if (scrolls) {
+        const f32 max_scroll = total_h - size.y;
+        m.scroll = std::clamp(m.scroll, 0.0f, max_scroll);
+        if (st.input_.wheel_ != 0.0f && !st.wheel_consumed_ && pointer_over(ui, m.rect_cur)) {
+            m.scroll           = std::clamp(m.scroll - wheel_scroll(ui, st.font_.line_height(0), size.y), 0.0f, max_scroll);
+            st.wheel_consumed_ = true;
+        }
+        shift = m.scroll;
+    } else {
+        m.scroll = 0.0f;
+    }
     st.layout_        = {};
-    st.layout_.origin = {pos.x + menu_pad, pos.y + menu_pad};
-    st.layout_.width  = size.x - 2.0f * menu_pad;
+    st.layout_.origin = {pos.x + menu_pad, pos.y + menu_pad - shift};
+    st.layout_.width  = size.x - 2.0f * menu_pad - (scrolls ? 5.0f : 0.0f); // (room for the scroll bar)
     ++st.menu_.menu_depth_;
     return true;
 }
@@ -341,6 +360,14 @@ static void menu_end_level(context& ui)
     // the size is only known now; it is used from the next frame on
     const f32 content_h = st.layout_.first ? 0.0f : st.layout_.bottom - st.layout_.origin.y;
     m.size = {std::max(frame.content_w + 2.0f * menu_pad, 120.0f), content_h + 2.0f * menu_pad};
+
+    if (const f32 view = m.rect_cur.height(); m.size.y > view + 0.5f) { // scrolled: a thin bar on the right edge shows where we are
+        const f32 track = view - 2.0f * menu_pad;
+        const f32 thumb = std::max(24.0f, track * view / m.size.y);
+        const f32 range = m.size.y - view;
+        const f32 y     = m.rect_cur.min.y + menu_pad + (track - thumb) * (range > 0.0f ? m.scroll / range : 0.0f);
+        st.dl_.rect_filled({{m.rect_cur.max.x - 5.0f, y}, {m.rect_cur.max.x - 2.0f, y + thumb}}, st.style_.text_dim.scaled_alpha(0.55f), 1.5f);
+    }
 
     st.dl_.pop_clip();
     st.dl_.pop_alpha();
@@ -506,9 +533,10 @@ bool context::begin_menu(std::string_view label, bool enabled)
             menu_close_from(*this, level + 1);
             menu_level& sub = m_->menu_.menu_open_[level + 1];
             sub.key    = key;
-            sub.pos    = {row.max.x - 2.0f, row.min.y - menu_pad};
+            sub.pos    = {m_->menu_.menu_open_[level].rect_cur.max.x + submenu_gap, row.min.y - menu_pad}; // (the popup's own edge, then a gap: rows end short of it)
             sub.anchor = row;
             sub.size   = {};
+            sub.scroll = 0.0f;
             sub.age    = 0.0f;
             open = true;
         }

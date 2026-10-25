@@ -16,7 +16,8 @@ struct menu_level {
     id   key{};
     vec2 pos{};       // where the popup wants to open
     rect anchor{};    // the opener: pressing it is not "outside"
-    vec2 size{};      // measured last frame
+    vec2 size{};      // measured last frame (the whole content: a popup taller than the display shows a part of it)
+    f32  scroll{};    // how far a too-tall popup is scrolled
     rect rect_cur{};
     rect rect_prev{};
     f32  age{};

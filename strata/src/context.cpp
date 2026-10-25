@@ -129,11 +129,15 @@ std::expected<context, font_error> context::create(const context_config& cfg)
     fonts.push_back(cfg.font);
     fonts.insert(fonts.end(), cfg.extra_fonts.begin(), cfg.extra_fonts.end());
 
-    auto atlas = font_atlas::build(fonts, cfg.max_atlas_size);
+    const f32 scale = std::clamp(cfg.scale, 0.5f, 4.0f);
+    std::expected<font_atlas, font_error> atlas = (cfg.prebuilt != nullptr && cfg.prebuilt->scale() == scale && cfg.prebuilt->font_count() == fonts.size())
+                                                      ? std::expected<font_atlas, font_error>{*cfg.prebuilt}
+                                                      : font_atlas::build(fonts, cfg.max_atlas_size, scale);
     if (!atlas) {
         return std::unexpected{atlas.error()};
     }
     context ctx{std::move(*atlas), cfg.theme, cfg.limits, cfg.capacity};
+    ctx.m_->scale_          = scale;
     ctx.m_->max_atlas_size_ = cfg.max_atlas_size;
     ctx.m_->diag_           = cfg.diagnostics;
     ctx.m_->strings_        = cfg.strings;
@@ -268,8 +272,11 @@ void context::begin_frame(const input_state& in)
             pending = 0.0f;
             return fresh;
         }
+        // a gesture's first frame follows an idle wait whose long dt would apply most of the notch at once (a visible
+        // jump from rest): it eases in as if the previous frame was a normal one
+        const f32 step = pending == 0.0f ? std::min(m_->dt_, 1.0f / 60.0f) : m_->dt_;
         pending = fresh * pending < 0.0f ? fresh : pending + fresh;
-        f32 out = pending * (1.0f - std::exp(-18.0f * m_->dt_));
+        f32 out = pending * (1.0f - std::exp(-18.0f * step));
         if (std::abs(pending - out) < 0.02f) { out = pending; }
         pending -= out;
         return out;
