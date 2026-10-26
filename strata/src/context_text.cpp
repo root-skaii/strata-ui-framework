@@ -475,7 +475,7 @@ bool internal::input_multiline_core(context& ui, std::string_view label, std::st
 
     bool full = false; // vertical scroll and content height of this field:
     child_state* st = internal::state_for(std::span{cs.children_cards_.children_}, key, cs.frame_, full);
-    if (full) { report_limit(ui, "child regions with state (context_config::capacity.children)", static_cast<u32>(cs.children_cards_.children_.size())); }
+    if (full) { report_limit(ui, STRATA_DIAG("child regions with state (context_config::capacity.children)"), static_cast<u32>(cs.children_cards_.children_.size())); }
     constexpr f32 bar_w = 10.0f;
 
     // the scrollbar column is its own control, so it comes before the field claims the press

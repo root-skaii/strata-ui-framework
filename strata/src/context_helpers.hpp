@@ -5,6 +5,7 @@
 // top of that file.
 
 #include "context_impl.hpp"
+#include "limits.hpp"
 
 namespace strata::internal {
 

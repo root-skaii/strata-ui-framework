@@ -238,7 +238,7 @@ bool context::tree_node(std::string_view label, tree_flags flags)
 bool context::tree_node(std::string_view label, std::string_view id_extra, tree_flags flags)
 {
     if (m_->cur_ != nullptr && m_->tree_table_.tree_depth_ >= max_tree_depth) {
-        report_limit(*this, "tree_node nesting (max_tree_depth)", max_tree_depth);
+        report_limit(*this, STRATA_DIAG("tree_node nesting (max_tree_depth)"), max_tree_depth);
     }
     if (m_->cur_ == nullptr || m_->tree_table_.tree_depth_ >= max_tree_depth) {
         return false;

@@ -26,7 +26,8 @@ option(STRATA_WERROR        "treat warnings as errors"             OFF)
 option(STRATA_LTO          "whole-program optimisation (/GL + /LTCG, or ThinLTO) outside debug builds; off: much faster relinks" ON)
 # AddressSanitizer on everything built here (library, sandbox, tests): out-of-bounds reads / writes, use after free.
 # the x64-asan preset turns it on together with the fuzzer
-option(STRATA_ASAN          "build with AddressSanitizer (/fsanitize=address)" OFF)
+option(STRATA_DIAGNOSTIC_TEXT "keep the sentences in runtime diagnostics (limit hit, unbalanced begin/end, ...); off: the hook gets the kind + a short code" ON)
+option(STRATA_ASAN         "build with AddressSanitizer (/fsanitize=address)" OFF)
 # off now and then: a file that forgets an include it needs still compiles while the pch hands it over
 option(STRATA_PCH           "precompile the standard headers the public headers include" ON)
 # strata_fuzz: libFuzzer over the parsers (config, theme, dock layout, saved state, rich text, key chords) and text editing

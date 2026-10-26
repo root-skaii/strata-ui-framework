@@ -543,7 +543,7 @@ bool context::begin_menu(std::string_view label, bool enabled)
         menu_frame& frame = m_->menu_.menu_stack_[m_->menu_.menu_depth_ - 1];
         const u32 level = frame.level;
         if (level + 1 >= max_menu_levels) {
-            report_limit(*this, "submenu levels (max_menu_levels)", max_menu_levels);
+            report_limit(*this, STRATA_DIAG("submenu levels (max_menu_levels)"), max_menu_levels);
             return false;
         }
         frame.content_w = std::max(frame.content_w, check_column + ts.x + arrow_column + 12.0f);

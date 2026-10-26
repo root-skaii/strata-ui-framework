@@ -38,7 +38,7 @@ bool internal::popup_push(context& ui, id key) noexcept
         level = existing;
     }
     if (level >= popup_stack::max_popup_levels) {
-        report_limit(ui, "nested popups (max_popup_levels)", popup_stack::max_popup_levels);
+        report_limit(ui, STRATA_DIAG("nested popups (max_popup_levels)"), popup_stack::max_popup_levels);
         return false;
     }
     m.popup_.popup_close_from(level);

@@ -50,7 +50,7 @@ window_state* internal::window_for(context& ui, id key, vec2 pos, f32 width) noe
             if (free_slot == nullptr || w.last_frame < free_slot->last_frame) { free_slot = &w; }
         }
         if (free_slot == nullptr) {
-            report_limit(ui, "windows (context_config::capacity.windows)", static_cast<u32>(m.win_.windows_.size()));
+            report_limit(ui, STRATA_DIAG("windows (context_config::capacity.windows)"), static_cast<u32>(m.win_.windows_.size()));
             return nullptr;
         }
         forget_window(ui, free_slot->key);
@@ -126,7 +126,7 @@ void internal::bring_to_front(context& ui, id key) noexcept
         if (m.win_.z_count_ < m.win_.z_order_.size()) {
             m.win_.z_order_[m.win_.z_count_++] = key;
         } else {
-            report_limit(ui, "window stacking order (context_config::capacity.windows)", static_cast<u32>(m.win_.z_order_.size()));
+            report_limit(ui, STRATA_DIAG("window stacking order (context_config::capacity.windows)"), static_cast<u32>(m.win_.z_order_.size()));
         }
         return;
     }
@@ -143,7 +143,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     const id wid = hash_id(title, m_->ids_.root());
     if (m_->cur_ != nullptr) { // begun inside another window's code: suspend that one until this one ends
         if (m_->nest_depth_ >= impl::max_window_nesting) {
-            report_limit(*this, "windows begun inside windows (max_window_nesting)", impl::max_window_nesting);
+            report_limit(*this, STRATA_DIAG("windows begun inside windows (max_window_nesting)"), impl::max_window_nesting);
             ++m_->nest_overflow_;
             return false;
         }

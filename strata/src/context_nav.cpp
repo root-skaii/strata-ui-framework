@@ -22,7 +22,7 @@ void internal::push_id_value(context& ui, id key) noexcept
 {
     auto& m = context_access::of(ui);
     if (!m.ids_.push_raw(key)) {
-        report_limit(ui, "push_id nesting (max_id_depth): ids will collide", max_id_depth);
+        report_limit(ui, STRATA_DIAG("push_id nesting (max_id_depth): ids will collide"), max_id_depth);
     }
 }
 
@@ -32,7 +32,7 @@ void context::nav_begin(std::string_view id_label)
 {
     const id key = widget_id(*this, id_label);
     if (m_->nav_.scope != 0) {
-        report_limit(*this, "nav_begin inside another nav scope (only one at a time)", 1);
+        report_limit(*this, STRATA_DIAG("nav_begin inside another nav scope (only one at a time)"), 1);
         return;
     }
     if (m_->nav_.scope_key != key) { // another list: start its cursor over

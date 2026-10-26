@@ -55,7 +55,7 @@ static table_state* table_for(context& ui, id key) noexcept
         }
     }
     if (spare == nullptr) {
-        report_limit(ui, "tables with state (context_config::capacity.tables)", static_cast<u32>(m.tree_table_.tables_.size()));
+        report_limit(ui, STRATA_DIAG("tables with state (context_config::capacity.tables)"), static_cast<u32>(m.tree_table_.tables_.size()));
     }
     table_state* slot = spare != nullptr ? spare : &m.tree_table_.tables_[0];
     *slot     = {};
@@ -69,10 +69,10 @@ bool context::begin_table(std::string_view id_label, u32 columns, table_flags fl
     // nested tables are fine (the outer frame is stacked until end_table()). tables repeated per row need distinct
     // ids (push_id(row)) for separate widths and scroll
     if (m_->cur_ != nullptr && columns > max_table_columns) {
-        report_limit(*this, "table columns (max_table_columns)", max_table_columns);
+        report_limit(*this, STRATA_DIAG("table columns (max_table_columns)"), max_table_columns);
     }
     if (m_->cur_ != nullptr && tbl.active && m_->tree_table_.table_depth_ >= max_table_depth) {
-        report_limit(*this, "tables inside tables (max_table_depth)", max_table_depth);
+        report_limit(*this, STRATA_DIAG("tables inside tables (max_table_depth)"), max_table_depth);
     }
     if (m_->cur_ == nullptr || columns == 0 || columns > max_table_columns || (tbl.active && m_->tree_table_.table_depth_ >= max_table_depth)) {
         return false;

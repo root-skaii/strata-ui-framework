@@ -20,7 +20,7 @@ void context::open_modal(std::string_view title)
         if (m_->modal_.modal_stack_[i] == wid) { return; } // already open
     }
     if (m_->modal_.modal_count_ >= max_modals) {
-        report_limit(*this, "modals open at once (max_modals)", max_modals);
+        report_limit(*this, STRATA_DIAG("modals open at once (max_modals)"), max_modals);
         return;
     }
     m_->modal_.modal_stack_[m_->modal_.modal_count_++] = wid;

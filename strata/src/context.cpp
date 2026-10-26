@@ -497,25 +497,25 @@ void context::end_frame()
     const auto unbalanced = [&](u32 depth, const char* missing) {
         if (depth == 0) { return; }
         char buf[128];
-        const int n = std::snprintf(buf, sizeof buf, "%s missing at end_frame (%u open)", missing, depth);
+        const int n = std::snprintf(buf, sizeof buf, STRATA_DIAG_FMT("%s missing at end_frame (%u open)", "%s (%u)"), missing, depth);
         diagnose(*this, diagnostic_kind::misuse, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
                  hash_id(missing));
     };
-    unbalanced(m_->popup_.popup_depth_, "end_popup()");
-    unbalanced(m_->menu_.menu_depth_, "end_menu() / end_popup_menu()");
-    unbalanced(m_->modal_.modal_depth_, "end_modal()");
-    unbalanced(m_->children_cards_.child_depth_, "end_child()");
-    unbalanced(m_->children_cards_.card_depth_, "end_card()");
-    unbalanced(m_->tree_table_.table_depth_, "end_table()");
-    unbalanced(m_->tree_table_.tree_depth_, "tree_pop()");
-    unbalanced(m_->style_stack_.font_depth(), "pop_font()");
-    unbalanced(m_->disabled_count_, "end_disabled()");
-    unbalanced(m_->gutter_depth_, "pop_right_gutter()");
+    unbalanced(m_->popup_.popup_depth_, STRATA_DIAG("end_popup()"));
+    unbalanced(m_->menu_.menu_depth_, STRATA_DIAG("end_menu() / end_popup_menu()"));
+    unbalanced(m_->modal_.modal_depth_, STRATA_DIAG("end_modal()"));
+    unbalanced(m_->children_cards_.child_depth_, STRATA_DIAG("end_child()"));
+    unbalanced(m_->children_cards_.card_depth_, STRATA_DIAG("end_card()"));
+    unbalanced(m_->tree_table_.table_depth_, STRATA_DIAG("end_table()"));
+    unbalanced(m_->tree_table_.tree_depth_, STRATA_DIAG("tree_pop()"));
+    unbalanced(m_->style_stack_.font_depth(), STRATA_DIAG("pop_font()"));
+    unbalanced(m_->disabled_count_, STRATA_DIAG("end_disabled()"));
+    unbalanced(m_->gutter_depth_, STRATA_DIAG("pop_right_gutter()"));
     if (m_->cur_ != nullptr) {
-        unbalanced(1, "end_window()");
+        unbalanced(1, STRATA_DIAG("end_window()"));
         while (m_->cur_ != nullptr) { end_window(); } // (a nested window resumes its parent)
     }
-    unbalanced(m_->ids_.depth(), "pop_id()");
+    unbalanced(m_->ids_.depth(), STRATA_DIAG("pop_id()"));
     m_->tree_table_.tree_depth_ = 0;
     m_->popup_.popup_depth_     = 0;
     dock_end_frame(*this);
@@ -618,10 +618,10 @@ void context::end_frame()
     m_->stats_cur_.clip_overflows   = m_->dl_.clip_stack_overflows();
     m_->stats_cur_.alpha_overflows  = m_->dl_.alpha_stack_overflows();
     if (m_->stats_cur_.draw_overflow != 0) {
-        diagnose(*this, diagnostic_kind::draw_overflow, "the draw list ran out of room: geometry was dropped (raise context_config::limits)", 1);
+        diagnose(*this, diagnostic_kind::draw_overflow, STRATA_DIAG("the draw list ran out of room: geometry was dropped (raise context_config::limits)"), 1);
     }
     if (m_->stats_cur_.clip_overflows != 0 || m_->stats_cur_.alpha_overflows != 0) {
-        diagnose(*this, diagnostic_kind::draw_overflow, "clip / alpha nesting deeper than the draw list holds: inner levels were not clipped / faded", 2);
+        diagnose(*this, diagnostic_kind::draw_overflow, STRATA_DIAG("clip / alpha nesting deeper than the draw list holds: inner levels were not clipped / faded"), 2);
     }
     m_->stats_cur_.unchanged        = m_->frame_unchanged_;
     m_->stats_cur_.animating        = m_->anim_settling_;
@@ -707,9 +707,9 @@ void internal::report_limit(context& ui, const char* what, u32 capacity) noexcep
     auto& m = context_access::of(ui);
     ++m.stats_cur_.limits_hit;
     char buf[192];
-    const int n = std::snprintf(buf, sizeof buf, "limit reached: %s (capacity %u) - what does not fit is dropped", what, capacity);
+    const int n = std::snprintf(buf, sizeof buf, STRATA_DIAG_FMT("limit reached: %s (capacity %u) - what does not fit is dropped", "limit %s (capacity %u)"), what, capacity);
     diagnose(ui, diagnostic_kind::limit, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
-             hash_id(what));
+             static_cast<u64>(hash_id(what)) ^ capacity); // (capacity too: without text, `what` is only a line number)
 }
 
 static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key) noexcept
@@ -769,7 +769,7 @@ void internal::track_edit(context& ui, id session, bool changed, bool engaged) n
 void context::push_id(std::string_view s) noexcept
 {
     if (!m_->ids_.push(s)) {
-        report_limit(*this, "push_id nesting (max_id_depth): ids will collide", max_id_depth);
+        report_limit(*this, STRATA_DIAG("push_id nesting (max_id_depth): ids will collide"), max_id_depth);
     }
 }
 
@@ -781,7 +781,7 @@ void context::push_id(const void* p) noexcept
 void context::push_id(u64 value) noexcept
 {
     if (!m_->ids_.push(value)) {
-        report_limit(*this, "push_id nesting (max_id_depth): ids will collide", max_id_depth);
+        report_limit(*this, STRATA_DIAG("push_id nesting (max_id_depth): ids will collide"), max_id_depth);
     }
 }
 
@@ -793,7 +793,7 @@ void context::pop_id() noexcept
 void context::push_font(font_id f) noexcept
 {
     if (f < m_->font_.font_count() && !m_->style_stack_.push_font(f)) {
-        report_limit(*this, "push_font nesting (max_font_depth)", max_font_depth);
+        report_limit(*this, STRATA_DIAG("push_font nesting (max_font_depth)"), max_font_depth);
     }
 }
 
@@ -815,7 +815,7 @@ void internal::switch_run(context& ui, u32 owner) noexcept
             m.runs_[m.run_count_++] = {m.run_start_, now - m.run_start_, m.run_owner_};
         } else {
             m.runs_overflow_ = true;
-            report_limit(ui, "draw runs per frame (max_runs): windows will not stack correctly", max_runs);
+            report_limit(ui, STRATA_DIAG("draw runs per frame (max_runs): windows will not stack correctly"), max_runs);
         }
     }
     m.run_owner_ = owner;
@@ -961,7 +961,7 @@ void context::push_color(style_color which, color c) noexcept
 {
     color& slot = color_ref(*this, which);
     if (!m_->style_stack_.push_color(which, slot)) {
-        report_limit(*this, "push_color nesting (max_overrides)", max_overrides);
+        report_limit(*this, STRATA_DIAG("push_color nesting (max_overrides)"), max_overrides);
         return;
     }
     slot = c;
@@ -979,7 +979,7 @@ void context::push_var(style_var which, f32 value) noexcept
 {
     f32& slot = var_ref(*this, which);
     if (!m_->style_stack_.push_var(which, slot)) {
-        report_limit(*this, "push_var nesting (max_overrides)", max_overrides);
+        report_limit(*this, STRATA_DIAG("push_var nesting (max_overrides)"), max_overrides);
         return;
     }
     slot = value;
@@ -1160,7 +1160,7 @@ static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key) noex
     const auto dup = m.ids_.check_duplicate(key);
     if (dup.is_duplicate) {
         ++m.stats_cur_.id_collisions;
-        const std::string message = std::format("duplicate widget id \"{}\": give one of them a \"##suffix\" or ui.push_id() around it", dup.label);
+        const std::string message = std::format(STRATA_DIAG_FMT("duplicate widget id \"{}\": give one of them a \"##suffix\" or ui.push_id() around it", "duplicate id {}"), dup.label);
         diagnose(ui, diagnostic_kind::id_collision, message, key);
     }
 #endif
@@ -1440,7 +1440,7 @@ bool context::item_clicked(mouse_button b) const noexcept
 void context::push_right_gutter(f32 w) noexcept
 {
     if (m_->gutter_depth_ >= max_gutter_depth) {
-        report_limit(*this, "push_right_gutter nesting (max_gutter_depth)", max_gutter_depth);
+        report_limit(*this, STRATA_DIAG("push_right_gutter nesting (max_gutter_depth)"), max_gutter_depth);
         return;
     }
     w = std::clamp(w, 0.0f, std::max(m_->layout_.width - 16.0f, 0.0f));

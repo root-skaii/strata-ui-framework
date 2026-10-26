@@ -76,7 +76,7 @@ static u8 dock_space_at(context& ui, id key) noexcept
     }
     const u8 pick = free_slot != no_node ? free_slot : stale;
     if (pick == no_node) {
-        report_limit(ui, "dock spaces (max_dock_spaces)", max_dock_spaces);
+        report_limit(ui, STRATA_DIAG("dock spaces (max_dock_spaces)"), max_dock_spaces);
         return no_node;
     }
     m.dock_->spaces[pick]            = {};
@@ -393,7 +393,7 @@ static void dock_attach(context& ui, window_state& w, u8 space, u8 node, dock_zo
     if (sp.root == no_node) { // the first docked window fills the whole space
         leaf = dock_new_node(ui);
         if (leaf == no_node) {
-            report_limit(ui, "dock panes (max_dock_nodes)", max_dock_nodes);
+            report_limit(ui, STRATA_DIAG("dock panes (max_dock_nodes)"), max_dock_nodes);
             return;
         }
         m.dock_->nodes[leaf].space = space;
@@ -409,7 +409,7 @@ static void dock_attach(context& ui, window_state& w, u8 space, u8 node, dock_zo
             const u8 split = dock_new_node(ui);
             leaf           = dock_new_node(ui);
             if (split == no_node || leaf == no_node) {
-                report_limit(ui, "dock panes (max_dock_nodes)", max_dock_nodes);
+                report_limit(ui, STRATA_DIAG("dock panes (max_dock_nodes)"), max_dock_nodes);
                 dock_free_node(ui, split);
                 dock_free_node(ui, leaf);
                 return;

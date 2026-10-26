@@ -34,7 +34,7 @@ card_scope::~card_scope()
 bool context::begin_child(std::string_view id_label, vec2 size, child_flags flags)
 {
     if (m_->cur_ != nullptr && m_->children_cards_.child_depth_ >= max_child_depth) {
-        report_limit(*this, "child regions inside child regions (max_child_depth)", max_child_depth);
+        report_limit(*this, STRATA_DIAG("child regions inside child regions (max_child_depth)"), max_child_depth);
     }
     if (m_->cur_ == nullptr || m_->children_cards_.child_depth_ >= max_child_depth) {
         return false;
@@ -42,7 +42,7 @@ bool context::begin_child(std::string_view id_label, vec2 size, child_flags flag
     const id key = widget_id(*this, id_label);
     bool full = false;
     child_state* st = internal::state_for(std::span{m_->children_cards_.children_}, key, m_->frame_, full);
-    if (full) { report_limit(*this, "child regions with state (context_config::capacity.children)", static_cast<u32>(m_->children_cards_.children_.size())); }
+    if (full) { report_limit(*this, STRATA_DIAG("child regions with state (context_config::capacity.children)"), static_cast<u32>(m_->children_cards_.children_.size())); }
     if (st->content_h > 0.0f) { apply_pending_scroll(*this, key, st->scroll, &st->scroll_x); } // (once its content has been measured)
 
     // width: rest of the line; height: down to the window bottom
@@ -178,7 +178,7 @@ void context::end_child()
 bool context::begin_card(std::string_view title, std::string_view icon, font_id icon_font)
 {
     if (m_->cur_ != nullptr && m_->children_cards_.card_depth_ >= max_card_depth) {
-        report_limit(*this, "cards inside cards (max_card_depth)", max_card_depth);
+        report_limit(*this, STRATA_DIAG("cards inside cards (max_card_depth)"), max_card_depth);
     }
     if (m_->cur_ == nullptr || m_->children_cards_.card_depth_ >= max_card_depth) {
         return false;
@@ -187,7 +187,7 @@ bool context::begin_card(std::string_view title, std::string_view icon, font_id 
     const id key    = widget_id(*this, title);
     bool full = false;
     card_state* st  = internal::state_for(std::span{m_->children_cards_.cards_}, key, m_->frame_, full);
-    if (full) { report_limit(*this, "cards with state (context_config::capacity.cards)", static_cast<u32>(m_->children_cards_.cards_.size())); }
+    if (full) { report_limit(*this, STRATA_DIAG("cards with state (context_config::capacity.cards)"), static_cast<u32>(m_->children_cards_.cards_.size())); }
 
     const std::string_view shown = visible_label(title);
     const bool has_head = !shown.empty() || !icon.empty();

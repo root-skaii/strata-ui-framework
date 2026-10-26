@@ -55,6 +55,16 @@ void diag_collect(void* user, const diagnostic& d) noexcept
     static_cast<diag_log*>(user)->lines.emplace_back(d.kind, std::string{d.message});
 }
 
+// STRATA_DIAGNOSTIC_TEXT=OFF: messages are only "L<line>" codes, so there is no wording to look for
+bool mentions(const std::string& message, std::string_view what)
+{
+#ifdef STRATA_NO_DIAGNOSTIC_TEXT
+    return !message.empty();
+#else
+    return message.find(what) != std::string::npos;
+#endif
+}
+
 void test_window_recycling()
 {
     std::fprintf(stderr, "[windows: slots of windows not shown any more are given back]\n");
@@ -93,7 +103,7 @@ void test_window_recycling()
     CHECK(h.ui.stats().limits_hit > 0);
     const auto limits = std::ranges::count_if(log.lines, [](const auto& l) { return l.first == diagnostic_kind::limit; });
     CHECK(limits == 1);
-    CHECK(!log.lines.empty() && log.lines[0].second.find("capacity.windows") != std::string::npos);
+    CHECK(!log.lines.empty() && mentions(log.lines[0].second, "capacity.windows"));
 
     // ... unless the context was made with room for them
     context_config roomy;
@@ -122,7 +132,7 @@ void test_diagnostics_collisions()
     }, 5);
     CHECK(log.lines.size() == 1);
     CHECK(!log.lines.empty() && log.lines[0].first == diagnostic_kind::id_collision);
-    CHECK(!log.lines.empty() && log.lines[0].second.find("\"same\"") != std::string::npos);
+    CHECK(!log.lines.empty() && mentions(log.lines[0].second, "\"same\""));
 #endif
 }
 
@@ -941,7 +951,7 @@ void test_nested_popups()
         n.click(buttons[4].center(), nested);
         n.frames(nested, 2);
         CHECK(deepest == 4);
-        CHECK(log2.lines.size() == 1 && log2.lines[0].second.find("max_popup_levels") != std::string::npos);
+        CHECK(log2.lines.size() == 1 && mentions(log2.lines[0].second, "max_popup_levels"));
     }
 }
 
