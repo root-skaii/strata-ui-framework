@@ -408,12 +408,46 @@ void editor_window(context& ui, demo3_state& s)
             if (ui.button("find and replace...")) { ui.code_find("##code", {}, true); }
             ui.same_line();
             ui.text_dim("Ctrl+F / Ctrl+H in the field, Tab / Shift+Tab indent lines");
-            if (s.scene == "editor" && s.frame == 3) { ui.code_find("##code", "std", true); } // (the screenshot shows the find bar)
+            if (s.scene == "editor" && s.frame == 3) { ui.code_find("##code", "std", true); } // (the scree
+            // nshot shows the find bar)
             const font_id code_font = static_cast<font_id>(s.mono_font >= 0 ? s.mono_font : 0);
             const auto mono = ui.with_font(code_font);
             highlight(s.code, s.spans, code_font);
             ui.input_spans(s.spans);
-            (void)ui.input_code("##code", s.code, {0.0f, 250.0f});
+            constexpr f32 min_w = 240.0f, min_h = 80.0f, max_h = 700.0f, grip_hit = 12.0f;
+            ui.combo("resize", s.resize_mode, {"width and height", "width only", "height only", "fixed size"});
+            const bool can_x = s.resize_mode == 0 || s.resize_mode == 1, can_y = s.resize_mode == 0 || s.resize_mode == 2;
+            const f32 avail = ui.content_width();
+            // the window may have narrowed since the last frame
+            if (s.code_w > 0.0f) { s.code_w = std::max(std::min(s.code_w, avail), std::min(min_w, avail)); }
+            s.code_h = std::clamp(s.code_h, min_h, max_h);
+            (void)ui.input_code("##code", s.code, {s.code_w, s.code_h});
+
+            // the grip hangs off the editor's bottom-right corner, in the spacing under it (no item of its own: no extra row)
+            const rect er     = ui.item_rect();
+            // (item_rect stops short of the scrollbar, so the right edge comes from the width the editor was given)
+            const f32  cur_w  = s.code_w > 0.0f ? s.code_w : avail;
+            const vec2 corner = {er.min.x + cur_w + 4.0f, er.max.y + 4.0f}; // its bottom-right
+            const vec2 mp     = ui.mouse_pos();
+            const bool over   = mp.x >= corner.x - grip_hit && mp.x <= corner.x && mp.y >= er.max.y && mp.y <= corner.y;
+            if (over && ui.mouse_clicked() && (can_x || can_y)) {
+                s.grip_drag  = true;
+                s.grip_mouse = mp;
+                s.grip_size  = {cur_w, s.code_h};
+            }
+            if (!ui.mouse_down()) { s.grip_drag = false; }
+            if (s.grip_drag) {
+                const vec2 d = mp - s.grip_mouse;
+                if (can_y) { s.code_h = std::clamp(s.grip_size.y + d.y, min_h, max_h); }
+                if (can_x) {
+                    const f32 nw = std::clamp(s.grip_size.x + d.x, std::min(min_w, avail), avail);
+                    s.code_w = nw >= avail - 2.0f ? 0.0f : nw; // snapping to the full width goes back to filling
+                }
+            }
+            if (can_x || can_y) { // the usual corner grip: diagonal strokes
+                const color gc = s.grip_drag || over ? color{200, 205, 220, 255} : color{110, 116, 135, 200};
+                for (f32 o : {3.0f, 6.0f, 9.0f}) { ui.draw().line({corner.x - o, corner.y}, {corner.x, corner.y - o}, gc, 1.0f); }
+            }
         }
 
         if (auto card = ui.card("Passwords with an eye button")) {

@@ -7,19 +7,15 @@
 
 namespace strata::internal {
 
-// STRATA_DIAGNOSTIC_TEXT=OFF defines STRATA_NO_DIAGNOSTIC_TEXT: the sentences below are not compiled in. The hook still
-// gets the kind, and a "L<source line>" code in place of the text; counters (limits_hit, id_collisions) are unchanged.
-#define STRATA_DIAG_STR2(x) #x
-#define STRATA_DIAG_STR(x) STRATA_DIAG_STR2(x)
-#ifdef STRATA_NO_DIAGNOSTIC_TEXT
-#define STRATA_DIAG(text) ("L" STRATA_DIAG_STR(__LINE__))
-#define STRATA_DIAG_FMT(full, brief) brief
+// STRATA_DIAGNOSTICS=OFF defines STRATA_NO_DIAGNOSTICS: nothing is reported (no hook call, no stderr / debugger output)
+// and no message text is compiled in. Counters (limits_hit, id_collisions) and the repair of unbalanced begin/end are unchanged.
+#ifdef STRATA_NO_DIAGNOSTICS
+#define STRATA_DIAG(text) ""
 #else
 #define STRATA_DIAG(text) text
-#define STRATA_DIAG_FMT(full, brief) full
-#endif
 
 // "[strata] <line>" to stderr and the debugger
 void print_diagnostic(std::string_view line) noexcept;
+#endif
 
 } // namespace strata::internal

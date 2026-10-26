@@ -55,14 +55,16 @@ void diag_collect(void* user, const diagnostic& d) noexcept
     static_cast<diag_log*>(user)->lines.emplace_back(d.kind, std::string{d.message});
 }
 
-// STRATA_DIAGNOSTIC_TEXT=OFF: messages are only "L<line>" codes, so there is no wording to look for
+// STRATA_DIAGNOSTICS=OFF: the hook is never called, so what the tests expect to arrive there stays empty
+#ifdef STRATA_NO_DIAGNOSTICS
+constexpr bool diagnostics_on = false;
+#else
+constexpr bool diagnostics_on = true;
+#endif
+
 bool mentions(const std::string& message, std::string_view what)
 {
-#ifdef STRATA_NO_DIAGNOSTIC_TEXT
-    return !message.empty();
-#else
     return message.find(what) != std::string::npos;
-#endif
 }
 
 void test_window_recycling()
@@ -102,8 +104,8 @@ void test_window_recycling()
     }, 3);
     CHECK(h.ui.stats().limits_hit > 0);
     const auto limits = std::ranges::count_if(log.lines, [](const auto& l) { return l.first == diagnostic_kind::limit; });
-    CHECK(limits == 1);
-    CHECK(!log.lines.empty() && mentions(log.lines[0].second, "capacity.windows"));
+    CHECK(limits == (diagnostics_on ? 1 : 0));
+    CHECK(!diagnostics_on || (!log.lines.empty() && mentions(log.lines[0].second, "capacity.windows")));
 
     // ... unless the context was made with room for them
     context_config roomy;
@@ -119,7 +121,7 @@ void test_window_recycling()
 
 void test_diagnostics_collisions()
 {
-#ifndef NDEBUG
+#if !defined(NDEBUG) && !defined(STRATA_NO_DIAGNOSTICS)
     std::fprintf(stderr, "[diagnostics: duplicate ids are reported once, by label]\n");
     diag_log log;
     harness h;
@@ -951,7 +953,7 @@ void test_nested_popups()
         n.click(buttons[4].center(), nested);
         n.frames(nested, 2);
         CHECK(deepest == 4);
-        CHECK(log2.lines.size() == 1 && mentions(log2.lines[0].second, "max_popup_levels"));
+        CHECK(log2.lines.size() == (diagnostics_on ? 1u : 0u) && (!diagnostics_on || mentions(log2.lines[0].second, "max_popup_levels")));
     }
 }
 
@@ -1009,7 +1011,7 @@ void test_unbalanced_scopes()
         misuse += kind == diagnostic_kind::misuse;
         limits += kind == diagnostic_kind::limit;
     }
-    CHECK(misuse == 3 && limits == 0); // end_window, tree_pop, pop_id: each once
+    CHECK(misuse == (diagnostics_on ? 3 : 0) && limits == 0); // end_window, tree_pop, pop_id: each once
     // a well-formed window afterwards works as usual
     bool clicked = false;
     rect r{};

@@ -57,6 +57,12 @@ struct demo3_state {
     // code, passwords and masks
     bool        show_editor = false;
     std::string code;
+    strata::f32 code_w = 0.0f;   // 0: fill the card
+    strata::f32 code_h = 250.0f;
+    int          resize_mode = 0;   // both, width only, height only, fixed
+    bool         grip_drag = false;
+    strata::vec2 grip_mouse{};  // pointer and size when the resize grip was grabbed
+    strata::vec2 grip_size{};
     std::string password = "hunter2";
     std::string pin      = "1234";
     std::string phone;

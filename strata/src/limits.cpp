@@ -1,5 +1,7 @@
 #include "limits.hpp"
 
+#ifndef STRATA_NO_DIAGNOSTICS
+
 #include <windows.h>
 
 #include <algorithm>
@@ -18,3 +20,5 @@ void print_diagnostic(std::string_view line) noexcept
 }
 
 } // namespace strata::internal
+
+#endif

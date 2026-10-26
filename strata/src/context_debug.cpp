@@ -97,7 +97,9 @@ void context::debug_metrics_window(bool& open)
             }
             if (st.limits_hit != 0) {
                 text_colored(bad, std::format("{} fixed limit{} hit", st.limits_hit, st.limits_hit == 1 ? "" : "s"));
+#ifndef STRATA_NO_DIAGNOSTICS
                 text_dim("see the diagnostics hook (or stderr); raise context_config::capacity");
+#endif
             }
             if (st.id_collisions != 0) {
                 text_colored(bad, std::format("{} duplicate widget id{}", st.id_collisions,

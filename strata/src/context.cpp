@@ -496,10 +496,14 @@ void context::end_frame()
     // frame); begin_frame resets the other stacks, so only this frame's later widgets were placed wrong.
     const auto unbalanced = [&](u32 depth, const char* missing) {
         if (depth == 0) { return; }
+#ifndef STRATA_NO_DIAGNOSTICS
         char buf[128];
-        const int n = std::snprintf(buf, sizeof buf, STRATA_DIAG_FMT("%s missing at end_frame (%u open)", "%s (%u)"), missing, depth);
+        const int n = std::snprintf(buf, sizeof buf, "%s missing at end_frame (%u open)", missing, depth);
         diagnose(*this, diagnostic_kind::misuse, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
                  hash_id(missing));
+#else
+        (void)missing;
+#endif
     };
     unbalanced(m_->popup_.popup_depth_, STRATA_DIAG("end_popup()"));
     unbalanced(m_->menu_.menu_depth_, STRATA_DIAG("end_menu() / end_popup_menu()"));
@@ -706,14 +710,21 @@ void internal::report_limit(context& ui, const char* what, u32 capacity) noexcep
 {
     auto& m = context_access::of(ui);
     ++m.stats_cur_.limits_hit;
+#ifndef STRATA_NO_DIAGNOSTICS
     char buf[192];
-    const int n = std::snprintf(buf, sizeof buf, STRATA_DIAG_FMT("limit reached: %s (capacity %u) - what does not fit is dropped", "limit %s (capacity %u)"), what, capacity);
+    const int n = std::snprintf(buf, sizeof buf, "limit reached: %s (capacity %u) - what does not fit is dropped", what, capacity);
     diagnose(ui, diagnostic_kind::limit, {buf, n > 0 ? std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1) : 0},
-             static_cast<u64>(hash_id(what)) ^ capacity); // (capacity too: without text, `what` is only a line number)
+             static_cast<u64>(hash_id(what)) ^ capacity);
+#else
+    (void)what; (void)capacity;
+#endif
 }
 
 static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key) noexcept
 {
+#ifdef STRATA_NO_DIAGNOSTICS
+    (void)ui; (void)kind; (void)message; (void)once_key;
+#else
     auto& m = context_access::of(ui);
     const u64 key = once_key ^ (static_cast<u64>(kind) << 56);
     if (std::ranges::find(m.diag_seen_, key) != m.diag_seen_.end()) {
@@ -727,6 +738,7 @@ static void diagnose(context& ui, diagnostic_kind kind, std::string_view message
     } else {
         internal::print_diagnostic(message);
     }
+#endif
 }
 
 void internal::track_edit(context& ui, id session, bool changed, bool engaged) noexcept
@@ -1160,8 +1172,10 @@ static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key) noex
     const auto dup = m.ids_.check_duplicate(key);
     if (dup.is_duplicate) {
         ++m.stats_cur_.id_collisions;
-        const std::string message = std::format(STRATA_DIAG_FMT("duplicate widget id \"{}\": give one of them a \"##suffix\" or ui.push_id() around it", "duplicate id {}"), dup.label);
+#ifndef STRATA_NO_DIAGNOSTICS
+        const std::string message = std::format("duplicate widget id \"{}\": give one of them a \"##suffix\" or ui.push_id() around it", dup.label);
         diagnose(ui, diagnostic_kind::id_collision, message, key);
+#endif
     }
 #endif
 }

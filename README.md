@@ -37,8 +37,8 @@ All rendered by the sandbox (`strata_sandbox --scene NAME --shot FILE`) on Direc
 solution instead if so.
 
 Options (`-D`): `STRATA_BUILD_DX11`, `STRATA_BUILD_DX12`, `STRATA_BUILD_SANDBOX`, `STRATA_STATIC_CRT` (/MT),
-`STRATA_FAST_MATH` (/fp:fast), `STRATA_AVX2` (/arch:AVX2), `STRATA_WERROR`, `STRATA_INSTALL`, `STRATA_BUILD_TESTS`, `STRATA_DIAGNOSTIC_TEXT` (OFF drops the diagnostic
-sentences: the hook still gets the kind plus a short `L<line>` code).
+`STRATA_FAST_MATH` (/fp:fast), `STRATA_AVX2` (/arch:AVX2), `STRATA_WERROR`, `STRATA_INSTALL`, `STRATA_BUILD_TESTS`, `STRATA_DIAGNOSTICS` (OFF reports nothing and compiles
+no message text in; counters in `frame_stats` still count).
 
 `ctest --test-dir build/x64-release` runs the headless self-test and compares sandbox screenshots against
 `tests/golden/*.png` (machine-specific -- other fonts need their own; regenerate with the `strata_update_goldens`
