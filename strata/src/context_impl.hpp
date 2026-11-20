@@ -22,6 +22,7 @@
 #include "edit_state.hpp"
 #include "hotkey_state.hpp"
 #include "inspector_state.hpp"
+#include "limits.hpp"
 #include "measure_cache_state.hpp"
 #include "menu_state.hpp"
 #include "modal_state.hpp"
@@ -134,6 +135,9 @@ struct context::impl {
     clipboard_hooks                       clipboard_{};
     diagnostics_hook                      diag_{};
     std::vector<u64>                      diag_seen_; // what was reported already (a few dozen at most)
+#ifndef STRATA_NO_DIAGNOSTICS
+    internal::diag_marks                  diag_marks_;
+#endif
 
     id active_{};
     cursor_kind cursor_{};

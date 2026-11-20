@@ -1194,7 +1194,7 @@ void apply_scene(demo_state& s, const std::string& name)
         s.x.d3.show_editor = s.scene_only = true;
     } else if (name == "config" || name == "palette") {
         s.x.show_config = s.scene_only = true;
-    } else if (name == "menus" || name == "context" || name == "modal" || name == "dialog" || name == "toasts") {
+    } else if (name == "menus" || name == "context" || name == "modal" || name == "dialog" || name == "toasts" || name == "diagnostics") {
         s.x.show_menus = s.scene_only = true;
     } else if (name == "icons") {
         s.x.d4.show_icons = s.scene_only = true;

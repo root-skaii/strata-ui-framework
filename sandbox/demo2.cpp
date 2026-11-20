@@ -888,6 +888,14 @@ void demo2_update(context& ui, demo2_state& s, float dt)
     // scenes: things that would need a click
     if (s.scene == "modal" && s.frame == 4) { ui.open_modal("Settings"); }
     if (s.scene == "dialog" && s.frame == 4) { ui.open_modal("Delete file?"); }
+    if (s.scene == "diagnostics") { // misuse on purpose, no diagnostics hook: marked on screen (the duplicate id only in debug builds)
+        if (auto w = ui.window("Diagnostics", {560.0f, 60.0f}, {260.0f, 0.0f})) {
+            ui.text("two buttons share an id:");
+            (void)ui.button("same");
+            (void)ui.button("same");
+            ui.push_id("leak"); // no pop_id
+        }
+    }
     if (s.scene == "toasts" && s.frame == 4) {
         ui.toast("Saved", "profile.json was written (2.4 KB).", toast_kind::success, 30.0f);
         ui.toast("Low disk space", "Only 1.2 GB is left on this drive.", toast_kind::warning, 30.0f);

@@ -26,10 +26,10 @@ using namespace text;
 using namespace internal;
 
 // debug only: records `key` for this frame, counting repeats
-static void check_id(context& ui, id key) noexcept;
+static void check_id(context& ui, id key, const rect& r) noexcept;
 static std::expected<void, font_error> build_font_atlas(context& ui, f32 scale);
 // sends `message` to the diagnostics hook (or stderr) unless `once_key` was seen
-static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key) noexcept;
+static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key, const rect& box = {}) noexcept;
 // non-interactive content: becomes the "last item", no press
 static void note_passive_item(context& ui, id key, const rect& r) noexcept;
 // accessory strip of the row just submitted; false if there is no row
@@ -524,6 +524,9 @@ void context::end_frame()
     m_->popup_.popup_depth_     = 0;
     dock_end_frame(*this);
     toast_end_frame(*this);
+#ifndef STRATA_NO_DIAGNOSTICS
+    internal::diag_marks_draw(*this);
+#endif
     // a menu level not built this frame closes along with everything above it
     for (u32 i = 0; i < max_menu_levels; ++i) {
         if (m_->menu_.menu_open_[i].key != 0 && !m_->menu_.menu_open_[i].seen) {
@@ -720,12 +723,16 @@ void internal::report_limit(context& ui, const char* what, u32 capacity) noexcep
 #endif
 }
 
-static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key) noexcept
+static void diagnose(context& ui, diagnostic_kind kind, std::string_view message, u64 once_key, const rect& box) noexcept
 {
 #ifdef STRATA_NO_DIAGNOSTICS
-    (void)ui; (void)kind; (void)message; (void)once_key;
+    (void)ui; (void)kind; (void)message; (void)once_key; (void)box;
 #else
     auto& m = context_access::of(ui);
+    if (m.diag_.report == nullptr) { // no hook: marked on screen for as long as it keeps happening, see diag_marks_draw
+        m.diag_marks_.add(message, box);
+        return;
+    }
     const u64 key = once_key ^ (static_cast<u64>(kind) << 56);
     if (std::ranges::find(m.diag_seen_, key) != m.diag_seen_.end()) {
         return;
@@ -733,11 +740,7 @@ static void diagnose(context& ui, diagnostic_kind kind, std::string_view message
     if (m.diag_seen_.size() < 256) { // (past that, a program has bigger problems than a repeated line)
         m.diag_seen_.push_back(key);
     }
-    if (m.diag_.report != nullptr) {
-        m.diag_.report(m.diag_.user, diagnostic{kind, message});
-    } else {
-        internal::print_diagnostic(message);
-    }
+    m.diag_.report(m.diag_.user, diagnostic{kind, message});
 #endif
 }
 
@@ -1165,7 +1168,7 @@ id internal::widget_id(context& ui, std::string_view label) noexcept
     return key;
 }
 
-static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key) noexcept
+static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key, [[maybe_unused]] const rect& r) noexcept
 {
 #ifndef NDEBUG
     auto& m = context_access::of(ui);
@@ -1174,7 +1177,7 @@ static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key) noex
         ++m.stats_cur_.id_collisions;
 #ifndef STRATA_NO_DIAGNOSTICS
         const std::string message = std::format("duplicate widget id \"{}\": give one of them a \"##suffix\" or ui.push_id() around it", dup.label);
-        diagnose(ui, diagnostic_kind::id_collision, message, key);
+        diagnose(ui, diagnostic_kind::id_collision, message, key, r);
 #endif
     }
 #endif
@@ -1205,7 +1208,7 @@ static interaction interact_core(context& ui, id key, const rect& r, bool in_win
 {
     auto& m = context_access::of(ui);
     interaction out;
-    check_id(ui, key); // before the early-out: a hidden widget still owns its id
+    check_id(ui, key, r); // before the early-out: a hidden widget still owns its id
     if (m.dl_.alpha() < 0.1f) {
         return out; // (nearly) invisible content, e.g. mid page transition
     }

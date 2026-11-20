@@ -119,6 +119,34 @@ void test_window_recycling()
     CHECK(big.ui.stats().limits_hit == 0 && big.ui.window_rect("crowd 39").width() > 0.0f);
 }
 
+// without a hook a problem is drawn (frame + banner) for as long as it happens, and nothing is drawn once it stops
+void test_diagnostics_marks()
+{
+    std::fprintf(stderr, "[diagnostics: without a hook the problem is marked on screen]\n");
+    context_config cfg;
+    cfg.capacity.windows = 32;
+    harness h{cfg};
+    const auto build = [](harness& x) {
+        return [&x] {
+            for (int k = 0; k < 40; ++k) {
+                if (auto w = x.ui.window(std::format("crowd {}", k), {0, 0}, 100.0f)) { x.ui.text("x"); }
+            }
+        };
+    };
+    h.frames(build(h), 3);
+    const u32 marked = h.ui.stats().vertices;
+    h.frames(build(h), 3);
+    CHECK(h.ui.stats().vertices == marked); // (steady: it is not a one-frame flash)
+
+    diag_log log;
+    context_config quiet   = cfg;
+    quiet.diagnostics      = {&diag_collect, &log};
+    harness hq{quiet};
+    hq.frames(build(hq), 6);
+    CHECK(h.ui.stats().limits_hit == hq.ui.stats().limits_hit);
+    CHECK(diagnostics_on ? h.ui.stats().vertices > hq.ui.stats().vertices : h.ui.stats().vertices == hq.ui.stats().vertices);
+}
+
 void test_diagnostics_collisions()
 {
 #if !defined(NDEBUG) && !defined(STRATA_NO_DIAGNOSTICS)
@@ -1042,6 +1070,7 @@ void run_robust_tests()
     test_textf_long();
     test_stable_ids();
     test_window_recycling();
+    test_diagnostics_marks();
     test_diagnostics_collisions();
     test_input_not_dropped();
 }

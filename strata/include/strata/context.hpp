@@ -170,8 +170,9 @@ struct clipboard_hooks {
     void* user                                              = nullptr;
 };
 
-// silent failures (the ui drew something other than asked), reported to the app instead of only stderr.
-// each distinct problem is reported once per context.
+// silent failures (the ui drew something other than asked), reported to the app through a hook. each distinct problem is
+// reported once per context. without a hook they are marked on screen instead, while they keep happening: a red frame
+// around the offending item (message at the pointer over it), the rest in a banner at the top left.
 enum class diagnostic_kind : u8 {
     limit,         // a fixed-size table / stack ran out (max_windows, push_id depth ...); the excess was dropped
     id_collision,  // two widgets used one id in a frame (debug builds): use "##suffix" / push_id
@@ -353,7 +354,7 @@ struct context_config {
     draw_list_limits             limits{};
     capacity_config              capacity{};
     ui_strings                   strings{};
-    diagnostics_hook             diagnostics{};   // none: stderr and debugger output
+    diagnostics_hook             diagnostics{};   // none: marked on screen
 };
 
 // widget parameters ------------------------------------------------------------
@@ -1131,7 +1132,7 @@ public:
     [[nodiscard]] bool input_submitted() const noexcept;
 
     void set_clipboard(const clipboard_hooks& hooks) noexcept;
-    // diagnostics sink; a hook with no `report` restores stderr / debugger output
+    // diagnostics sink; a hook with no `report` restores the on-screen marks
     void set_diagnostics(const diagnostics_hook& hook) noexcept;
 
     // dpi / ui scale -------------------------------------------------------
