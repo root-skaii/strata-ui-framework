@@ -1271,6 +1271,7 @@ bool context::dock_load_layout(std::string_view text)
         w->width     = std::max(lw.size.x, 0.0f);
         w->height    = std::max(lw.size.y, 0.0f);
         w->collapsed = lw.collapsed;
+        w->pos_set   = true;
         w->size_set  = true;
     }
     const auto build = [&](auto& self, int index, u8 parent, u8 space) -> u8 {

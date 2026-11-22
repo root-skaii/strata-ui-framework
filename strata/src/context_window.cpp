@@ -109,15 +109,17 @@ rect context::window_rect(std::string_view title) const noexcept
 
 void context::set_window_pos(std::string_view title, vec2 pos) noexcept
 {
-    if (window_state* w = window_find(*this, hash_id(title, m_->ids_.root()))) {
-        w->pos = pos;
+    if (window_state* w = window_for(*this, hash_id(title, m_->ids_.root()), pos, 0.0f)) {
+        w->pos     = pos;
+        w->pos_set = true;
     }
 }
 
 void context::set_window_size(std::string_view title, vec2 size) noexcept
 {
-    if (window_state* w = window_find(*this, hash_id(title, m_->ids_.root()))) {
-        w->width    = std::max(size.x, 1.0f);
+    const f32 width = std::max(size.x, 1.0f);
+    if (window_state* w = window_for(*this, hash_id(title, m_->ids_.root()), {}, width)) {
+        w->width    = width;
         w->height   = std::max(size.y, 0.0f);
         w->size_set = true;
         if (w->dock != 0) { w->float_size = {w->width, w->height}; }
@@ -126,7 +128,7 @@ void context::set_window_size(std::string_view title, vec2 size) noexcept
 
 void context::set_window_collapsed(std::string_view title, bool collapsed) noexcept
 {
-    if (window_state* w = window_find(*this, hash_id(title, m_->ids_.root()))) {
+    if (window_state* w = window_for(*this, hash_id(title, m_->ids_.root()), {}, 0.0f)) {
         w->collapsed = collapsed;
     }
 }
@@ -190,10 +192,12 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         }
         impl::window_nest& n = m_->nest_[m_->nest_depth_++];
         n = {m_->cur_, m_->cur_window_, m_->cur_flags_, m_->cur_frame_, m_->layout_, m_->window_faded_, m_->run_owner_,
-             m_->child_base_, m_->row_base_, m_->tree_table_.table_, m_->win_.cur_z_, false};
+             m_->child_base_, m_->row_base_, m_->indent_base_, m_->gutter_base_, m_->tree_table_.table_, m_->win_.cur_z_, false};
         m_->tree_table_.table_ = {};
         m_->child_base_        = m_->children_cards_.child_depth_;
         m_->row_base_          = m_->row_depth_;
+        m_->indent_base_       = m_->indent_depth_;
+        m_->gutter_base_       = m_->gutter_depth_;
         m_->window_faded_      = false;
         m_->cur_               = nullptr;
         m_->win_.cur_z_        = no_z;
@@ -208,9 +212,12 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         return false;
     }
     if (st->content_h > 0.0f) { apply_pending_scroll(*this, wid, st->scroll, &st->scroll_x); } // (once its content has been measured)
+    if (!st->pos_set) {
+        st->pos     = initial_pos;
+        st->pos_set = true;
+    }
     if (!st->size_set) {
-        // (the state can exist before the first begin_window when dock_window() got there first)
-        st->pos      = initial_pos;
+        // (the state can exist before the first begin_window when dock_window() / set_window_*() got there first)
         st->width    = std::max(st->width, size.x);
         st->height   = std::max(size.y, 0.0f);
         st->size_set = true;
@@ -634,6 +641,8 @@ static void resume_parent_window(context& ui) noexcept
     m.window_faded_      = n.faded;
     m.child_base_        = n.child_base;
     m.row_base_          = n.row_base;
+    m.indent_base_       = n.indent_base;
+    m.gutter_base_       = n.gutter_base;
     m.tree_table_.table_ = n.table;
     m.win_.cur_z_        = n.cur_z;
     switch_run(ui, n.run_owner);

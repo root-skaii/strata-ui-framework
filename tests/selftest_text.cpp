@@ -1416,6 +1416,12 @@ void test_truetype_and_dynamic_glyphs()
         CHECK((gA_after.x1 - gA_after.x0) == (gA_before.x1 - gA_before.x0) &&
               (gA_after.y1 - gA_after.y0) == (gA_before.y1 - gA_before.y0));
         CHECK(gA_after.u1 > gA_after.u0 && gA_after.v1 > gA_after.v0);
+
+        // copying a dynamic atlas produces an independent static snapshot
+        font_atlas snap = h.ui.font();
+        CHECK(!snap.dynamic());
+        CHECK(!snap.dirty());
+        CHECK(snap.has_glyph(0, U'\u03A9'));
     }
 }
 

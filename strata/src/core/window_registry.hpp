@@ -29,6 +29,7 @@ struct window_state {
     bool overflow_x{};
     bool collapsed{};
     bool resizable{};
+    bool pos_set{};
     bool size_set{};
     bool overflow{};    // content taller than the body last frame (scrolling windows)
     f32  capped_h{};    // auto-height window capped at the display: shown height, 0 = not capped

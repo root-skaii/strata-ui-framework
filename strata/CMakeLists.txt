@@ -1,6 +1,8 @@
 # strata - the framework library
 
-include(strata_shaders)
+if(STRATA_BUILD_DX11 OR STRATA_BUILD_DX12)
+    include(strata_shaders)
+endif()
 
 add_library(strata STATIC
     src/backend_software.cpp
@@ -47,13 +49,15 @@ add_library(strata STATIC
     src/node_editor.cpp
     src/undo.cpp
     src/limits.cpp
-    src/platform_win32.cpp
     src/texture.cpp
     src/themes.cpp
     src/themes_contrast.cpp
     src/themes_io.cpp
     src/vmem.cpp
 )
+if(WIN32)
+    target_sources(strata PRIVATE src/platform_win32.cpp)
+endif()
 add_library(strata::strata ALIAS strata)
 
 target_sources(strata PUBLIC
@@ -92,7 +96,7 @@ target_sources(strata PUBLIC
 )
 target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/font_ttf.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/inspector_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp src/core/part_id.hpp src/widget_util.hpp)
 
-target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
+target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options>)
 if(NOT STRATA_DIAGNOSTICS)
     target_compile_definitions(strata PUBLIC STRATA_NO_DIAGNOSTICS=1)
 endif()
@@ -101,16 +105,17 @@ if(STRATA_PCH)
 endif()
 # skipped for clang-cl: see the matching guard + comment in cmake/strata_options.cmake --
 # this would otherwise inject -clang:-std=c++23 ahead of /std:c++latest and win.
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if(NOT (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     target_compile_features(strata PUBLIC cxx_std_23)
 endif()
 set_target_properties(strata PROPERTIES CXX_EXTENSIONS OFF)
 
 # windows.h stays out of the public headers, but consumers still get the
 # knobs that keep their own includes lean.
+if(WIN32)
+    target_compile_definitions(strata PUBLIC NOMINMAX _HAS_EXCEPTIONS=0)
+endif()
 target_compile_definitions(strata PUBLIC
-    NOMINMAX
-    _HAS_EXCEPTIONS=0
     $<$<BOOL:${STRATA_BUILD_DX11}>:STRATA_HAS_DX11=1>
     $<$<BOOL:${STRATA_BUILD_DX12}>:STRATA_HAS_DX12=1>
     $<$<BOOL:${STRATA_BUILD_OPENXR}>:STRATA_HAS_OPENXR=1>
@@ -161,7 +166,9 @@ if(STRATA_BUILD_OPENVR)
     target_link_libraries(strata INTERFACE delayimp.lib)
 endif()
 
-target_link_libraries(strata PRIVATE gdi32.lib user32.lib advapi32.lib)
+if(WIN32)
+    target_link_libraries(strata PRIVATE gdi32.lib user32.lib advapi32.lib imm32.lib)
+endif()
 
 # strata::app: a ready-made window + direct3d 11 host around the library (strata itself never creates either)
 if(STRATA_BUILD_DX11)

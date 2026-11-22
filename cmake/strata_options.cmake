@@ -4,10 +4,19 @@
 
 include_guard(GLOBAL)
 
-option(STRATA_BUILD_SANDBOX "build the sandbox test application"   ${PROJECT_IS_TOP_LEVEL})
-option(STRATA_BUILD_DX11    "build the direct3d 11 backend"        ON)
-option(STRATA_BUILD_OVERLAY "build the in-game overlay (needs direct3d 11 and 12): dll, test host, injector" ON)
-option(STRATA_BUILD_DX12    "build the direct3d 12 backend"        ON)
+set(_strata_win_default OFF)
+if(WIN32)
+    set(_strata_win_default ON)
+endif()
+set(_strata_sandbox_default OFF)
+if(WIN32 AND PROJECT_IS_TOP_LEVEL)
+    set(_strata_sandbox_default ON)
+endif()
+
+option(STRATA_BUILD_SANDBOX "build the sandbox test application"   ${_strata_sandbox_default})
+option(STRATA_BUILD_DX11    "build the direct3d 11 backend"        ${_strata_win_default})
+option(STRATA_BUILD_OVERLAY "build the in-game overlay (needs direct3d 11 and 12): dll, test host, injector" ${_strata_win_default})
+option(STRATA_BUILD_DX12    "build the direct3d 12 backend"        ${_strata_win_default})
 # vr: renders the ui as an openxr composition quad layer. off by default -- fetches the khronos loader
 # (strata's only external dependency) the first time it's turned on. needs STRATA_BUILD_DX11 (XR_KHR_D3D11_enable).
 option(STRATA_BUILD_OPENXR  "build the openxr (vr) backend"        OFF)
@@ -35,8 +44,8 @@ option(STRATA_BUILD_FUZZERS "build the libFuzzer target strata_fuzz (use with ST
 # ctest: the headless self-test, and screenshot comparisons of the sandbox scenes against sandbox/golden/*.png
 option(STRATA_BUILD_TESTS   "register the sandbox tests with ctest"  ${PROJECT_IS_TOP_LEVEL})
 
-if(NOT STRATA_BUILD_DX11 AND NOT STRATA_BUILD_DX12)
-    message(FATAL_ERROR "enable at least one of STRATA_BUILD_DX11 / STRATA_BUILD_DX12")
+if(NOT WIN32 AND (STRATA_BUILD_DX11 OR STRATA_BUILD_DX12 OR STRATA_BUILD_OPENXR OR STRATA_BUILD_OPENVR OR STRATA_BUILD_OVERLAY))
+    message(FATAL_ERROR "Direct3D / VR / overlay targets require Windows")
 endif()
 
 if(STRATA_BUILD_OPENXR AND NOT STRATA_BUILD_DX11)
@@ -65,14 +74,16 @@ if(PROJECT_IS_TOP_LEVEL)
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL     ON)
     endif()
 
-    # cmake's default /EHsc and /Ob1|/Ob2 would trigger D9025 next to our overrides
-    string(REGEX REPLACE "/EH[a-z-]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-    foreach(_cfg RELEASE RELWITHDEBINFO)
-        string(REGEX REPLACE "/Ob[0-3]" "/Ob3" CMAKE_CXX_FLAGS_${_cfg} "${CMAKE_CXX_FLAGS_${_cfg}}")
-    endforeach()
+    if(MSVC)
+        # cmake's default /EHsc and /Ob1|/Ob2 would trigger D9025 next to our overrides
+        string(REGEX REPLACE "/EH[a-z-]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+        foreach(_cfg RELEASE RELWITHDEBINFO)
+            string(REGEX REPLACE "/Ob[0-3]" "/Ob3" CMAKE_CXX_FLAGS_${_cfg} "${CMAKE_CXX_FLAGS_${_cfg}}")
+        endforeach()
 
-    if(STRATA_STATIC_CRT)
-        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        if(STRATA_STATIC_CRT)
+            set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        endif()
     endif()
 endif()
 
@@ -84,20 +95,22 @@ add_library(strata_options INTERFACE)
 # feature-detection injects -clang:-std=c++23 ahead of our own /std:c++latest,
 # and that one silently wins at the cc1 level -- pinning the build to c++23
 # instead of tracking latest. /std:c++latest below is sufficient on its own.
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if(NOT (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     target_compile_features(strata_options INTERFACE cxx_std_23)
 endif()
 set_target_properties(strata_options PROPERTIES CXX_EXTENSIONS OFF)
 
-target_compile_definitions(strata_options INTERFACE
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-    UNICODE
-    _UNICODE
-    _CRT_SECURE_NO_WARNINGS
-    # the framework is exception free; keeps the stl from pulling in unwind tables
-    _HAS_EXCEPTIONS=0
-)
+if(WIN32)
+    target_compile_definitions(strata_options INTERFACE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+        _CRT_SECURE_NO_WARNINGS
+        # the framework is exception free; keeps the stl from pulling in unwind tables
+        _HAS_EXCEPTIONS=0
+    )
+endif()
 
 # nearly all of a strata .cpp's compile time is parsing these (<format> and <chrono> via log.hpp above all), not
 # strata's own code. each target linking strata_options builds its own pch
@@ -146,6 +159,24 @@ if(MSVC)
         # (debug information for readable reports; asan does not work with incremental linking)
         target_compile_options(strata_options INTERFACE /fsanitize=address /Zi)
         target_link_options(strata_options INTERFACE /DEBUG /INCREMENTAL:NO)
+    endif()
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(strata_options INTERFACE
+        -Wall -Wextra -fno-exceptions -fno-rtti
+        $<$<NOT:$<CONFIG:Debug>>:-ffunction-sections -fdata-sections>
+    )
+    if(STRATA_FAST_MATH)
+        target_compile_options(strata_options INTERFACE -ffast-math)
+    endif()
+    if(STRATA_AVX2)
+        target_compile_options(strata_options INTERFACE -mavx2)
+    endif()
+    if(STRATA_WERROR)
+        target_compile_options(strata_options INTERFACE -Werror)
+    endif()
+    if(STRATA_ASAN)
+        target_compile_options(strata_options INTERFACE -fsanitize=address -fno-omit-frame-pointer -g)
+        target_link_options(strata_options INTERFACE -fsanitize=address)
     endif()
 endif()
 

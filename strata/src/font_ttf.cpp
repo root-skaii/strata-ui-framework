@@ -313,7 +313,7 @@ bool ttf_font::load_outline(u16 gid, f32 m00, f32 m01, f32 m10, f32 m11, f32 tx,
         }
 
         const auto emit = [&](f32 x0, f32 y0, f32 x1, f32 y1) {
-            if (y0 != y1) { edges.push_back({x0, y0, x1, y1}); }
+            if (y0 != y1 && edges.size() < 65536) { edges.push_back({x0, y0, x1, y1}); }
         };
 
         std::size_t first = 0;
@@ -370,7 +370,8 @@ bool ttf_font::load_outline(u16 gid, f32 m00, f32 m01, f32 m10, f32 m11, f32 tx,
     if (num_contours < 0) { // compound glyph
         std::size_t pos = start + 10;
         u16 flags = 0x20u;
-        while ((flags & 0x20u) != 0) {
+        int parts = 0;
+        while ((flags & 0x20u) != 0 && ++parts <= 128 && edges.size() < 65536) {
             u16 comp_gid{};
             if (pos + 4 > end || !read_u16(data_, pos, flags) || !read_u16(data_, pos + 2, comp_gid)) { return false; }
             pos += 4;
@@ -439,6 +440,11 @@ bool ttf_font::rasterise(u16 gid, f32 scale, ttf_bitmap& out, bool need_pixels) 
         max_x = std::max({max_x, e.x0, e.x1});
         min_y = std::min({min_y, e.y0, e.y1});
         max_y = std::max({max_y, e.y0, e.y1});
+    }
+    if (!std::isfinite(min_x) || !std::isfinite(max_x) || !std::isfinite(min_y) || !std::isfinite(max_y) ||
+        (max_x - min_x) > 2048.0f || (max_y - min_y) > 2048.0f ||
+        std::abs(min_x) > 1.0e6f || std::abs(min_y) > 1.0e6f) {
+        return true;
     }
     const i32 ix0 = static_cast<i32>(std::floor(min_x));
     const i32 iy0 = static_cast<i32>(std::floor(min_y));

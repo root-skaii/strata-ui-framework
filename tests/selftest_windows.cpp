@@ -1081,6 +1081,36 @@ void test_layout_and_window_qol()
     h.ui.set_window_collapsed("panel", false);
     h.frames(build_col, 1);
     CHECK(!h.ui.window_collapsed("panel"));
+
+    // frame-0 window control (called before the window's very first begin_window)
+    h.ui.set_window_pos("preplaced", {180.0f, 110.0f});
+    h.ui.set_window_size("preplaced", {340.0f, 210.0f});
+    h.ui.set_window_collapsed("preplaced", true);
+    h.frames([&] {
+        if (auto w = h.ui.window("preplaced", {10, 10}, {200, 100})) { h.ui.text("body"); }
+    }, 1);
+    CHECK(h.ui.window_collapsed("preplaced"));
+    const rect pre = h.ui.window_rect("preplaced");
+    CHECK(near_eq(pre.min.x, 180.0f, 0.5f) && near_eq(pre.min.y, 110.0f, 0.5f));
+    CHECK(near_eq(pre.width(), 340.0f, 0.5f));
+
+    // nested begin_window isolates indent and right-gutter stacks from its parent
+    f32 parent_before = 0.0f, nested_w = 0.0f, parent_after = 0.0f;
+    h.frames([&] {
+        if (auto w = h.ui.window("outer", {20, 20}, {320, 200}, plain_window)) {
+            auto ind = h.ui.indent(30.0f);
+            auto gut = h.ui.right_gutter(20.0f);
+            parent_before = h.ui.content_width();
+            if (auto w2 = h.ui.window("inner", {400, 20}, {320, 200}, plain_window)) {
+                nested_w = h.ui.content_width();
+                h.ui.pop_indent();       // must not pop the parent's indent
+                h.ui.pop_right_gutter(); // must not pop the parent's gutter
+            }
+            parent_after = h.ui.content_width();
+        }
+    }, 1);
+    CHECK(near_eq(parent_before, parent_after, 0.5f));
+    CHECK(near_eq(nested_w, parent_before + 50.0f, 0.5f));
 }
 
 } // namespace

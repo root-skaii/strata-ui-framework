@@ -8,6 +8,7 @@
 #include <strata/strata.hpp>
 #include <strata/strata_c.h>
 
+#include "font_ttf.hpp"
 #include "text_util.hpp"
 
 #include <array>
@@ -356,6 +357,38 @@ void fuzz_c_api(std::string_view bytes)
         in.wheel = 0.0f;
     }
 }
+// untrusted TrueType / TTC binary parsing and analytical rasterisation
+void fuzz_ttf(std::string_view bytes)
+{
+    const std::span<const u8> span{reinterpret_cast<const u8*>(bytes.data()), bytes.size()};
+    internal::ttf_font ttf;
+    if (ttf.init(span, 0)) {
+        const f32 sc = ttf.scale_for_pixel_height(16.0f);
+        FUZZ_CHECK(std::isfinite(sc));
+        internal::ttf_bitmap bmp;
+        for (char32_t cp : {U'A', U'g', U'0', U'\u03A9', U'\u00E9', U'\u2192'}) {
+            const u16 gid = ttf.glyph_index(cp);
+            if (ttf.rasterise(gid, sc, bmp, true)) {
+                FUZZ_CHECK(bmp.pixels.size() == static_cast<std::size_t>(bmp.w) * bmp.h);
+            }
+        }
+        std::vector<internal::ttf_kern_pair> kerns;
+        ttf.collect_kerning(sc, kerns);
+    }
+
+    static constexpr codepoint_range tiny[] = {{0x0020, 0x0045}};
+    font_config cfg;
+    cfg.data         = span;
+    cfg.pixel_height = 14.0f;
+    cfg.rasterizer   = font_rasterizer::truetype;
+    cfg.ranges       = tiny;
+    if (auto atlas = font_atlas::build(cfg, 512, 1.0f, true)) {
+        FUZZ_CHECK(atlas->pixels().size() == static_cast<std::size_t>(atlas->width()) * atlas->height());
+        (void)atlas->bake_glyph(0, U'Z');
+        (void)atlas->bake_glyph(0, U'\u03A9');
+        FUZZ_CHECK(atlas->pixels().size() == static_cast<std::size_t>(atlas->width()) * atlas->height());
+    }
+}
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -364,7 +397,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view rest{reinterpret_cast<const char*>(data + 1), size - 1};
-    switch (data[0] % 11) {
+    switch (data[0] % 12) {
     case 0: fuzz_config(rest); break;
     case 1: fuzz_theme(rest); break;
     case 2: fuzz_dock_layout(rest); break;
@@ -375,7 +408,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     case 7: fuzz_replay(rest); break;
     case 8: fuzz_word_selection(rest); break;
     case 9: fuzz_node_editor(rest); break;
-    default: fuzz_c_api(rest); break;
+    case 10: fuzz_c_api(rest); break;
+    default: fuzz_ttf(rest); break;
     }
     return 0;
 }

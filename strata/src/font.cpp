@@ -928,6 +928,32 @@ font_atlas::~font_atlas()
     discard_pixels();
 }
 
+font_atlas::font_atlas(const font_atlas& o)
+    : fonts_{o.fonts_}
+    , pixels_{o.pixels_}
+    , white_uv_{o.white_uv_}
+    , width_{o.width_}
+    , height_{o.height_}
+    , scale_{o.scale_}
+    , inv_scale_{o.inv_scale_}
+{}
+
+font_atlas& font_atlas::operator=(const font_atlas& o)
+{
+    if (this != &o) {
+        discard_pixels();
+        fonts_     = o.fonts_;
+        pixels_    = o.pixels_;
+        white_uv_  = o.white_uv_;
+        width_     = o.width_;
+        height_    = o.height_;
+        scale_     = o.scale_;
+        inv_scale_ = o.inv_scale_;
+        dyn_.reset();
+    }
+    return *this;
+}
+
 namespace {
 
 constexpr u32 atlas_magic = 0x31414653; // "SFA1"

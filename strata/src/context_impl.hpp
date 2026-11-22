@@ -164,6 +164,8 @@ struct context::impl {
         u32                   run_owner{};
         u32                   child_base{};
         u32                   row_base{};
+        u32                   indent_base{};
+        u32                   gutter_base{};
         internal::table_frame table{};
         u32                   cur_z{internal::no_z};
         bool                  dud{};
@@ -174,6 +176,8 @@ struct context::impl {
     u32 nest_overflow_{}; // nested begins past max_window_nesting, each ignored along with its end_window
     u32 child_base_{};    // child regions below this belong to a suspended parent window
     u32 row_base_{};      // flex rows below this belong to a suspended parent window
+    u32 indent_base_{};   // indent levels below this belong to a suspended parent window
+    u32 gutter_base_{};   // right-gutter levels below this belong to a suspended parent window
 
     struct row_frame {
         internal::layout_state               saved{};

@@ -136,8 +136,9 @@ class font_atlas {
 public:
     font_atlas() = default;
     ~font_atlas();
-    font_atlas(const font_atlas&)            = default;
-    font_atlas& operator=(const font_atlas&) = default;
+    // copying yields an independent static snapshot (dynamic baker state is not shared)
+    font_atlas(const font_atlas&);
+    font_atlas& operator=(const font_atlas&);
     font_atlas(font_atlas&&) noexcept            = default;
     font_atlas& operator=(font_atlas&&) noexcept = default;
 

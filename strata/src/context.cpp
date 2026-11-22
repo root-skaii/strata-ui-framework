@@ -432,7 +432,9 @@ void context::begin_frame(const input_state& in)
     m_->overlap_taken_cur_  = 0;
     m_->next_open_          = 0;
     m_->gutter_depth_       = 0;
+    m_->gutter_base_        = 0;
     m_->indent_depth_       = 0;
+    m_->indent_base_        = 0;
     m_->nav_.scope          = 0;
     m_->nav_.active         = false;
     m_->nav_.items.clear();
@@ -1516,7 +1518,7 @@ void context::push_right_gutter(f32 w) noexcept
 
 void context::pop_right_gutter() noexcept
 {
-    if (m_->gutter_depth_ == 0) {
+    if (m_->gutter_depth_ <= m_->gutter_base_) {
         return;
     }
     const f32 w = m_->gutter_stack_[--m_->gutter_depth_];
@@ -1538,7 +1540,7 @@ void context::push_indent(f32 px) noexcept
 
 void context::pop_indent() noexcept
 {
-    if (m_->indent_depth_ == 0) {
+    if (m_->indent_depth_ <= m_->indent_base_) {
         return;
     }
     const f32 step = m_->indent_stack_[--m_->indent_depth_];
