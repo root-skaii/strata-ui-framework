@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace strata {
@@ -460,6 +461,22 @@ bool software_renderer::update_atlas(const font_atlas& atlas)
     impl_->atlas.assign(atlas.pixels().begin(), atlas.pixels().end());
     impl_->atlas_w = atlas.width();
     impl_->atlas_h = atlas.height();
+    return true;
+}
+
+bool software_renderer::update_atlas_region(const font_atlas& atlas, atlas_region r)
+{
+    if (!impl_ || r.empty() || atlas.pixels().empty()) {
+        return false;
+    }
+    if (atlas.width() != impl_->atlas_w || atlas.height() != impl_->atlas_h ||
+        r.x + r.w > impl_->atlas_w || r.y + r.h > impl_->atlas_h) {
+        return false;
+    }
+    for (u32 row = 0; row < r.h; ++row) {
+        const std::size_t off = static_cast<std::size_t>(r.y + row) * impl_->atlas_w + r.x;
+        std::memcpy(impl_->atlas.data() + off, atlas.pixels().data() + off, r.w);
+    }
     return true;
 }
 

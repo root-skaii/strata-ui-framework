@@ -345,6 +345,8 @@ struct context_config {
     font_config                  font{};          // font 0: window titles and the default
     std::span<const font_config> extra_fonts{};   // fonts 1, 2, ... (must outlive create())
     u32                          max_atlas_size = 4096;
+    // bake unseen glyphs on demand during layout/draw (call sync_font_atlas() before rendering)
+    bool                         dynamic_glyphs = false;
     // baked at this scale straight away (0.5 .. 4): saves the second bake a set_scale() right after create() costs
     f32                          scale = 1.0f;
     // an atlas from font_atlas::load() for these exact fonts and this scale, used instead of baking (a host cache). one
@@ -1063,6 +1065,57 @@ private:
     context* ctx_;
 };
 
+// one column of begin_row() / row(): fixed logical pixels, or a proportional share of the remaining width
+struct layout_col {
+    f32 fixed{};  // > 0: exact width
+    f32 weight{}; // > 0: proportional weight (used when fixed <= 0)
+};
+
+[[nodiscard]] constexpr layout_col col_fixed(f32 width) noexcept { return {width, 0.0f}; }
+[[nodiscard]] constexpr layout_col col_weight(f32 weight = 1.0f) noexcept { return {0.0f, weight}; }
+
+class row_scope {
+public:
+    row_scope(context& ctx, bool open) noexcept : ctx_{&ctx}, open_{open} {}
+    ~row_scope();
+
+    row_scope(const row_scope&)            = delete;
+    row_scope& operator=(const row_scope&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept { return open_; }
+
+private:
+    context* ctx_;
+    bool     open_;
+};
+
+class indent_scope {
+public:
+    explicit indent_scope(context& ctx) noexcept : ctx_{&ctx} {}
+    ~indent_scope();
+
+    indent_scope(const indent_scope&)            = delete;
+    indent_scope& operator=(const indent_scope&) = delete;
+
+private:
+    context* ctx_;
+};
+
+class tooltip_scope {
+public:
+    tooltip_scope(context& ctx, bool open) noexcept : ctx_{&ctx}, open_{open} {}
+    ~tooltip_scope();
+
+    tooltip_scope(const tooltip_scope&)            = delete;
+    tooltip_scope& operator=(const tooltip_scope&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept { return open_; }
+
+private:
+    context* ctx_;
+    bool     open_;
+};
+
 // pop_right_gutter() on scope exit
 class gutter_scope {
 public:
@@ -1205,6 +1258,12 @@ public:
     bool load_state(const config& cfg, std::string_view section = "ui");
     // window screen rect as of its last begin / end ({} if unknown)
     [[nodiscard]] rect window_rect(std::string_view title) const noexcept;
+    // programmatic control of an existing window (no-op if not seen yet)
+    void set_window_pos(std::string_view title, vec2 pos) noexcept;
+    void set_window_size(std::string_view title, vec2 size) noexcept;
+    void set_window_collapsed(std::string_view title, bool collapsed) noexcept;
+    [[nodiscard]] bool window_collapsed(std::string_view title) const noexcept;
+    void focus_window(std::string_view title) noexcept;
 
     // widgets --------------------------------------------------------------
     void text(std::string_view s);
@@ -1232,8 +1291,23 @@ public:
     bool button(std::string_view label, std::string_view id);
     bool checkbox(std::string_view label, bool& value);
     bool toggle(std::string_view label, bool& value);
+    // circular radio option; returns true when clicked (overload sets `value = option` and returns true on change)
+    bool radio_button(std::string_view label, bool active);
+    bool radio_button(std::string_view label, int& value, int option);
+    // horizontal bar of mutually exclusive options; returns true when `current` changed
+    bool segmented(std::string_view id, const item_list& items, int& current);
+    // inline draggable divider between two panes (vertical = left/right bar, horizontal = top/bottom bar); true while dragged.
+    // `length` <= 0 fills the available height (vertical, down to bound_bottom or 120 px) or width (horizontal)
+    bool splitter(std::string_view id, f32& size, f32 min_size, f32 max_size, bool vertical = true, f32 length = 0.0f);
+    // full-width framed collapsible section bar (open state persists per id; no pop needed)
+    bool collapsing_header(std::string_view label, tree_flags flags = tree_flags::none);
+    bool collapsing_header(std::string_view label, bool& open);
+    // single-line filter/search field with an inline clear button; returns true on change
+    bool search_input(std::string_view label, std::string& query, std::string_view hint = {});
     void progress_bar(f32 fraction, std::string_view overlay = {});
     void separator();
+    // horizontal divider with an inline label
+    void separator(std::string_view label);
     void spacing(f32 height = 0.0f);
     void same_line() noexcept;
     // same line, `offset_x` from the content's left edge
@@ -1248,6 +1322,28 @@ public:
     void push_right_gutter(f32 w) noexcept;
     void pop_right_gutter() noexcept;
     [[nodiscard]] gutter_scope right_gutter(f32 w) noexcept { push_right_gutter(w); return gutter_scope{*this}; }
+    // indents subsequent items right by `px` (<= 0: 16 px) until pop_indent()
+    void push_indent(f32 px = 0.0f) noexcept;
+    void pop_indent() noexcept;
+    [[nodiscard]] indent_scope indent(f32 px = 0.0f) noexcept { push_indent(px); return indent_scope{*this}; }
+    // multi-column flex layout: widgets fill their column width; row_next() advances to the next column, end_row()
+    // advances below the tallest one. gap < 0 uses style::item_spacing.
+    //   if (auto r = ui.row(3)) { ui.button("Cancel"); ui.row_next(); ui.button("Apply"); ui.row_next(); ui.button("OK"); }
+    //   if (auto r = ui.row({col_fixed(100), col_weight(1), col_fixed(64)})) { ... }
+    bool begin_row(u32 columns, f32 gap = -1.0f) noexcept;
+    bool begin_row(std::span<const layout_col> columns, f32 gap = -1.0f) noexcept;
+    bool begin_row(std::initializer_list<layout_col> columns, f32 gap = -1.0f) noexcept
+    {
+        return begin_row(std::span<const layout_col>{columns.begin(), columns.size()}, gap);
+    }
+    bool row_next() noexcept;
+    void end_row() noexcept;
+    [[nodiscard]] row_scope row(u32 columns, f32 gap = -1.0f) noexcept { return {*this, begin_row(columns, gap)}; }
+    [[nodiscard]] row_scope row(std::span<const layout_col> columns, f32 gap = -1.0f) noexcept { return {*this, begin_row(columns, gap)}; }
+    [[nodiscard]] row_scope row(std::initializer_list<layout_col> columns, f32 gap = -1.0f) noexcept
+    {
+        return {*this, begin_row(columns, gap)};
+    }
     // width of the next widget (slider, input, combo, progress, button)
     void set_next_item_width(f32 w) noexcept;
 
@@ -1553,6 +1649,11 @@ public:
 
     // after the last widget is hovered for style::tooltip_delay_s
     void tooltip(std::string_view text);
+    // rich tooltip for the last hovered item (after style::tooltip_delay_s): place any widgets inside.
+    // `width` <= 0 fits content up to 320 px. call end_tooltip() when begin_tooltip() returns true, or use tooltip().
+    bool begin_tooltip(f32 width = 0.0f);
+    void end_tooltip();
+    [[nodiscard]] tooltip_scope tooltip(f32 width = 0.0f) { return {*this, begin_tooltip(width)}; }
     [[nodiscard]] bool item_hovered() const noexcept;
 
     // the last hit-tested widget. right / middle clicks report on press, left on release over it (like the widget)

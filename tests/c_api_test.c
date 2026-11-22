@@ -66,6 +66,36 @@ static void build(strata_context* ui)
             strata_node_editor_end(graph);
         }
         strata_push_id_int(ui, 7);
+        strata_separator_text(ui, "layout");
+        if (strata_collapsing_header(ui, "section", 1)) {
+            static int seg = 0;
+            static float split = 100.0f;
+            static const char* const modes[] = {"A", "B"};
+            strata_radio_button(ui, "radio", seg == 0);
+            strata_segmented(ui, "seg", modes, 2, &seg);
+            strata_splitter(ui, "sp", &split, 40.0f, 200.0f, 0, 0.0f);
+            if (strata_begin_tooltip(ui, 0.0f)) {
+                strata_text(ui, "rich tip");
+                strata_end_tooltip(ui);
+            }
+        }
+        strata_push_indent(ui, 12.0f);
+        strata_toggle(ui, "switch", &flag);
+        strata_drag_int(ui, "n", &count, 0.25f, 0, 100);
+        {
+            const float specs[3] = {80.0f, -1.0f, 60.0f};
+            if (strata_begin_row_cols(ui, specs, 3, 6.0f)) {
+                strata_button(ui, "left");
+                if (strata_row_next(ui)) { strata_button(ui, "mid"); }
+                if (strata_row_next(ui)) {
+                    strata_begin_disabled(ui, 1);
+                    strata_button(ui, "right");
+                    strata_end_disabled(ui);
+                }
+                strata_end_row(ui);
+            }
+        }
+        strata_pop_indent(ui);
         strata_separator(ui);
         strata_pop_id(ui);
     }

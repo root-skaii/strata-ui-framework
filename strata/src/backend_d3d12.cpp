@@ -149,6 +149,7 @@ struct d3d12_renderer::impl {
     ComPtr<ID3D12DescriptorHeap>      srv_heap;   // slot 0: the font atlas, slot n: texture n
     ComPtr<ID3D12CommandQueue>        queue;
     ComPtr<ID3D12Resource>            atlas;
+    u32                               atlas_w{}, atlas_h{};
     std::array<ComPtr<ID3D12Resource>, d3d12_renderer::max_textures> textures;
     struct texture_meta {
         texture_image image; // kept (for update_texture) only when the texture is updatable
@@ -653,7 +654,12 @@ struct d3d12_renderer::impl {
 
     [[nodiscard]] bool upload_atlas(const font_atlas& font) noexcept
     {
-        return upload_texture(atlas, font.width(), font.height(), DXGI_FORMAT_R8_UNORM, 1, font.pixels().data());
+        if (!upload_texture(atlas, font.width(), font.height(), DXGI_FORMAT_R8_UNORM, 1, font.pixels().data())) {
+            return false;
+        }
+        atlas_w = font.width();
+        atlas_h = font.height();
+        return true;
     }
 };
 
@@ -881,13 +887,58 @@ bool d3d12_renderer::update_atlas(const font_atlas& font)
     if (!s.upload_texture(fresh, font.width(), font.height(), DXGI_FORMAT_R8_UNORM, 1, font.pixels().data())) {
         return false;
     }
-    s.atlas = std::move(fresh);
+    if (s.atlas != nullptr) {
+        s.drop_pending(s.atlas.Get());
+        s.retire(s.atlas);
+    }
+    s.atlas   = std::move(fresh);
+    s.atlas_w = font.width();
+    s.atlas_h = font.height();
     D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
     sv.Format                  = DXGI_FORMAT_R8_UNORM;
     sv.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sv.Texture2D.MipLevels     = 1;
     s.device->CreateShaderResourceView(s.atlas.Get(), &sv, s.srv_heap->GetCPUDescriptorHandleForHeapStart());
+    return true;
+}
+
+bool d3d12_renderer::update_atlas_region(const font_atlas& font, atlas_region r)
+{
+    if (impl_ == nullptr || r.empty() || font.pixels().empty()) {
+        return false;
+    }
+    impl& s = *impl_;
+    if (s.atlas == nullptr || font.width() != s.atlas_w || font.height() != s.atlas_h ||
+        r.x + r.w > s.atlas_w || r.y + r.h > s.atlas_h) {
+        return false;
+    }
+    const UINT   pitch = static_cast<UINT>(align_up(r.w, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
+    const UINT64 total = static_cast<UINT64>(pitch) * r.h;
+    auto upload = create_upload_buffer(s.device.Get(), total);
+    if (upload == nullptr) {
+        return false;
+    }
+    void* mapped{};
+    if (FAILED(upload->Map(0, nullptr, &mapped))) {
+        return false;
+    }
+    const u8* src = font.pixels().data() + static_cast<std::size_t>(r.y) * s.atlas_w + r.x;
+    for (u32 row = 0; row < r.h; ++row) {
+        std::memcpy(static_cast<std::byte*>(mapped) + static_cast<std::size_t>(row) * pitch,
+                    src + static_cast<std::size_t>(row) * s.atlas_w, r.w);
+    }
+    upload->Unmap(0, nullptr);
+
+    impl::pending_copy pc;
+    pc.texture = s.atlas;
+    pc.upload  = std::move(upload);
+    pc.regions.push_back({0, r.x, r.y, r.w, r.h});
+    pc.places.emplace_back(UINT64{0}, pitch);
+    pc.format = DXGI_FORMAT_R8_UNORM;
+    pc.before = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    pc.after  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    s.pending.push_back(std::move(pc));
     return true;
 }
 

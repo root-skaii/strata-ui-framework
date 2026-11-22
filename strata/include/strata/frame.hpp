@@ -35,6 +35,18 @@ void end_frame(context& ui, P& platform)
     platform.set_cursor(ui.cursor());
 }
 
+// syncs any on-demand glyphs baked into a dynamic font atlas (partial upload when dimensions match, full on growth)
+template <class R>
+    requires renderer_backend<R> && requires(R& r, const font_atlas& a, atlas_region reg) { r.update_atlas_region(a, reg); }
+bool sync_font_atlas(context& ui, R& renderer)
+{
+    const font_atlas& atlas = ui.font();
+    if (!atlas.dirty()) { return true; }
+    const bool ok = atlas.resized() ? renderer.update_atlas(atlas) : renderer.update_atlas_region(atlas, atlas.dirty_region());
+    if (ok) { atlas.clear_dirty(); }
+    return ok;
+}
+
 // one whole frame. true when the geometry changed (or `allow_idle` is false): the host should render and present
 template <platform_backend P, class Build>
     requires std::invocable<Build&, context&>

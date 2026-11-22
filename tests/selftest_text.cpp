@@ -1,6 +1,8 @@
 // headless self-test: text editing, multi-line input, rich text, text styles, bidi / emoji, code fields
 
 #include "selftest_common.hpp"
+#include "strata/backend/software.hpp"
+#include "strata/frame.hpp"
 #include "text_util.hpp" // (strata/src: the word rules are internal)
 
 namespace {
@@ -1296,6 +1298,127 @@ void test_clock_and_code_find()
     CHECK(box.min.y > top0 + 30.0f && h.ui.want_text_input());
 }
 
+void test_truetype_and_dynamic_glyphs()
+{
+    std::fprintf(stderr, "[truetype rasteriser, dynamic glyph baking]\n");
+
+    // 1. portable TrueType rasteriser from a real .ttf file
+    {
+        font_config cfg;
+        cfg.file         = "C:/Windows/Fonts/segoeui.ttf";
+        cfg.pixel_height = 18.0f;
+        cfg.rasterizer   = font_rasterizer::truetype;
+        cfg.ranges       = glyph_ranges::default_set;
+        auto built = font_atlas::build(cfg, 2048, 1.0f, false);
+        CHECK(built.has_value());
+        if (built) {
+            const font_atlas& a = *built;
+            CHECK(a.width() >= 256 && a.height() >= 64);
+            CHECK(a.line_height(0) > 14.0f && a.ascent(0) > 8.0f);
+            CHECK(a.has_glyph(0, U'A') && a.has_glyph(0, U'g') && a.has_glyph(0, U'0'));
+            const glyph& gA = a.find(0, U'A');
+            CHECK((gA.x1 - gA.x0) > 4.0f && (gA.y1 - gA.y0) > 6.0f && gA.advance > 4.0f);
+            CHECK(a.measure(0, "Hello World").x > 50.0f);
+            // verify the rasteriser produced non-zero alpha coverage inside the glyph box
+            const u32 x0 = static_cast<u32>(static_cast<f32>(gA.u0) / 32767.0f * static_cast<f32>(a.width()));
+            const u32 y0 = static_cast<u32>(static_cast<f32>(gA.v0) / 32767.0f * static_cast<f32>(a.height()));
+            const u32 x1 = static_cast<u32>(static_cast<f32>(gA.u1) / 32767.0f * static_cast<f32>(a.width()));
+            const u32 y1 = static_cast<u32>(static_cast<f32>(gA.v1) / 32767.0f * static_cast<f32>(a.height()));
+            u32 lit = 0;
+            for (u32 y = y0; y < y1 && y < a.height(); ++y) {
+                for (u32 x = x0; x < x1 && x < a.width(); ++x) {
+                    if (a.pixels()[static_cast<std::size_t>(y) * a.width() + x] > 128) { ++lit; }
+                }
+            }
+            CHECK(lit > 10);
+
+            // render with software_renderer and confirm pixels are drawn
+            software_renderer sw;
+            CHECK(sw.create(a));
+            sw.resize(200, 60);
+            sw.clear({0, 0, 0, 255});
+            draw_list dl;
+            dl.begin({200.0f, 60.0f}, a, 1.0f);
+            dl.text({10.0f, 10.0f}, {255, 255, 255, 255}, "Strata TTF", 0);
+            sw.render(dl.data());
+            u32 bright = 0;
+            const auto px = sw.pixels();
+            for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
+                if (px[i] > 64) { ++bright; }
+            }
+            CHECK(bright > 40);
+        }
+    }
+
+    // 2. dynamic glyph baking with narrow ASCII initial range, partial upload and atlas growth
+    for (const font_rasterizer mode : {font_rasterizer::native, font_rasterizer::truetype}) {
+        static constexpr codepoint_range ascii_only[] = {{0x0020, 0x007e}};
+        context_config cfg;
+        cfg.font.face         = "Segoe UI";
+        cfg.font.file         = "C:/Windows/Fonts/segoeui.ttf";
+        cfg.font.pixel_height = 24.0f;
+        cfg.font.rasterizer   = mode;
+        cfg.font.ranges       = ascii_only;
+        cfg.max_atlas_size    = 1024;
+        cfg.dynamic_glyphs    = true;
+
+        harness h{cfg};
+        CHECK(h.ui.font().dynamic());
+        CHECK(!h.ui.font().dirty());
+        CHECK(!h.ui.font().has_glyph(0, U'\u03A9')); // Greek Omega not in initial ASCII range
+        CHECK(!h.ui.font().has_glyph(0, U'\u0416')); // Cyrillic Zhe not in initial ASCII range
+
+        // release_font_pixels must keep CPU pixels alive for dynamic atlases
+        h.ui.release_font_pixels();
+        CHECK(!h.ui.font().pixels().empty());
+
+        software_renderer sw;
+        CHECK(sw.create(h.ui.font()));
+        sw.resize(320, 120);
+
+        const auto build = [&] {
+            if (auto w = h.ui.window("dyn", {0, 0}, {300, 100}, plain_window)) {
+                h.ui.text("\xCE\xA9 \xD0\x96 \xCE\xB1\xCE\xB2\xCE\xB3"); // "Ω Ж αβγ"
+            }
+        };
+        h.frame(build);
+        CHECK(h.ui.font().has_glyph(0, U'\u03A9'));
+        CHECK(h.ui.font().has_glyph(0, U'\u0416'));
+        CHECK(h.ui.font().dirty());
+        CHECK(!h.ui.font().dirty_region().empty());
+
+        CHECK(sync_font_atlas(h.ui, sw));
+        CHECK(!h.ui.font().dirty());
+        CHECK(!h.ui.font().resized());
+
+        sw.clear({0, 0, 0, 255});
+        sw.render(h.ui.render_data());
+        u32 drawn = 0;
+        for (std::size_t i = 0; i + 3 < sw.pixels().size(); i += 4) {
+            if (sw.pixels()[i] > 64) { ++drawn; }
+        }
+        CHECK(drawn > 30);
+
+        // force atlas growth by baking a large batch of Greek + Cyrillic + Latin Extended glyphs
+        const u32 orig_w = h.ui.font().width();
+        const u32 orig_h = h.ui.font().height();
+        const glyph gA_before = h.ui.font().find(0, U'A');
+        for (char32_t cp = 0x00C0; cp <= 0x017F; ++cp) { (void)h.ui.font().bake_glyph(0, cp); }
+        for (char32_t cp = 0x0391; cp <= 0x03C9; ++cp) { (void)h.ui.font().bake_glyph(0, cp); }
+        for (char32_t cp = 0x0410; cp <= 0x044F; ++cp) { (void)h.ui.font().bake_glyph(0, cp); }
+        CHECK(h.ui.font().width() > orig_w || h.ui.font().height() > orig_h);
+        CHECK(h.ui.font().resized());
+        CHECK(sync_font_atlas(h.ui, sw));
+        CHECK(!h.ui.font().dirty());
+        CHECK(!h.ui.font().resized());
+        // existing glyph coordinates were rescaled cleanly
+        const glyph& gA_after = h.ui.font().find(0, U'A');
+        CHECK((gA_after.x1 - gA_after.x0) == (gA_before.x1 - gA_before.x0) &&
+              (gA_after.y1 - gA_after.y0) == (gA_before.y1 - gA_before.y0));
+        CHECK(gA_after.u1 > gA_after.u0 && gA_after.v1 > gA_after.v0);
+    }
+}
+
 } // namespace
 
 void run_text_tests()
@@ -1311,4 +1434,5 @@ void run_text_tests()
     test_selectable_text();
     test_password_masks_and_code();
     test_clock_and_code_find();
+    test_truetype_and_dynamic_glyphs();
 }

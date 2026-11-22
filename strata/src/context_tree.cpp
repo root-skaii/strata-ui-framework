@@ -196,6 +196,56 @@ static bool row_item(context& ui, id key, std::string_view shown, bool selected,
     return activated;
 }
 
+bool context::collapsing_header(std::string_view label, tree_flags flags)
+{
+    if (m_->cur_ == nullptr) {
+        return false;
+    }
+    const id key = widget_id(*this, label);
+    bool recursive = false;
+    bool& open = tree_open_resolved(*this, key, has_flag(flags, tree_flags::default_open), recursive);
+    return collapsing_header(label, open);
+}
+
+bool context::collapsing_header(std::string_view label, bool& open)
+{
+    if (m_->cur_ == nullptr) {
+        return false;
+    }
+    const font_id          f     = current_font();
+    const id               key   = widget_id(*this, label);
+    const std::string_view shown = visible_label(label);
+    const f32              h     = frame_height() + 2.0f;
+    const rect             r     = layout_place(*this, {m_->layout_.width, h});
+    if (item_culled(*this, r)) {
+        note_culled_item(*this, key, r);
+        return open;
+    }
+
+    const interaction in   = interact(*this, key, r);
+    if (in.pressed) { open = !open; }
+    const press_anim  anim = button_anim(*this, key, in);
+
+    anim_slot& ta = anim_for(*this, key);
+    ta.toggle = approach(*this, ta.toggle, open ? 1.0f : 0.0f);
+
+    const color base = lerp(lerp(m_->style_.widget_bg, m_->style_.widget_hover, anim.hover), m_->style_.widget_active, anim.active);
+    shape_style bg = widget_shape(*this, base, m_->style_.rounding * 0.7f);
+    m_->dl_.shape(r, bg);
+
+    // rotating chevron triangle (0 = right, 1 = down)
+    const vec2 c{r.min.x + 14.0f, r.min.y + r.height() * 0.5f};
+    const f32  ang = ta.toggle * (std::numbers::pi_v<f32> * 0.5f);
+    const f32  ca  = std::cos(ang);
+    const f32  sa  = std::sin(ang);
+    const auto rot = [&](vec2 p) { return vec2{c.x + p.x * ca - p.y * sa, c.y + p.x * sa + p.y * ca}; };
+    m_->dl_.triangle_filled(rot({-2.5f, -4.0f}), rot({3.5f, 0.0f}), rot({-2.5f, 4.0f}), m_->style_.text_dim);
+
+    const vec2 ts = label_size(*this, f, shown);
+    label_draw(*this, {r.min.x + 26.0f, r.min.y + (r.height() - ts.y) * 0.5f}, m_->style_.text, shown, f);
+    return open;
+}
+
 bool context::selectable(std::string_view label, bool selected)
 {
     return selectable(label, {}, selected);

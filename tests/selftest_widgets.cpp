@@ -1223,6 +1223,84 @@ void test_scrollbar_drag()
     }
 }
 
+void test_tool_widgets_and_rich_tooltip()
+{
+    std::fprintf(stderr, "[rich tooltip, collapsing_header, radio, segmented, splitter, search_input]\n");
+    harness h;
+    int  mode     = 0;
+    int  seg      = 0;
+    f32  pane_w   = 120.0f;
+    bool hdr_open = false;
+    bool tip_ran  = false;
+    std::string query = "hello";
+    rect hdr_r{}, radio1_r{}, seg_r{}, split_r{}, tip_target_r{};
+
+    const auto build = [&] {
+        if (auto w = h.ui.window("tools", {40, 40}, {360, 420}, plain_window)) {
+            hdr_open = h.ui.collapsing_header("Details");
+            hdr_r    = h.ui.item_rect();
+            if (hdr_open) { h.ui.text("inside header"); }
+
+            (void)h.ui.radio_button("Opt A", mode, 0);
+            h.ui.same_line();
+            (void)h.ui.radio_button("Opt B", mode, 1);
+            radio1_r = h.ui.item_rect();
+
+            (void)h.ui.segmented("axis", {"Local", "World", "View"}, seg);
+            seg_r = h.ui.item_rect();
+
+            (void)h.ui.search_input("Filter", query);
+
+            h.ui.button("Hover me");
+            tip_target_r = h.ui.item_rect();
+            if (auto tip = h.ui.tooltip()) {
+                tip_ran = true;
+                h.ui.text("Rich tooltip");
+                h.ui.progress_bar(0.5f);
+            }
+
+            if (auto left = h.ui.child("left", {pane_w, 80.0f}, child_flags::frame)) { h.ui.text("L"); }
+            h.ui.same_line();
+            (void)h.ui.splitter("div", pane_w, 60.0f, 240.0f, true, 80.0f);
+            split_r = h.ui.item_rect();
+        }
+    };
+    h.frames(build, 3);
+    CHECK(!hdr_open && mode == 0 && seg == 0 && !tip_ran);
+
+    // collapsing_header toggles on click
+    h.click(hdr_r.center(), build);
+    h.frames(build, 2);
+    CHECK(hdr_open);
+
+    // radio_button selects option 1
+    h.click(radio1_r.center(), build);
+    h.frames(build, 2);
+    CHECK(mode == 1);
+
+    // segmented clicks last segment ("View" -> index 2)
+    h.click({seg_r.max.x - 10.0f, seg_r.center().y}, build);
+    h.frames(build, 2);
+    CHECK(seg == 2);
+
+    // splitter drags pane_w right by 40 px
+    const f32 before_w = pane_w;
+    h.move(split_r.center());
+    h.frames(build, 2);
+    h.down();
+    h.frames(build, 1);
+    h.move({split_r.center().x + 40.0f, split_r.center().y});
+    h.frames(build, 2);
+    h.up();
+    h.frames(build, 1);
+    CHECK(pane_w > before_w + 25.0f && pane_w <= 240.0f);
+
+    // rich tooltip opens after hover delay and produces geometry
+    h.move(tip_target_r.center());
+    h.frames(build, 35); // > 0.4 s at 1/60 s
+    CHECK(tip_ran);
+}
+
 } // namespace
 
 void run_widgets_tests()
@@ -1239,4 +1317,5 @@ void run_widgets_tests()
     test_scrollbar_drag();
     test_item_list();
     test_ui_strings();
+    test_tool_widgets_and_rich_tooltip();
 }

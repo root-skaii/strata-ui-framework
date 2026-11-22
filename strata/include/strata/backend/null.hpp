@@ -26,6 +26,7 @@ public:
     [[nodiscard]] bool create(const font_atlas&) noexcept { valid_ = true; return true; }
     void destroy() noexcept { valid_ = false; textures_.clear(); }
     [[nodiscard]] bool update_atlas(const font_atlas&) noexcept { return valid_; }
+    [[nodiscard]] bool update_atlas_region(const font_atlas&, atlas_region) noexcept { return valid_; }
 
     void render(const draw_data& d);
 

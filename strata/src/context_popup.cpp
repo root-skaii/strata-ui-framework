@@ -414,11 +414,98 @@ void internal::draw_tooltip(context& ui, std::string_view text)
     switch_run(ui, previous_owner);
 }
 
+tooltip_scope::~tooltip_scope()
+{
+    if (open_) {
+        ctx_->end_tooltip();
+    }
+}
+
 void context::tooltip(std::string_view text)
 {
-    if (m_->last_item_hovered_ && m_->last_item_key_ == m_->hover_key_cur_ && m_->hover_time_ > 0.4f) {
+    if (m_->last_item_hovered_ && m_->last_item_key_ == m_->hover_key_cur_ && m_->hover_time_ >= m_->style_.tooltip_delay_s) {
         draw_tooltip(*this, text);
     }
+}
+
+bool context::begin_tooltip(f32 width)
+{
+    if (m_->in_overlay_ || m_->tooltip_open_) {
+        return false;
+    }
+    if (!m_->last_item_hovered_ || m_->last_item_key_ != m_->hover_key_cur_ || m_->hover_time_ < m_->style_.tooltip_delay_s) {
+        return false;
+    }
+
+    const id   key      = m_->last_item_key_;
+    const bool measured = m_->tooltip_measured_key_ == key && m_->tooltip_measured_size_.y > 0.0f;
+    constexpr f32 padx  = 10.0f;
+    constexpr f32 pady  = 7.0f;
+    const f32  inner_w  = width > 0.0f ? width : (measured ? std::max(m_->tooltip_measured_size_.x - 2.0f * padx, 40.0f) : 320.0f);
+    const vec2 size     = measured ? vec2{width > 0.0f ? width + 2.0f * padx : m_->tooltip_measured_size_.x, m_->tooltip_measured_size_.y}
+                                   : vec2{inner_w + 2.0f * padx, 40.0f};
+
+    vec2 pos = m_->input_.mouse_ + vec2{14.0f, 20.0f};
+    if (pos.x + size.x > m_->display_.x - 4.0f) { pos.x = m_->display_.x - 4.0f - size.x; }
+    if (pos.y + size.y > m_->display_.y - 4.0f) { pos.y = m_->input_.mouse_.y - size.y - 10.0f; }
+    pos.x = std::max(pos.x, 4.0f);
+    pos.y = std::max(pos.y, 4.0f);
+
+    m_->tooltip_open_          = true;
+    m_->tooltip_hidden_        = !measured;
+    m_->tooltip_fixed_w_       = width;
+    m_->tooltip_saved_overlay_ = m_->in_overlay_;
+    m_->tooltip_saved_layout_  = m_->layout_;
+    m_->tooltip_prev_owner_    = m_->run_owner_;
+    switch_run(*this, m_->popup_.overlay_run());
+    m_->in_overlay_ = true;
+    m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
+
+    const f32 fade = m_->tooltip_hidden_
+                         ? 0.0f
+                         : std::clamp((m_->hover_time_ - std::max(m_->style_.tooltip_delay_s - 0.05f, 0.0f)) / 0.12f, 0.0f, 1.0f);
+    m_->dl_.push_alpha(fade);
+
+    const rect panel = rect::from_size(pos, size);
+    shape_style body;
+    body.radius        = radii(m_->style_.rounding * 0.65f);
+    body.fill_top      = color{m_->style_.window_bg.r, m_->style_.window_bg.g, m_->style_.window_bg.b, 255};
+    body.fill_bottom   = body.fill_top;
+    body.border        = m_->style_.border;
+    body.border_width  = m_->style_.border_width;
+    body.shadow        = m_->style_.shadow;
+    body.shadow_blur   = m_->style_.shadow_blur * 0.5f;
+    body.shadow_offset = {0.0f, 3.0f};
+    popup_panel(*this, panel, body);
+    m_->dl_.push_clip({{panel.min.x + 1.0f, panel.min.y + 1.0f}, {panel.max.x - 1.0f, panel.max.y - 1.0f}});
+
+    m_->layout_        = {};
+    m_->layout_.origin = {panel.min.x + padx, panel.min.y + pady};
+    m_->layout_.width  = inner_w;
+    return true;
+}
+
+void context::end_tooltip()
+{
+    if (!m_->tooltip_open_) {
+        return;
+    }
+    constexpr f32 padx = 10.0f;
+    constexpr f32 pady = 7.0f;
+    const f32 content_w = m_->layout_.first ? 0.0f : std::max(m_->layout_.right - m_->layout_.origin.x, 0.0f);
+    const f32 content_h = m_->layout_.first ? 0.0f : std::max(m_->layout_.bottom - m_->layout_.origin.y, 0.0f);
+    m_->tooltip_measured_key_  = m_->hover_key_cur_;
+    m_->tooltip_measured_size_ = {(m_->tooltip_fixed_w_ > 0.0f ? m_->tooltip_fixed_w_ : std::min(content_w, 320.0f)) + 2.0f * padx,
+                                  content_h + 2.0f * pady};
+
+    m_->layout_ = m_->tooltip_saved_layout_;
+    m_->dl_.pop_clip();
+    m_->dl_.pop_alpha();
+    m_->dl_.pop_clip();
+    m_->in_overlay_     = m_->tooltip_saved_overlay_;
+    m_->tooltip_open_   = false;
+    m_->tooltip_hidden_ = false;
+    switch_run(*this, m_->tooltip_prev_owner_);
 }
 
 } // namespace strata

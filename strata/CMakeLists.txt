@@ -41,6 +41,7 @@ add_library(strata STATIC
     src/datetime.cpp
     src/draw_list.cpp
     src/font.cpp
+    src/font_ttf.cpp
     src/input_record.cpp
     src/keybinds.cpp
     src/node_editor.cpp
@@ -89,7 +90,7 @@ target_sources(strata PUBLIC
         include/strata/types.hpp
         include/strata/vmem.hpp
 )
-target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/inspector_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp src/core/part_id.hpp src/widget_util.hpp)
+target_sources(strata PRIVATE src/text_util.hpp src/limits.hpp src/font_ttf.hpp src/chart_state.hpp src/child_card_state.hpp src/code_state.hpp src/color_picker_state.hpp src/combo_filter_state.hpp src/confirm_state.hpp src/date_picker_state.hpp src/dock_state.hpp src/drag_drop_state.hpp src/edit_state.hpp src/hotkey_state.hpp src/inspector_state.hpp src/measure_cache_state.hpp src/menu_state.hpp src/modal_state.hpp src/nav_state.hpp src/popup_state.hpp src/rich_text_state.hpp src/row_accessory_state.hpp src/table_tree_state.hpp src/toast_state.hpp src/hash.hpp src/blur_plan.hpp src/context_impl.hpp src/core/animation.hpp src/core/id_stack.hpp src/core/input_frame.hpp src/core/layout_state.hpp src/core/style_stack.hpp src/core/window_registry.hpp src/core/part_id.hpp src/widget_util.hpp)
 
 target_link_libraries(strata PRIVATE $<BUILD_INTERFACE:strata_options> imm32.lib)
 if(NOT STRATA_DIAGNOSTICS)

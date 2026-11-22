@@ -1,6 +1,8 @@
 #include "strata/themes.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <array>
 #include <charconv>
@@ -134,6 +136,7 @@ void append_number(std::string& out, f32 v)
     out.append(buf.data(), r.ptr);
 }
 
+#ifdef _WIN32
 [[nodiscard]] std::wstring widen(std::string_view s)
 {
     std::wstring out(s.size(), L'\0');
@@ -142,6 +145,19 @@ void append_number(std::string& out, f32 v)
         out.resize(static_cast<std::size_t>(n > 0 ? n : 0));
     }
     return out;
+}
+#endif
+
+[[nodiscard]] FILE* open_utf8(std::string_view path, bool write)
+{
+    FILE* f = nullptr;
+#ifdef _WIN32
+    if (_wfopen_s(&f, widen(path).c_str(), write ? L"wb" : L"rb") != 0) { return nullptr; }
+#else
+    const std::string owned{path};
+    f = std::fopen(owned.c_str(), write ? "wb" : "rb");
+#endif
+    return f;
 }
 
 } // namespace
@@ -274,9 +290,8 @@ theme_result from_config(const config& cfg, style& s, std::string_view section)
 
 bool save_file(std::string_view path, const style& s, std::string_view name)
 {
-    const std::wstring wide = widen(path);
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, wide.c_str(), L"wb") != 0 || f == nullptr) {
+    FILE* f = open_utf8(path, true);
+    if (f == nullptr) {
         return false;
     }
     const std::string text = to_string(s, name);
@@ -286,9 +301,8 @@ bool save_file(std::string_view path, const style& s, std::string_view name)
 
 bool load_file(std::string_view path, style& s, theme_result* result)
 {
-    const std::wstring wide = widen(path);
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, wide.c_str(), L"rb") != 0 || f == nullptr) {
+    FILE* f = open_utf8(path, false);
+    if (f == nullptr) {
         return false;
     }
     std::string text;

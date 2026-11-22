@@ -1,6 +1,10 @@
 #include "strata/config.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -70,6 +74,7 @@ constexpr std::size_t max_file_bytes = std::size_t{4} << 20;
     return out;
 }
 
+#ifdef _WIN32
 [[nodiscard]] std::wstring widen(std::string_view s)
 {
     if (s.empty()) { return {}; }
@@ -77,6 +82,19 @@ constexpr std::size_t max_file_bytes = std::size_t{4} << 20;
     std::wstring w(static_cast<std::size_t>(n), L'\0');
     ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
     return w;
+}
+#endif
+
+[[nodiscard]] FILE* open_utf8(std::string_view path, bool write)
+{
+    FILE* f = nullptr;
+#ifdef _WIN32
+    if (_wfopen_s(&f, widen(path).c_str(), write ? L"wb" : L"rb") != 0) { return nullptr; }
+#else
+    const std::string owned{path};
+    f = std::fopen(owned.c_str(), write ? "wb" : "rb");
+#endif
+    return f;
 }
 
 } // namespace
@@ -257,8 +275,8 @@ std::size_t config::from_string(std::string_view text)
 
 bool config::save_file(std::string_view path) const
 {
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, widen(path).c_str(), L"wb") != 0 || f == nullptr) {
+    FILE* f = open_utf8(path, true);
+    if (f == nullptr) {
         return false;
     }
     const std::string text = to_string();
@@ -268,8 +286,8 @@ bool config::save_file(std::string_view path) const
 
 bool config::load_file(std::string_view path, std::size_t* unreadable_lines)
 {
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, widen(path).c_str(), L"rb") != 0 || f == nullptr) {
+    FILE* f = open_utf8(path, false);
+    if (f == nullptr) {
         return false;
     }
     std::string          text;
@@ -298,10 +316,17 @@ config_file::~config_file()
 
 u64 config_file::stamp() const
 {
+#ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA info{};
     if (!::GetFileAttributesExW(widen(path_).c_str(), GetFileExInfoStandard, &info)) { return 0; }
     const u64 time = (static_cast<u64>(info.ftLastWriteTime.dwHighDateTime) << 32) | info.ftLastWriteTime.dwLowDateTime;
     const u64 size = (static_cast<u64>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+#else
+    struct stat info{};
+    if (::stat(path_.c_str(), &info) != 0) { return 0; }
+    const u64 time = static_cast<u64>(info.st_mtime);
+    const u64 size = static_cast<u64>(info.st_size);
+#endif
     return time ^ (size * 0x9e3779b97f4a7c15ull) ^ 1ull; // (never 0 for a file that exists)
 }
 

@@ -107,6 +107,47 @@ rect context::window_rect(std::string_view title) const noexcept
     return rect::from_size(w->pos, {w->width, height});
 }
 
+void context::set_window_pos(std::string_view title, vec2 pos) noexcept
+{
+    if (window_state* w = window_find(*this, hash_id(title, m_->ids_.root()))) {
+        w->pos = pos;
+    }
+}
+
+void context::set_window_size(std::string_view title, vec2 size) noexcept
+{
+    if (window_state* w = window_find(*this, hash_id(title, m_->ids_.root()))) {
+        w->width    = std::max(size.x, 1.0f);
+        w->height   = std::max(size.y, 0.0f);
+        w->size_set = true;
+        if (w->dock != 0) { w->float_size = {w->width, w->height}; }
+    }
+}
+
+void context::set_window_collapsed(std::string_view title, bool collapsed) noexcept
+{
+    if (window_state* w = window_find(*this, hash_id(title, m_->ids_.root()))) {
+        w->collapsed = collapsed;
+    }
+}
+
+bool context::window_collapsed(std::string_view title) const noexcept
+{
+    const window_state* w = window_find(*this, hash_id(title, m_->ids_.root()));
+    return w != nullptr && w->collapsed;
+}
+
+void context::focus_window(std::string_view title) noexcept
+{
+    const id wid = hash_id(title, m_->ids_.root());
+    window_state* w = window_find(*this, wid);
+    if (w == nullptr || w->passive) { return; }
+    if (!w->docked_now || w->dock_owner != 0) {
+        bring_to_front(*this, w->docked_now ? w->dock_owner : wid);
+    }
+    if (!w->menubar) { m_->key_window_ = wid; }
+}
+
 u32 internal::z_index(const context& ui, id key) noexcept
 {
     auto& m = context_access::of(ui);
@@ -149,9 +190,10 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         }
         impl::window_nest& n = m_->nest_[m_->nest_depth_++];
         n = {m_->cur_, m_->cur_window_, m_->cur_flags_, m_->cur_frame_, m_->layout_, m_->window_faded_, m_->run_owner_,
-             m_->child_base_, m_->tree_table_.table_, m_->win_.cur_z_, false};
+             m_->child_base_, m_->row_base_, m_->tree_table_.table_, m_->win_.cur_z_, false};
         m_->tree_table_.table_ = {};
         m_->child_base_        = m_->children_cards_.child_depth_;
+        m_->row_base_          = m_->row_depth_;
         m_->window_faded_      = false;
         m_->cur_               = nullptr;
         m_->win_.cur_z_        = no_z;
@@ -591,6 +633,7 @@ static void resume_parent_window(context& ui) noexcept
     m.layout_            = n.layout;
     m.window_faded_      = n.faded;
     m.child_base_        = n.child_base;
+    m.row_base_          = n.row_base;
     m.tree_table_.table_ = n.table;
     m.win_.cur_z_        = n.cur_z;
     switch_run(ui, n.run_owner);

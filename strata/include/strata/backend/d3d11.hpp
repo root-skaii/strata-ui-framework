@@ -30,6 +30,8 @@ public:
 
     // uploads a rebuilt font atlas; then call context::release_font_pixels()
     [[nodiscard]] bool update_atlas(const font_atlas& atlas);
+    // uploads a dirty sub-rectangle of a dynamic font atlas (same dimensions)
+    [[nodiscard]] bool update_atlas_region(const font_atlas& atlas, atlas_region region);
 
     void render(const draw_data& data);
 

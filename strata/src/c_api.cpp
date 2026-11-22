@@ -94,6 +94,13 @@ int strata_begin_window(strata_context* ui, const char* title, float x, float y,
     return ctx(ui).begin_window(sv(title), {x, y}, {width, height}, static_cast<window_flags>(flags));
 }
 void strata_end_window(strata_context* ui) { ctx(ui).end_window(); }
+void strata_set_window_pos(strata_context* ui, const char* title, float x, float y) { ctx(ui).set_window_pos(sv(title), {x, y}); }
+void strata_set_window_size(strata_context* ui, const char* title, float width, float height) { ctx(ui).set_window_size(sv(title), {width, height}); }
+void strata_set_window_collapsed(strata_context* ui, const char* title, int collapsed) { ctx(ui).set_window_collapsed(sv(title), collapsed != 0); }
+void strata_focus_window(strata_context* ui, const char* title) { ctx(ui).focus_window(sv(title)); }
+
+int   strata_set_scale(strata_context* ui, float scale) { return ctx(ui).set_scale(scale).has_value() ? 1 : 0; }
+float strata_scale(const strata_context* ui) { return ui->ui.scale(); }
 
 void strata_text(strata_context* ui, const char* text) { ctx(ui).text(sv(text)); }
 void strata_text_wrapped(strata_context* ui, const char* text) { ctx(ui).text_wrapped(sv(text)); }
@@ -110,6 +117,37 @@ int strata_checkbox(strata_context* ui, const char* label, int* value)
     return changed;
 }
 
+int strata_toggle(strata_context* ui, const char* label, int* value)
+{
+    bool b = *value != 0;
+    const bool changed = ctx(ui).toggle(sv(label), b);
+    *value = b ? 1 : 0;
+    return changed;
+}
+
+int strata_radio_button(strata_context* ui, const char* label, int active)
+{
+    return ctx(ui).radio_button(sv(label), active != 0) ? 1 : 0;
+}
+
+int strata_segmented(strata_context* ui, const char* id, const char* const* items, int count, int* current)
+{
+    std::vector<std::string_view> list;
+    list.reserve(static_cast<std::size_t>(std::max(count, 0)));
+    for (int i = 0; i < count; ++i) { list.push_back(sv(items[i])); }
+    return ctx(ui).segmented(sv(id), item_list{list.data(), list.size()}, *current) ? 1 : 0;
+}
+
+int strata_splitter(strata_context* ui, const char* id, float* size, float min_size, float max_size, int vertical, float length)
+{
+    return ctx(ui).splitter(sv(id), *size, min_size, max_size, vertical != 0, length) ? 1 : 0;
+}
+
+int strata_collapsing_header(strata_context* ui, const char* label, int default_open)
+{
+    return ctx(ui).collapsing_header(sv(label), default_open != 0 ? tree_flags::default_open : tree_flags::none) ? 1 : 0;
+}
+
 int strata_slider_float(strata_context* ui, const char* label, float* value, float lo, float hi)
 {
     return ctx(ui).slider<float>(sv(label), *value, lo, hi);
@@ -121,6 +159,10 @@ int strata_slider_int(strata_context* ui, const char* label, int* value, int lo,
 int strata_drag_float(strata_context* ui, const char* label, float* value, float speed, float lo, float hi)
 {
     return ctx(ui).drag_float(sv(label), *value, speed, lo, hi);
+}
+int strata_drag_int(strata_context* ui, const char* label, int* value, float speed, int lo, int hi)
+{
+    return ctx(ui).drag_int(sv(label), *value, speed, lo, hi);
 }
 int strata_input_float(strata_context* ui, const char* label, float* value) { return ctx(ui).input_float(sv(label), *value); }
 int strata_input_int(strata_context* ui, const char* label, int* value) { return ctx(ui).input_int(sv(label), *value); }
@@ -148,10 +190,38 @@ int strata_color_edit(strata_context* ui, const char* label, strata_color* c)
 int strata_selectable(strata_context* ui, const char* label, int selected) { return ctx(ui).selectable(sv(label), selected != 0); }
 void strata_progress_bar(strata_context* ui, float fraction, const char* overlay) { ctx(ui).progress_bar(fraction, sv(overlay)); }
 
-void strata_separator(strata_context* ui) { ctx(ui).separator(); }
-void strata_spacing(strata_context* ui) { ctx(ui).spacing(); }
-void strata_same_line(strata_context* ui) { ctx(ui).same_line(); }
+void  strata_separator(strata_context* ui) { ctx(ui).separator(); }
+void  strata_separator_text(strata_context* ui, const char* label) { ctx(ui).separator(sv(label)); }
+void  strata_spacing(strata_context* ui) { ctx(ui).spacing(); }
+void  strata_same_line(strata_context* ui) { ctx(ui).same_line(); }
+void  strata_same_line_right(strata_context* ui, float width) { ctx(ui).same_line_right(width); }
+void  strata_set_next_item_width(strata_context* ui, float width) { ctx(ui).set_next_item_width(width); }
+float strata_content_width(const strata_context* ui) { return ui->ui.content_width(); }
+strata_vec2 strata_display_size(const strata_context* ui)
+{
+    const vec2 s = ui->ui.display_size();
+    return {s.x, s.y};
+}
+void strata_push_indent(strata_context* ui, float px) { ctx(ui).push_indent(px); }
+void strata_pop_indent(strata_context* ui) { ctx(ui).pop_indent(); }
+int  strata_begin_row(strata_context* ui, uint32_t columns, float gap) { return ctx(ui).begin_row(columns, gap) ? 1 : 0; }
+int  strata_begin_row_cols(strata_context* ui, const float* specs, uint32_t count, float gap)
+{
+    if (specs == nullptr || count == 0) { return 0; }
+    std::array<layout_col, 16> cols{};
+    const uint32_t n = std::min<uint32_t>(count, 16);
+    for (uint32_t i = 0; i < n; ++i) {
+        cols[i] = specs[i] > 0.0f ? col_fixed(specs[i]) : col_weight(specs[i] < 0.0f ? -specs[i] : 1.0f);
+    }
+    return ctx(ui).begin_row(std::span<const layout_col>{cols.data(), n}, gap) ? 1 : 0;
+}
+int  strata_row_next(strata_context* ui) { return ctx(ui).row_next() ? 1 : 0; }
+void strata_end_row(strata_context* ui) { ctx(ui).end_row(); }
+void strata_begin_disabled(strata_context* ui, int disabled) { ctx(ui).begin_disabled(disabled != 0); }
+void strata_end_disabled(strata_context* ui) { ctx(ui).end_disabled(); }
 void strata_tooltip(strata_context* ui, const char* text) { ctx(ui).tooltip(sv(text)); }
+int  strata_begin_tooltip(strata_context* ui, float width) { return ctx(ui).begin_tooltip(width) ? 1 : 0; }
+void strata_end_tooltip(strata_context* ui) { ctx(ui).end_tooltip(); }
 int  strata_item_hovered(const strata_context* ui) { return ui->ui.item_hovered(); }
 
 int  strata_tree_node(strata_context* ui, const char* label) { return ctx(ui).tree_node(sv(label)); }

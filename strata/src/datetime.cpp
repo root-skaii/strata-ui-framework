@@ -1,6 +1,10 @@
 #include "strata/datetime.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <ctime>
+#endif
 
 #include <array>
 #include <charconv>
@@ -32,17 +36,31 @@ void reset_clock() noexcept
 date today()
 {
     if (g_clock.on) { return g_clock.day; }
+#ifdef _WIN32
     SYSTEMTIME st{};
     ::GetLocalTime(&st);
     return {st.wYear, st.wMonth, st.wDay};
+#else
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    ::localtime_r(&now, &tm);
+    return {tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday};
+#endif
 }
 
 time_of_day now()
 {
     if (g_clock.on) { return g_clock.time; }
+#ifdef _WIN32
     SYSTEMTIME st{};
     ::GetLocalTime(&st);
     return {st.wHour, st.wMinute, st.wSecond};
+#else
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    ::localtime_r(&now, &tm);
+    return {tm.tm_hour, tm.tm_min, tm.tm_sec};
+#endif
 }
 
 std::string to_string(const date& d)

@@ -361,7 +361,9 @@ f64 context::time() const noexcept
 { return m_->time_; }
 
 void context::release_font_pixels() noexcept
-{ m_->font_.discard_pixels(); }
+{
+    if (!m_->font_.dynamic()) { m_->font_.discard_pixels(); }
+}
 
 id internal::current_seed(const context& ui) noexcept
 { return context_access::of(ui).ids_.current(); }

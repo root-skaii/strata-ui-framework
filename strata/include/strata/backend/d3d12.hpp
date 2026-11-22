@@ -60,6 +60,8 @@ public:
 
     // uploads a rebuilt font atlas; the gpu must be done with every frame using the old one. then release_font_pixels().
     [[nodiscard]] bool update_atlas(const font_atlas& atlas);
+    // stages a dirty sub-rectangle copy of a dynamic font atlas (same dimensions), recorded on the next render()
+    [[nodiscard]] bool update_atlas_region(const font_atlas& atlas, atlas_region region);
 
     // uploads a straight-alpha rgba8 image (tightly packed) and returns its id; 0 on failure or no free slot. staged,
     // copied at the start of the next render() before the draws.

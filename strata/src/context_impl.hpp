@@ -57,6 +57,9 @@ inline constexpr u32 max_overrides      = 32;
 inline constexpr u32 max_font_depth     = 8;
 inline constexpr u32 max_runs           = 256;
 inline constexpr u32 max_gutter_depth   = 8;  // right gutter stack (push_right_gutter)
+inline constexpr u32 max_indent_depth   = 16; // indent stack (push_indent)
+inline constexpr u32 max_row_depth      = 8;  // nested flex rows (begin_row)
+inline constexpr u32 max_row_cols       = 16; // columns per flex row
 inline constexpr u32 max_disabled_depth = 16;
 inline constexpr u32 measure_cache_size = 4096;
 inline constexpr u32 no_z               = 0xffffffffu;
@@ -118,6 +121,7 @@ struct context::impl {
     ui_strings    strings_;
     std::vector<internal::font_source> font_sources_;
     u32  max_atlas_size_{4096};
+    bool dynamic_glyphs_{false};
     f32  scale_{1.0f};
     u32  font_generation_{1};
 
@@ -159,6 +163,7 @@ struct context::impl {
         bool                  faded{};
         u32                   run_owner{};
         u32                   child_base{};
+        u32                   row_base{};
         internal::table_frame table{};
         u32                   cur_z{internal::no_z};
         bool                  dud{};
@@ -168,6 +173,20 @@ struct context::impl {
     u32 nest_depth_{};
     u32 nest_overflow_{}; // nested begins past max_window_nesting, each ignored along with its end_window
     u32 child_base_{};    // child regions below this belong to a suspended parent window
+    u32 row_base_{};      // flex rows below this belong to a suspended parent window
+
+    struct row_frame {
+        internal::layout_state               saved{};
+        f32                                  top{};
+        f32                                  max_bottom{};
+        f32                                  max_right{};
+        std::array<f32, internal::max_row_cols> col_x{};
+        std::array<f32, internal::max_row_cols> col_w{};
+        u32                                  col_count{};
+        u32                                  col_index{};
+    };
+    std::array<row_frame, internal::max_row_depth> row_stack_{};
+    u32                                            row_depth_{};
 
     internal::id_stack       ids_;
     internal::style_stack    style_stack_;
@@ -241,6 +260,16 @@ struct context::impl {
     // generic popups (open_popup): this frame's popup is only being measured (its size is kept per popup_level)
     bool gpopup_hidden_{};
 
+    // rich tooltips (begin_tooltip / end_tooltip): self-measured on first frame like drag previews
+    bool                   tooltip_open_{};
+    bool                   tooltip_hidden_{};
+    bool                   tooltip_saved_overlay_{};
+    u32                    tooltip_prev_owner_{internal::run_base};
+    internal::layout_state tooltip_saved_layout_{};
+    id                     tooltip_measured_key_{};
+    vec2                   tooltip_measured_size_{};
+    f32                    tooltip_fixed_w_{};
+
     internal::drag_drop_state dnd_;
     rect            last_item_rect_{};
 
@@ -309,6 +338,8 @@ struct context::impl {
     internal::nav_state nav_{};
     std::array<f32, internal::max_gutter_depth> gutter_stack_{};
     u32                               gutter_depth_{};
+    std::array<f32, internal::max_indent_depth> indent_stack_{};
+    u32                               indent_depth_{};
     u32                                disabled_depth_{};
     bool                               disabled_alpha_{};
     std::array<bool, internal::max_disabled_depth> disabled_stack_{};

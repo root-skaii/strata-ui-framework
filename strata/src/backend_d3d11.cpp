@@ -147,7 +147,9 @@ struct d3d11_renderer::impl {
     ComPtr<ID3D11RasterizerState>    raster;
     ComPtr<ID3D11DepthStencilState>  depth;
     ComPtr<ID3D11SamplerState>       sampler;
+    ComPtr<ID3D11Texture2D>          atlas_tex;
     ComPtr<ID3D11ShaderResourceView> atlas_srv;
+    UINT                             atlas_w{}, atlas_h{};
     ComPtr<ID3D11Buffer>             shape_buf;
     ComPtr<ID3D11ShaderResourceView> shape_srv;
     struct texture_slot {
@@ -565,16 +567,17 @@ bool d3d11_renderer::create(ID3D11Device* device, ID3D11DeviceContext* context, 
     td.ArraySize        = 1;
     td.Format           = DXGI_FORMAT_R8_UNORM;
     td.SampleDesc.Count = 1;
-    td.Usage            = D3D11_USAGE_IMMUTABLE;
+    td.Usage            = D3D11_USAGE_DEFAULT;
     td.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
     D3D11_SUBRESOURCE_DATA sub{};
     sub.pSysMem     = atlas.pixels().data();
     sub.SysMemPitch = atlas.width();
-    ComPtr<ID3D11Texture2D> tex;
-    if (FAILED(device->CreateTexture2D(&td, &sub, &tex)) ||
-        FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &p->atlas_srv))) {
+    if (FAILED(device->CreateTexture2D(&td, &sub, &p->atlas_tex)) ||
+        FAILED(device->CreateShaderResourceView(p->atlas_tex.Get(), nullptr, &p->atlas_srv))) {
         return false;
     }
+    p->atlas_w = atlas.width();
+    p->atlas_h = atlas.height();
 
     impl_ = std::move(p);
     return true;
@@ -592,7 +595,7 @@ bool d3d11_renderer::update_atlas(const font_atlas& atlas)
     td.ArraySize        = 1;
     td.Format           = DXGI_FORMAT_R8_UNORM;
     td.SampleDesc.Count = 1;
-    td.Usage            = D3D11_USAGE_IMMUTABLE;
+    td.Usage            = D3D11_USAGE_DEFAULT;
     td.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
     D3D11_SUBRESOURCE_DATA sub{};
     sub.pSysMem     = atlas.pixels().data();
@@ -603,7 +606,25 @@ bool d3d11_renderer::update_atlas(const font_atlas& atlas)
         FAILED(impl_->device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) {
         return false;
     }
+    impl_->atlas_tex = std::move(tex);
     impl_->atlas_srv = std::move(srv);
+    impl_->atlas_w   = atlas.width();
+    impl_->atlas_h   = atlas.height();
+    return true;
+}
+
+bool d3d11_renderer::update_atlas_region(const font_atlas& atlas, atlas_region r)
+{
+    if (impl_ == nullptr || impl_->atlas_tex == nullptr || r.empty() || atlas.pixels().empty()) {
+        return false;
+    }
+    if (atlas.width() != impl_->atlas_w || atlas.height() != impl_->atlas_h ||
+        r.x + r.w > impl_->atlas_w || r.y + r.h > impl_->atlas_h) {
+        return false;
+    }
+    const D3D11_BOX box{r.x, r.y, 0, r.x + r.w, r.y + r.h, 1};
+    const u8* first = atlas.pixels().data() + static_cast<std::size_t>(r.y) * impl_->atlas_w + r.x;
+    impl_->context->UpdateSubresource(impl_->atlas_tex.Get(), 0, &box, first, impl_->atlas_w, 0);
     return true;
 }
 

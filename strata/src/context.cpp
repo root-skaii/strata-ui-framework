@@ -117,6 +117,16 @@ gutter_scope::~gutter_scope()
     ctx_->pop_right_gutter();
 }
 
+row_scope::~row_scope()
+{
+    if (open_) { ctx_->end_row(); }
+}
+
+indent_scope::~indent_scope()
+{
+    ctx_->pop_indent();
+}
+
 disabled_scope::~disabled_scope()
 {
     ctx_->end_disabled();
@@ -130,15 +140,16 @@ std::expected<context, font_error> context::create(const context_config& cfg)
     fonts.insert(fonts.end(), cfg.extra_fonts.begin(), cfg.extra_fonts.end());
 
     const f32 scale = std::clamp(cfg.scale, 0.5f, 4.0f);
-    std::expected<font_atlas, font_error> atlas = (cfg.prebuilt != nullptr && cfg.prebuilt->scale() == scale && cfg.prebuilt->font_count() == fonts.size())
+    std::expected<font_atlas, font_error> atlas = (!cfg.dynamic_glyphs && cfg.prebuilt != nullptr && cfg.prebuilt->scale() == scale && cfg.prebuilt->font_count() == fonts.size())
                                                       ? std::expected<font_atlas, font_error>{*cfg.prebuilt}
-                                                      : font_atlas::build(fonts, cfg.max_atlas_size, scale);
+                                                      : font_atlas::build(fonts, cfg.max_atlas_size, scale, cfg.dynamic_glyphs);
     if (!atlas) {
         return std::unexpected{atlas.error()};
     }
     context ctx{std::move(*atlas), cfg.theme, cfg.limits, cfg.capacity};
     ctx.m_->scale_          = scale;
     ctx.m_->max_atlas_size_ = cfg.max_atlas_size;
+    ctx.m_->dynamic_glyphs_ = cfg.dynamic_glyphs;
     ctx.m_->diag_           = cfg.diagnostics;
     ctx.m_->strings_        = cfg.strings;
     ctx.m_->font_sources_.reserve(fonts.size());
@@ -176,7 +187,7 @@ static std::expected<void, font_error> build_font_atlas(context& ui, f32 scale)
         c.file = src.file;
         configs.push_back(c);
     }
-    auto atlas = font_atlas::build(configs, m.max_atlas_size_, scale);
+    auto atlas = font_atlas::build(configs, m.max_atlas_size_, scale, m.dynamic_glyphs_);
     if (!atlas) {
         return std::unexpected{atlas.error()};
     }
@@ -384,6 +395,8 @@ void context::begin_frame(const input_state& in)
     m_->hotkey_.hotkey_seen_   = false;
     m_->children_cards_.child_depth_   = 0;
     m_->child_base_     = 0;
+    m_->row_depth_      = 0;
+    m_->row_base_       = 0;
     m_->nest_depth_     = 0;
     m_->nest_overflow_  = 0;
     m_->children_cards_.card_depth_    = 0;
@@ -419,6 +432,7 @@ void context::begin_frame(const input_state& in)
     m_->overlap_taken_cur_  = 0;
     m_->next_open_          = 0;
     m_->gutter_depth_       = 0;
+    m_->indent_depth_       = 0;
     m_->nav_.scope          = 0;
     m_->nav_.active         = false;
     m_->nav_.items.clear();
@@ -438,6 +452,8 @@ void context::begin_frame(const input_state& in)
     }
     m_->popup_.popup_depth_    = 0;
     m_->popup_.popup_esc_used_ = false;
+    m_->tooltip_open_          = false;
+    m_->tooltip_hidden_        = false;
     m_->in_overlay_     = false;
     m_->swallow_press_  = m_->inspect_.swallow_prev && m_->input_.mouse_pressed_;
 
@@ -508,6 +524,10 @@ void context::end_frame()
 #endif
     };
     unbalanced(m_->popup_.popup_depth_, STRATA_DIAG("end_popup()"));
+    if (m_->tooltip_open_) {
+        unbalanced(1, STRATA_DIAG("end_tooltip()"));
+        end_tooltip();
+    }
     unbalanced(m_->menu_.menu_depth_, STRATA_DIAG("end_menu() / end_popup_menu()"));
     unbalanced(m_->modal_.modal_depth_, STRATA_DIAG("end_modal()"));
     unbalanced(m_->children_cards_.child_depth_, STRATA_DIAG("end_child()"));
@@ -517,6 +537,8 @@ void context::end_frame()
     unbalanced(m_->style_stack_.font_depth(), STRATA_DIAG("pop_font()"));
     unbalanced(m_->disabled_count_, STRATA_DIAG("end_disabled()"));
     unbalanced(m_->gutter_depth_, STRATA_DIAG("pop_right_gutter()"));
+    unbalanced(m_->indent_depth_, STRATA_DIAG("pop_indent()"));
+    unbalanced(m_->row_depth_, STRATA_DIAG("end_row()"));
     if (m_->cur_ != nullptr) {
         unbalanced(1, STRATA_DIAG("end_window()"));
         while (m_->cur_ != nullptr) { end_window(); } // (a nested window resumes its parent)
@@ -585,8 +607,14 @@ void context::end_frame()
     hash = internal::hash_bytes(&dd.display_size, sizeof(dd.display_size), hash);
     hash = internal::hash_bytes(&m_->style_.text_contrast, sizeof(m_->style_.text_contrast), hash); // (the shader applies it)
     if (hash == 0) { hash = 1; } // 0 is reserved for "no previous frame" (invalidate)
-    m_->frame_unchanged_ = m_->geometry_hash_ != 0 && m_->geometry_hash_ == hash;
-    m_->geometry_hash_   = hash;
+    // atlas growth mid-frame rescales UVs; force another frame so earlier quads pick up the new coordinates
+    if (m_->font_.resized()) {
+        m_->frame_unchanged_ = false;
+        m_->geometry_hash_   = 0;
+    } else {
+        m_->frame_unchanged_ = m_->geometry_hash_ != 0 && m_->geometry_hash_ == hash;
+        m_->geometry_hash_   = hash;
+    }
 
     // will a later frame differ untouched? animations short of their target, plus the clock-driven cases the values
     // cannot show: toasts expiring / fading and the tooltip delay. without them an idling host would freeze toasts
@@ -1086,8 +1114,8 @@ bool internal::item_culled(context& ui, const rect& r) noexcept
 {
     auto& m = context_access::of(ui);
     ++m.stats_cur_.items_submitted;
-    // off-screen measuring passes (popup / drag previews) need every item's size: no culling
-    if (m.dnd_.dd_hidden_ || m.gpopup_hidden_) {
+    // off-screen measuring passes (popup / drag / tooltip previews) need every item's size: no culling
+    if (m.dnd_.dd_hidden_ || m.gpopup_hidden_ || m.tooltip_hidden_) {
         return false;
     }
     constexpr f32 margin = 2.0f;
@@ -1494,6 +1522,124 @@ void context::pop_right_gutter() noexcept
     const f32 w = m_->gutter_stack_[--m_->gutter_depth_];
     m_->layout_.width  += w;
     m_->layout_.gutter -= w;
+}
+
+void context::push_indent(f32 px) noexcept
+{
+    if (m_->indent_depth_ >= max_indent_depth) {
+        report_limit(*this, STRATA_DIAG("push_indent nesting (max_indent_depth)"), max_indent_depth);
+        return;
+    }
+    const f32 step = std::clamp(px > 0.0f ? px : 16.0f, 0.0f, std::max(m_->layout_.width - 16.0f, 0.0f));
+    m_->indent_stack_[m_->indent_depth_++] = step;
+    m_->layout_.origin.x += step;
+    m_->layout_.width    -= step;
+}
+
+void context::pop_indent() noexcept
+{
+    if (m_->indent_depth_ == 0) {
+        return;
+    }
+    const f32 step = m_->indent_stack_[--m_->indent_depth_];
+    m_->layout_.origin.x -= step;
+    m_->layout_.width    += step;
+}
+
+bool context::begin_row(u32 columns, f32 gap) noexcept
+{
+    if (columns == 0) { return false; }
+    const u32 n = std::min(columns, max_row_cols);
+    std::array<layout_col, max_row_cols> equal{};
+    for (u32 i = 0; i < n; ++i) { equal[i] = col_weight(1.0f); }
+    return begin_row(std::span<const layout_col>{equal.data(), n}, gap);
+}
+
+bool context::begin_row(std::span<const layout_col> columns, f32 gap) noexcept
+{
+    if (m_->cur_ == nullptr || columns.empty()) {
+        return false;
+    }
+    if (m_->row_depth_ >= max_row_depth) {
+        report_limit(*this, STRATA_DIAG("flex row nesting (max_row_depth)"), max_row_depth);
+        return false;
+    }
+    const u32 count   = std::min<u32>(static_cast<u32>(columns.size()), max_row_cols);
+    const f32 spacing = gap >= 0.0f ? gap : m_->style_.item_spacing;
+    m_->layout_.same_line = false;
+    const f32 avail = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
+    m_->layout_.next_width = 0.0f;
+
+    f32 fixed_sum  = 0.0f;
+    f32 weight_sum = 0.0f;
+    for (u32 i = 0; i < count; ++i) {
+        if (columns[i].fixed > 0.0f) { fixed_sum += columns[i].fixed; }
+        else                         { weight_sum += columns[i].weight > 0.0f ? columns[i].weight : 1.0f; }
+    }
+    const f32 gaps       = count > 1 ? spacing * static_cast<f32>(count - 1) : 0.0f;
+    const f32 flex_avail = std::max(avail - gaps - fixed_sum, 0.0f);
+    const f32 top        = m_->layout_.first ? m_->layout_.origin.y
+                                             : m_->layout_.line_top + m_->layout_.line_h + m_->style_.item_spacing;
+
+    impl::row_frame& f = m_->row_stack_[m_->row_depth_++];
+    f.saved      = m_->layout_;
+    f.top        = top;
+    f.max_bottom = top;
+    f.col_count  = count;
+    f.col_index  = 0;
+
+    f32 x = m_->layout_.origin.x;
+    for (u32 i = 0; i < count; ++i) {
+        const f32 w = columns[i].fixed > 0.0f
+                          ? columns[i].fixed
+                          : (weight_sum > 0.0f ? flex_avail * ((columns[i].weight > 0.0f ? columns[i].weight : 1.0f) / weight_sum) : 0.0f);
+        f.col_x[i] = x;
+        f.col_w[i] = std::max(w, 1.0f);
+        x += f.col_w[i] + spacing;
+    }
+    f.max_right = x - spacing;
+
+    m_->layout_              = {};
+    m_->layout_.origin       = {f.col_x[0], f.top};
+    m_->layout_.width        = f.col_w[0];
+    m_->layout_.bound_bottom = f.saved.bound_bottom;
+    return true;
+}
+
+bool context::row_next() noexcept
+{
+    if (m_->row_depth_ <= m_->row_base_) {
+        return false;
+    }
+    impl::row_frame& f = m_->row_stack_[m_->row_depth_ - 1];
+    if (!m_->layout_.first) {
+        f.max_bottom = std::max(f.max_bottom, m_->layout_.bottom);
+        f.max_right  = std::max(f.max_right, m_->layout_.right);
+    }
+    if (f.col_index + 1 >= f.col_count) {
+        return false;
+    }
+    ++f.col_index;
+    m_->layout_              = {};
+    m_->layout_.origin       = {f.col_x[f.col_index], f.top};
+    m_->layout_.width        = f.col_w[f.col_index];
+    m_->layout_.bound_bottom = f.saved.bound_bottom;
+    return true;
+}
+
+void context::end_row() noexcept
+{
+    if (m_->row_depth_ <= m_->row_base_) {
+        return;
+    }
+    const impl::row_frame f = m_->row_stack_[--m_->row_depth_];
+    const f32 bottom = m_->layout_.first ? f.max_bottom : std::max(f.max_bottom, m_->layout_.bottom);
+    const f32 right  = m_->layout_.first ? f.max_right  : std::max(f.max_right, m_->layout_.right);
+    m_->layout_            = f.saved;
+    m_->layout_.same_line  = false;
+    if (bottom > f.top) {
+        (void)layout_place(*this, {std::max(right - f.saved.origin.x, 0.0f), bottom - f.top});
+    }
 }
 
 // a small square control laid into the right end of the row just submitted
@@ -2056,6 +2202,151 @@ void context::progress_bar(f32 fraction, std::string_view overlay)
     label_draw(*this, {r.min.x + (r.width() - tsize.x) * 0.5f, r.min.y + (r.height() - tsize.y) * 0.5f}, m_->style_.text, label, f);
 }
 
+bool context::radio_button(std::string_view label, bool active)
+{
+    if (m_->cur_ == nullptr) {
+        return false;
+    }
+    const font_id          f     = current_font();
+    const id               key   = widget_id(*this, label);
+    const std::string_view shown = visible_label(label);
+    const vec2             ts    = shown.empty() ? vec2{0.0f, m_->font_.line_height(f)} : label_size(*this, f, shown);
+    const f32              diam  = std::max(std::round(m_->font_.line_height(f) * 0.95f), 14.0f);
+    const f32              gap   = shown.empty() ? 0.0f : 8.0f;
+    const f32              h     = std::max(diam, ts.y) + 4.0f;
+    const rect             r     = layout_place(*this, {diam + gap + ts.x, h});
+
+    const interaction in   = interact(*this, key, r);
+    const press_anim  anim = button_anim(*this, key, in);
+    anim_slot&        sa   = anim_for(*this, key);
+    sa.toggle = approach(*this, sa.toggle, active ? 1.0f : 0.0f);
+
+    const vec2  center{r.min.x + diam * 0.5f, r.min.y + r.height() * 0.5f};
+    const f32   rad = diam * 0.5f;
+    const color ring_fill = lerp(m_->style_.widget_bg, m_->style_.widget_hover, anim.hover);
+    const color ring_col  = lerp(m_->style_.widget_border, m_->style_.accent, std::max(sa.toggle, anim.hover * 0.6f));
+    m_->dl_.circle_filled(center, rad, ring_fill);
+    m_->dl_.circle(center, rad, ring_col, std::max(m_->style_.border_width, 1.25f));
+    if (sa.toggle > 0.02f) {
+        m_->dl_.circle_filled(center, (rad - 3.5f) * sa.toggle, m_->style_.accent);
+    }
+    if (!shown.empty()) {
+        label_draw(*this, {r.min.x + diam + gap, r.min.y + (r.height() - ts.y) * 0.5f}, m_->style_.text, shown, f);
+    }
+    return in.pressed;
+}
+
+bool context::radio_button(std::string_view label, int& value, int option)
+{
+    const bool clicked = radio_button(label, value == option);
+    if (clicked && value != option) {
+        value = option;
+        return true;
+    }
+    return false;
+}
+
+bool context::segmented(std::string_view id_label, const item_list& items, int& current)
+{
+    if (m_->cur_ == nullptr || items.empty()) {
+        return false;
+    }
+    const font_id f = current_font();
+    const id      key = widget_id(*this, id_label);
+    const f32     w   = m_->layout_.next_width > 0.0f ? m_->layout_.next_width : m_->layout_.width;
+    m_->layout_.next_width = 0.0f;
+    const f32     h   = frame_height();
+    const rect    bar = layout_place(*this, {w, h});
+
+    shape_style outer;
+    outer.radius       = radii(m_->style_.rounding);
+    outer.fill_top     = darken(m_->style_.widget_bg, 0.22f);
+    outer.fill_bottom  = outer.fill_top;
+    outer.border       = m_->style_.widget_border;
+    outer.border_width = m_->style_.border_width;
+    m_->dl_.shape(bar, outer);
+
+    const std::size_t n     = items.size();
+    const f32         seg_w = bar.width() / static_cast<f32>(n);
+    bool changed = false;
+    push_id_value(*this, key);
+    for (std::size_t i = 0; i < n; ++i) {
+        const rect cell{{bar.min.x + seg_w * static_cast<f32>(i), bar.min.y},
+                        {i + 1 == n ? bar.max.x : bar.min.x + seg_w * static_cast<f32>(i + 1), bar.max.y}};
+        push_id(static_cast<u64>(i));
+        const id skey = current_seed(*this);
+        pop_id();
+        const interaction in = interact(*this, skey, cell);
+        const bool sel = static_cast<int>(i) == current;
+        if (in.pressed && !sel) {
+            current = static_cast<int>(i);
+            changed = true;
+        }
+        if (sel || in.hovered) {
+            const rect pill = cell.expanded(-2.0f);
+            shape_style bg;
+            bg.radius      = radii(std::max(m_->style_.rounding - 2.0f, 2.0f));
+            bg.fill_top    = sel ? m_->style_.accent : m_->style_.widget_hover.scaled_alpha(0.65f);
+            bg.fill_bottom = sel ? darken(m_->style_.accent, 0.12f) : bg.fill_top;
+            m_->dl_.shape(pill, bg);
+        }
+        const std::string_view label = items[i];
+        const vec2 ts = label_size(*this, f, label);
+        const color tc = sel ? m_->style_.text : (in.hovered ? m_->style_.text : m_->style_.text_dim);
+        label_draw(*this, {cell.min.x + (cell.width() - ts.x) * 0.5f, cell.min.y + (cell.height() - ts.y) * 0.5f}, tc, label, f);
+    }
+    pop_id();
+    return changed;
+}
+
+bool context::splitter(std::string_view id_label, f32& size, f32 min_size, f32 max_size, bool vertical, f32 length)
+{
+    if (m_->cur_ == nullptr) {
+        return false;
+    }
+    const id  key       = widget_id(*this, id_label);
+    constexpr f32 thick = 6.0f;
+    f32 span = length;
+    if (span <= 0.0f) {
+        if (vertical) {
+            const f32 next_y = m_->layout_.same_line && !m_->layout_.first ? m_->layout_.line_top : layout_next_y(*this);
+            span = m_->layout_.bound_bottom > next_y ? m_->layout_.bound_bottom - next_y : 120.0f;
+        } else {
+            span = m_->layout_.width;
+        }
+    }
+    span = std::max(span, 16.0f);
+    const rect r = layout_place(*this, vertical ? vec2{thick, span} : vec2{span, thick});
+
+    const interaction in = interact(*this, key, r.expanded(1.5f));
+    if (in.hovered || in.held) {
+        m_->cursor_ = vertical ? cursor_kind::resize_ew : cursor_kind::resize_ns;
+    }
+    bool changed = false;
+    if (in.held) {
+        const f32 delta = vertical ? m_->input_.mouse_delta_.x : m_->input_.mouse_delta_.y;
+        const f32 lo    = std::min(min_size, max_size);
+        const f32 hi    = std::max(min_size, max_size);
+        const f32 next  = std::clamp(size + delta, lo, hi);
+        if (next != size) {
+            size    = next;
+            changed = true;
+        }
+    }
+    const press_anim anim = button_anim(*this, key, in);
+    const color col = lerp(m_->style_.border, m_->style_.accent, in.held ? 1.0f : 0.75f * anim.hover);
+    const rect  bar = vertical ? rect{{r.min.x + 2.0f, r.min.y + 2.0f}, {r.max.x - 2.0f, r.max.y - 2.0f}}
+                               : rect{{r.min.x + 2.0f, r.min.y + 2.0f}, {r.max.x - 2.0f, r.max.y - 2.0f}};
+    m_->dl_.rect_filled(bar, col.scaled_alpha(in.held ? 0.95f : 0.45f + 0.45f * anim.hover));
+    return changed;
+}
+
+bool context::search_input(std::string_view label, std::string& query, std::string_view hint)
+{
+    const std::string_view ph = hint.empty() ? ui_str(m_->strings_.filter_hint, "type to filter") : hint;
+    return input_text(label, query, ph, input_flags::clear_button);
+}
+
 void context::separator()
 {
     if (m_->cur_ == nullptr) {
@@ -2063,6 +2354,30 @@ void context::separator()
     }
     const rect r = layout_place(*this, {m_->layout_.width, 1.0f});
     m_->dl_.rect_filled(r, m_->style_.border);
+}
+
+void context::separator(std::string_view label)
+{
+    if (m_->cur_ == nullptr) {
+        return;
+    }
+    if (label.empty()) {
+        separator();
+        return;
+    }
+    const font_id f  = current_font();
+    const vec2    ts = label_size(*this, f, label);
+    const rect    r  = layout_place(*this, {m_->layout_.width, ts.y});
+    const f32     y  = std::floor(r.min.y + r.height() * 0.5f);
+    constexpr f32 lead = 12.0f;
+    constexpr f32 pad  = 6.0f;
+    m_->dl_.rect_filled({{r.min.x, y}, {std::min(r.min.x + lead, r.max.x), y + 1.0f}}, m_->style_.border);
+    const f32 tx = r.min.x + lead + pad;
+    label_draw(*this, {tx, r.min.y}, m_->style_.text_dim, label, f);
+    const f32 rx = tx + ts.x + pad;
+    if (rx < r.max.x) {
+        m_->dl_.rect_filled({{rx, y}, {r.max.x, y + 1.0f}}, m_->style_.border);
+    }
 }
 
 void context::spacing(f32 height)

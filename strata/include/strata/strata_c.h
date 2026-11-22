@@ -87,6 +87,14 @@ int strata_cursor(const strata_context* ui);
 /* false while collapsed. strata_end_window must follow every strata_begin_window, whatever it returned */
 int  strata_begin_window(strata_context* ui, const char* title, float x, float y, float width, float height, uint32_t flags);
 void strata_end_window(strata_context* ui);
+void strata_set_window_pos(strata_context* ui, const char* title, float x, float y);
+void strata_set_window_size(strata_context* ui, const char* title, float width, float height);
+void strata_set_window_collapsed(strata_context* ui, const char* title, int collapsed);
+void strata_focus_window(strata_context* ui, const char* title);
+
+/* ui scale (1.0 = 100%). returns 1 on success (rebuilds the font atlas) */
+int   strata_set_scale(strata_context* ui, float scale);
+float strata_scale(const strata_context* ui);
 
 void strata_text(strata_context* ui, const char* text);
 void strata_text_wrapped(strata_context* ui, const char* text);
@@ -96,9 +104,15 @@ void strata_text_colored(strata_context* ui, strata_color color, const char* tex
 /* these return 1 when clicked / changed */
 int strata_button(strata_context* ui, const char* label);
 int strata_checkbox(strata_context* ui, const char* label, int* value);
+int strata_toggle(strata_context* ui, const char* label, int* value);
+int strata_radio_button(strata_context* ui, const char* label, int active);
+int strata_segmented(strata_context* ui, const char* id, const char* const* items, int count, int* current);
+int strata_splitter(strata_context* ui, const char* id, float* size, float min_size, float max_size, int vertical, float length);
+int strata_collapsing_header(strata_context* ui, const char* label, int default_open);
 int strata_slider_float(strata_context* ui, const char* label, float* value, float lo, float hi);
 int strata_slider_int(strata_context* ui, const char* label, int* value, int lo, int hi);
 int strata_drag_float(strata_context* ui, const char* label, float* value, float speed, float lo, float hi);
+int strata_drag_int(strata_context* ui, const char* label, int* value, float speed, int lo, int hi);
 int strata_input_float(strata_context* ui, const char* label, float* value);
 int strata_input_int(strata_context* ui, const char* label, int* value);
 /* edits `buffer` in place (capacity includes the terminator) */
@@ -108,11 +122,28 @@ int strata_color_edit(strata_context* ui, const char* label, strata_color* color
 int strata_selectable(strata_context* ui, const char* label, int selected);
 void strata_progress_bar(strata_context* ui, float fraction, const char* overlay);
 
-void strata_separator(strata_context* ui);
-void strata_spacing(strata_context* ui);
-void strata_same_line(strata_context* ui);
-void strata_tooltip(strata_context* ui, const char* text);
-int  strata_item_hovered(const strata_context* ui);
+void  strata_separator(strata_context* ui);
+void  strata_separator_text(strata_context* ui, const char* label);
+void  strata_spacing(strata_context* ui);
+void  strata_same_line(strata_context* ui);
+void  strata_same_line_right(strata_context* ui, float width);
+void  strata_set_next_item_width(strata_context* ui, float width);
+float strata_content_width(const strata_context* ui);
+strata_vec2 strata_display_size(const strata_context* ui);
+void  strata_push_indent(strata_context* ui, float px);
+void  strata_pop_indent(strata_context* ui);
+/* flex rows: strata_end_row follows a 1 from strata_begin_row*. in `specs`: > 0 = fixed px, < 0 = weight (-v), 0 = weight 1 */
+int   strata_begin_row(strata_context* ui, uint32_t columns, float gap);
+int   strata_begin_row_cols(strata_context* ui, const float* specs, uint32_t count, float gap);
+int   strata_row_next(strata_context* ui);
+void  strata_end_row(strata_context* ui);
+void  strata_begin_disabled(strata_context* ui, int disabled);
+void  strata_end_disabled(strata_context* ui);
+void  strata_tooltip(strata_context* ui, const char* text);
+/* rich tooltip: call strata_end_tooltip when strata_begin_tooltip returns 1. width <= 0 fits content */
+int   strata_begin_tooltip(strata_context* ui, float width);
+void  strata_end_tooltip(strata_context* ui);
+int   strata_item_hovered(const strata_context* ui);
 
 /* when this returns 1, strata_tree_pop must follow */
 int  strata_tree_node(strata_context* ui, const char* label);

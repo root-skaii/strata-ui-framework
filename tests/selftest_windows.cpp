@@ -1008,6 +1008,81 @@ void test_click_through_windows()
     CHECK(!hud_clicked);
 }
 
+void test_layout_and_window_qol()
+{
+    std::fprintf(stderr, "[flex rows, indent, separator label, window control]\n");
+    harness h;
+    rect c0{}, c1{}, c2{}, after_row{}, indented{}, plain{};
+    f32  w0{}, w1{}, w2{}, w_plain{}, w_indented{};
+    const auto build = [&] {
+        if (auto w = h.ui.window("qol", {40, 40}, {400, 360}, window_flags::no_title_bar | window_flags::no_move)) {
+            w_plain = h.ui.content_width();
+            h.ui.button("top");
+            plain = h.ui.item_rect();
+
+            h.ui.separator("Section");
+
+            {
+                auto ind = h.ui.indent(24.0f);
+                w_indented = h.ui.content_width();
+                h.ui.button("indented");
+                indented = h.ui.item_rect();
+            }
+
+            if (auto r = h.ui.row({col_fixed(80.0f), col_weight(1.0f), col_fixed(60.0f)}, 10.0f)) {
+                w0 = h.ui.content_width();
+                h.ui.button("a");
+                h.ui.button("a2"); // taller first column
+                c0 = h.ui.item_rect();
+                CHECK(h.ui.row_next());
+                w1 = h.ui.content_width();
+                h.ui.button("b");
+                c1 = h.ui.item_rect();
+                CHECK(h.ui.row_next());
+                w2 = h.ui.content_width();
+                h.ui.button("c");
+                c2 = h.ui.item_rect();
+                CHECK(!h.ui.row_next());
+            }
+            h.ui.button("below");
+            after_row = h.ui.item_rect();
+        }
+    };
+    h.frames(build, 2);
+
+    // indent shifts x right and narrows available width
+    CHECK(near_eq(indented.min.x - plain.min.x, 24.0f, 0.5f));
+    CHECK(near_eq(w_plain - w_indented, 24.0f, 0.5f));
+
+    // flex row: exact fixed widths, proportional remainder, and outer layout advances past tallest column
+    CHECK(near_eq(w0, 80.0f, 0.5f));
+    CHECK(near_eq(w2, 60.0f, 0.5f));
+    CHECK(near_eq(w1, w_plain - 80.0f - 60.0f - 20.0f, 0.5f));
+    CHECK(c1.min.x > c0.max.x && c2.min.x > c1.max.x);
+    CHECK(after_row.min.y > c0.max.y);
+
+    // programmatic window control
+    h.ui.set_window_pos("qol", {120.0f, 90.0f});
+    h.ui.set_window_size("qol", {500.0f, 300.0f});
+    h.frames(build, 1);
+    const rect moved = h.ui.window_rect("qol");
+    CHECK(near_eq(moved.min.x, 120.0f, 0.5f) && near_eq(moved.min.y, 90.0f, 0.5f));
+    CHECK(near_eq(moved.width(), 500.0f, 0.5f) && near_eq(moved.height(), 300.0f, 0.5f));
+
+    // collapsible window: collapse and restore from code
+    const auto build_col = [&] {
+        if (auto w = h.ui.window("panel", {20, 20}, {260, 180})) { h.ui.text("hi"); }
+    };
+    h.frames(build_col, 2);
+    CHECK(!h.ui.window_collapsed("panel"));
+    h.ui.set_window_collapsed("panel", true);
+    h.frames(build_col, 1);
+    CHECK(h.ui.window_collapsed("panel"));
+    h.ui.set_window_collapsed("panel", false);
+    h.frames(build_col, 1);
+    CHECK(!h.ui.window_collapsed("panel"));
+}
+
 } // namespace
 
 void run_windows_tests()
@@ -1025,4 +1100,5 @@ void run_windows_tests()
     test_scale();
     test_layers_and_passive_windows();
     test_click_through_windows();
+    test_layout_and_window_qol();
 }

@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -66,6 +67,19 @@ inline constexpr codepoint_range math_alphanumeric{0x1d400, 0x1d7ff};
 inline constexpr std::array default_set{latin, greek, cyrillic, punctuation, currency};
 } // namespace glyph_ranges
 
+// which rasteriser font_atlas::build uses. `native` uses GDI on Windows and the built-in TrueType rasteriser
+// elsewhere; `truetype` forces the portable built-in TrueType rasteriser on all platforms (requires `file` or `data`).
+enum class font_rasterizer : u8 {
+    native,
+    truetype,
+};
+
+// pixel rectangle inside the atlas bitmap that changed since the last clear_dirty()
+struct atlas_region {
+    u32 x{}, y{}, w{}, h{};
+    [[nodiscard]] constexpr bool empty() const noexcept { return w == 0 || h == 0; }
+};
+
 struct font_config {
     // installed font family; ignored when `file` or `data` is set.
     std::string_view face = "Segoe UI";
@@ -74,8 +88,9 @@ struct font_config {
     // or the bytes in memory; must outlive build()
     std::span<const u8> data{};
 
-    f32  pixel_height = 14.0f; // logical pixels (baked at size * ui scale)
-    bool bold         = false;
+    f32             pixel_height = 14.0f; // logical pixels (baked at size * ui scale)
+    bool            bold         = false;
+    font_rasterizer rasterizer   = font_rasterizer::native;
     // moves every glyph of this font down (+) or up (-) by this many logical pixels, to line a font up with another one
     // whose ink sits higher or lower in its line box (an icon font next to a pixel font)
     f32  y_offset     = 0.0f;
@@ -127,14 +142,27 @@ public:
     font_atlas& operator=(font_atlas&&) noexcept = default;
 
     // the atlas grows from 256x256 up to `max_atlas_size` (power of two, <= 16384).
-    // `scale` multiplies every font's pixel height (dpi scaling)
+    // `scale` multiplies every font's pixel height (dpi scaling).
+    // `dynamic`: keep live font handles and shelf-packer state so unbaked code points rasterise on demand.
     [[nodiscard]] static std::expected<font_atlas, font_error> build(std::span<const font_config> fonts,
-                                                                      u32 max_atlas_size = 4096, f32 scale = 1.0f);
+                                                                      u32 max_atlas_size = 4096, f32 scale = 1.0f,
+                                                                      bool dynamic = false);
     [[nodiscard]] static std::expected<font_atlas, font_error> build(const font_config& font = {},
-                                                                      u32 max_atlas_size = 4096, f32 scale = 1.0f)
+                                                                      u32 max_atlas_size = 4096, f32 scale = 1.0f,
+                                                                      bool dynamic = false)
     {
-        return build(std::span<const font_config>{&font, 1}, max_atlas_size, scale);
+        return build(std::span<const font_config>{&font, 1}, max_atlas_size, scale, dynamic);
     }
+
+    // on-demand baking (requires build(..., dynamic = true)): rasterises `cp` (or every code point in `utf8`) into the
+    // atlas if not already present. returns true when new pixels were added (see dirty() / dirty_region() / resized()).
+    bool bake_glyph(font_id f, char32_t cp) const;
+    bool bake_text(font_id f, std::string_view utf8) const;
+    [[nodiscard]] bool         dynamic() const noexcept { return dyn_ != nullptr; }
+    [[nodiscard]] bool         dirty() const noexcept;
+    [[nodiscard]] bool         resized() const noexcept;
+    [[nodiscard]] atlas_region dirty_region() const noexcept;
+    void                       clear_dirty() const noexcept;
 
     // the whole baked atlas (glyph tables, kerning, bitmap) as bytes, so a host can cache a slow build() on disk. needs the
     // pixels (not yet discarded). load() takes only what the same build of this library wrote: anything else is nullopt
@@ -157,7 +185,7 @@ public:
                 return g.present ? g : fd.glyphs[fd.fallback];
             }
         }
-        return lookup_slow(fd, cp);
+        return lookup_slow(f, cp);
     }
     [[nodiscard]] const glyph& find(char32_t cp) const noexcept { return find(0, cp); }
     // the font really has this glyph (find() falls back otherwise)
@@ -217,6 +245,11 @@ private:
         f32 amount{};
     };
 
+    struct dyn_entry {
+        char32_t cp{};
+        glyph    g{};
+    };
+
     struct font_data {
         std::vector<range_entry> ranges; // sorted, disjoint
         std::vector<glyph>       glyphs;
@@ -224,23 +257,29 @@ private:
         // ascii kerning pairs [left * 128 + right] in whole pixels; kern_ask = look in `kern`.
         // filled when `kern` is not empty
         std::vector<std::int8_t> kern_ascii;
+        // glyphs baked on demand after build() (sorted by cp)
+        mutable std::vector<dyn_entry> dyn_glyphs;
         std::size_t              fallback{};
         f32                      line_height{};
         f32                      ascent{};
     };
 
+    struct dynamic_state;
+
     static constexpr std::int8_t kern_ask = -128;
 
-    [[nodiscard]] static const glyph& lookup_slow(const font_data& fd, char32_t cp) noexcept;
-    [[nodiscard]] static f32          kerning_slow(const font_data& fd, u32 key) noexcept;
+    [[nodiscard]] const glyph& lookup_slow(font_id f, char32_t cp) const noexcept;
+    [[nodiscard]] static f32   kerning_slow(const font_data& fd, u32 key) noexcept;
+    bool                       grow_atlas(u32 min_w, u32 min_h) const;
 
-    std::vector<font_data> fonts_;
-    std::vector<u8>        pixels_;
-    std::array<u16, 2>     white_uv_{};
-    u32                    width_{};
-    u32                    height_{};
-    f32                    scale_{1.0f};
-    f32                    inv_scale_{1.0f};
+    mutable std::vector<font_data> fonts_;
+    mutable std::vector<u8>        pixels_;
+    mutable std::array<u16, 2>     white_uv_{};
+    mutable u32                    width_{};
+    mutable u32                    height_{};
+    f32                            scale_{1.0f};
+    f32                            inv_scale_{1.0f};
+    std::shared_ptr<dynamic_state> dyn_;
 };
 
 } // namespace strata

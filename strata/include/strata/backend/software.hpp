@@ -36,6 +36,8 @@ public:
 
     // copies a rebuilt font atlas; then call context::release_font_pixels()
     [[nodiscard]] bool update_atlas(const font_atlas& atlas);
+    // copies a dirty sub-rectangle of a dynamic font atlas (same dimensions)
+    [[nodiscard]] bool update_atlas_region(const font_atlas& atlas, atlas_region region);
 
     // sizes the target, cleared to transparent. render() does this itself when draw_data::display_size differs
     void resize(u32 width, u32 height);

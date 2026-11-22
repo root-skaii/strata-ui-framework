@@ -15,7 +15,7 @@ inline constexpr std::size_t vmem_chunk = 64 * 1024;
 
 [[nodiscard]] void* vmem_reserve(std::size_t bytes) noexcept;
 [[nodiscard]] bool  vmem_commit(void* address, std::size_t bytes) noexcept;
-void                vmem_release(void* base) noexcept;
+void                vmem_release(void* base, std::size_t bytes) noexcept;
 // zeroes memory in a way the optimiser cannot drop
 void                secure_wipe(void* p, std::size_t bytes) noexcept;
 } // namespace detail
@@ -119,7 +119,7 @@ private:
     {
         if (base_ != nullptr) {
             detail::secure_wipe(base_, committed_);
-            detail::vmem_release(base_);
+            detail::vmem_release(base_, reserved_);
         }
     }
 
