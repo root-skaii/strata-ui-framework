@@ -76,10 +76,13 @@ int strata_cursor(const strata_context* ui);
 /* ---- widgets -------------------------------------------------------------------------------------------------- */
 
 /* bit values of strata::window_flags */
-#define STRATA_WINDOW_RESIZABLE    1
-#define STRATA_WINDOW_NO_TITLE_BAR 2
-#define STRATA_WINDOW_NO_COLLAPSE  4
-#define STRATA_WINDOW_NO_MOVE      8
+#define STRATA_WINDOW_RESIZABLE     1
+#define STRATA_WINDOW_NO_TITLE_BAR  2
+#define STRATA_WINDOW_NO_COLLAPSE   4
+#define STRATA_WINDOW_NO_MOVE       8
+#define STRATA_WINDOW_NO_BACKGROUND 16
+#define STRATA_WINDOW_NO_INPUTS     256
+#define STRATA_WINDOW_CLICK_THROUGH 2048
 
 /* false while collapsed. strata_end_window must follow every strata_begin_window, whatever it returned */
 int  strata_begin_window(strata_context* ui, const char* title, float x, float y, float width, float height, uint32_t flags);

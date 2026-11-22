@@ -34,3 +34,5 @@ tests/fuzz/corpus/
 
 CLAUDE.md
 .claude/skills/run/
+GEMINI.md
+.agents/

@@ -36,6 +36,8 @@ draw_list::draw_list(draw_list_limits limits)
     , commands_{limits.max_commands}
     , shapes_{limits.max_shapes}
     , reorder_scratch_{limits.max_commands}
+    , cmd_meta_{limits.max_commands}
+    , reorder_meta_scratch_{limits.max_commands}
 {}
 
 void draw_list::begin(vec2 display_size, const font_atlas& atlas, f32 scale)
@@ -44,6 +46,7 @@ void draw_list::begin(vec2 display_size, const font_atlas& atlas, f32 scale)
     indices_.clear();
     commands_.clear();
     shapes_.clear();
+    cmd_meta_.clear();
     overflow_     = false;
     force_new_command_ = false;
     texture_      = 0;
@@ -138,6 +141,14 @@ draw_data draw_list::data() const noexcept
     return {vertices_.view(), indices_.view(), commands_.view(), shapes_.view(), display_size_};
 }
 
+rect draw_list::command_bounds(u32 index) const noexcept
+{
+    if (index >= cmd_meta_.size() || !cmd_meta_.data()[index].has_bounds) {
+        return {};
+    }
+    return cmd_meta_.data()[index].bounds;
+}
+
 bool draw_list::reserve(u32 vertex_count, u32 index_count, prim& out) noexcept
 {
     // a primitive too big for one command's 16-bit indices: input-sized callers chunk themselves, so a new caller
@@ -158,7 +169,14 @@ bool draw_list::reserve(u32 vertex_count, u32 index_count, prim& out) noexcept
             overflow_ = true;
             return false;
         }
-        *cmd = {phys_clip_, static_cast<u32>(indices_.size()), 0, static_cast<u32>(vertices_.size()), texture_, blur_};
+        cmd_meta* meta = cmd_meta_.grow(1);
+        if (meta == nullptr) {
+            commands_.shrink(1);
+            overflow_ = true;
+            return false;
+        }
+        *cmd  = {phys_clip_, static_cast<u32>(indices_.size()), 0, static_cast<u32>(vertices_.size()), texture_, blur_};
+        *meta = {};
         force_new_command_ = false;
     }
 
@@ -176,6 +194,7 @@ bool draw_list::reserve(u32 vertex_count, u32 index_count, prim& out) noexcept
 
     out = {v, i, static_cast<u32>(vertices_.size()) - vertex_count - commands_.back().vtx_offset};
     commands_.back().idx_count += index_count;
+    cmd_meta_.back().vtx_count += vertex_count;
     return true;
 }
 
@@ -197,6 +216,7 @@ void draw_list::add_quad(const rect& r, color tl, color tr, color br, color bl) 
     p.v[1] = {{b.x, a.y}, white_u_, white_v_, fade(tr)};
     p.v[2] = {b, white_u_, white_v_, fade(br)};
     p.v[3] = {{a.x, b.y}, white_u_, white_v_, fade(bl)};
+    note_bounds(a, b);
 
     constexpr u32 quad[6] = {0, 1, 2, 0, 2, 3};
     for (u32 k = 0; k < 6; ++k) {
@@ -219,6 +239,7 @@ bool draw_list::emit_quad_for(const rect& bounds, u32 index, color vertex_color)
     p.v[1] = {{b.x, a.y}, lo, hi, vertex_color};
     p.v[2] = {b, lo, hi, vertex_color};
     p.v[3] = {{a.x, b.y}, lo, hi, vertex_color};
+    note_bounds(a, b);
 
     constexpr u32 quad[6] = {0, 1, 2, 0, 2, 3};
     for (u32 k = 0; k < 6; ++k) {
@@ -379,13 +400,18 @@ void draw_list::reorder_commands(std::span<const command_range> order)
     if (sum != total || total == 0) { return; }
 
     reorder_scratch_.clear();
-    draw_cmd* out = reorder_scratch_.grow(total);
-    if (out == nullptr) { return; }
+    reorder_meta_scratch_.clear();
+    draw_cmd* out  = reorder_scratch_.grow(total);
+    cmd_meta* mout = reorder_meta_scratch_.grow(total);
+    if (out == nullptr || mout == nullptr) { return; }
     for (const command_range& r : order) {
         std::copy_n(commands_.data() + r.first, r.count, out);
-        out += r.count;
+        std::copy_n(cmd_meta_.data() + r.first, r.count, mout);
+        out  += r.count;
+        mout += r.count;
     }
     std::copy_n(reorder_scratch_.data(), total, commands_.data());
+    std::copy_n(reorder_meta_scratch_.data(), total, cmd_meta_.data());
 }
 
 // a command whose geometry lies inside both its own clip and the previous command's draws the same under either, so
@@ -397,41 +423,47 @@ void draw_list::merge_commands(u32* barrier) noexcept
     if (n < 2) { return; }
     const u32 fence = barrier != nullptr ? *barrier : ~0u; // nothing is joined across this command index
     u32       moved = ~0u;                                  // ... which then sits at this index
-    draw_cmd*     cmds = commands_.data();
-    index_t*      idx  = indices_.data();
-    const vertex* vtx  = vertices_.data();
+    draw_cmd* cmds = commands_.data();
+    cmd_meta* meta = cmd_meta_.data();
+    index_t*  idx  = indices_.data();
     const auto inside = [](const rect& outer, const rect& r) {
         return r.min.x >= outer.min.x && r.min.y >= outer.min.y && r.max.x <= outer.max.x && r.max.y <= outer.max.y;
     };
     u32 out = 0;
     for (u32 i = 1; i < n; ++i) {
-        draw_cmd&       a = cmds[out];
-        const draw_cmd& b = cmds[i];
+        draw_cmd&       a  = cmds[out];
+        cmd_meta&       am = meta[out];
+        const draw_cmd& b  = cmds[i];
+        const cmd_meta& bm = meta[i];
         bool join = i != fence && a.blur == 0.0f && b.blur == 0.0f && a.texture == b.texture &&
                     b.idx_offset == a.idx_offset + a.idx_count && b.vtx_offset >= a.vtx_offset;
         if (join && b.idx_count > 0) {
             const u32 shift = b.vtx_offset - a.vtx_offset;
-            u32  top = 0;
-            rect bb{vtx[b.vtx_offset + idx[b.idx_offset]].pos, vtx[b.vtx_offset + idx[b.idx_offset]].pos};
-            for (u32 k = 0; k < b.idx_count; ++k) {
-                const u32  ix = idx[b.idx_offset + k];
-                const vec2 p  = vtx[b.vtx_offset + ix].pos;
-                top = std::max(top, ix);
-                bb  = {{std::min(bb.min.x, p.x), std::min(bb.min.y, p.y)}, {std::max(bb.max.x, p.x), std::max(bb.max.y, p.y)}};
-            }
-            join = shift + top < max_command_vertices && inside(a.clip, bb) && inside(b.clip, bb);
+            join = bm.has_bounds && shift + bm.vtx_count <= max_command_vertices && inside(a.clip, bm.bounds) && inside(b.clip, bm.bounds);
             if (join && shift != 0) {
                 for (u32 k = 0; k < b.idx_count; ++k) { idx[b.idx_offset + k] = static_cast<index_t>(idx[b.idx_offset + k] + shift); }
             }
         }
         if (join) {
             a.idx_count += b.idx_count;
+            if (bm.has_bounds) {
+                if (!am.has_bounds) {
+                    am.bounds     = bm.bounds;
+                    am.has_bounds = true;
+                } else {
+                    am.bounds.min = {std::min(am.bounds.min.x, bm.bounds.min.x), std::min(am.bounds.min.y, bm.bounds.min.y)};
+                    am.bounds.max = {std::max(am.bounds.max.x, bm.bounds.max.x), std::max(am.bounds.max.y, bm.bounds.max.y)};
+                }
+                am.vtx_count = std::max(am.vtx_count, (b.vtx_offset - a.vtx_offset) + bm.vtx_count);
+            }
         } else {
             cmds[++out] = b;
+            meta[out]   = bm;
             if (i == fence) { moved = out; }
         }
     }
     commands_.shrink(n - (out + 1));
+    cmd_meta_.shrink(n - (out + 1));
     if (barrier != nullptr) { *barrier = moved != ~0u ? moved : static_cast<u32>(commands_.size()); } // (no command at the fence: it is the end)
 }
 
@@ -467,6 +499,8 @@ void draw_list::fill_convex_aa(std::span<const vec2> logical_pts, color c) noexc
 
     c = fade(c);
     const color fringe = c.scaled_alpha(0.0f);
+    vec2 lo{1.0e9f, 1.0e9f};
+    vec2 hi{-1.0e9f, -1.0e9f};
     for (u32 i = 0; i < n; ++i) {
         const vec2 n_prev = normals[(i + n - 1) % n];
         const vec2 n_next = normals[i];
@@ -476,9 +510,14 @@ void draw_list::fill_convex_aa(std::span<const vec2> logical_pts, color c) noexc
             dm = dm * std::min(1.0f / len2, 100.0f);
         }
         dm = dm * 0.5f; // half a pixel each way => one pixel wide fringe
-        p.v[2 * i]     = {pts[i] - dm, white_u_, white_v_, c};
-        p.v[2 * i + 1] = {pts[i] + dm, white_u_, white_v_, fringe};
+        const vec2 vi = pts[i] - dm;
+        const vec2 vo = pts[i] + dm;
+        p.v[2 * i]     = {vi, white_u_, white_v_, c};
+        p.v[2 * i + 1] = {vo, white_u_, white_v_, fringe};
+        lo = {std::min({lo.x, vi.x, vo.x}), std::min({lo.y, vi.y, vo.y})};
+        hi = {std::max({hi.x, vi.x, vo.x}), std::max({hi.y, vi.y, vo.y})};
     }
+    note_bounds(lo, hi);
 
     u32 k = 0;
     for (u32 i = 2; i < n; ++i) {
@@ -614,11 +653,16 @@ void draw_list::area_fill(std::span<const vec2> top, f32 base_y, color top_col, 
         if (!reserve(2 * n, 6 * (n - 1), p)) {
             return;
         }
+        vec2 alo{1.0e9f, by};
+        vec2 ahi{-1.0e9f, by};
         for (u32 i = 0; i < n; ++i) {
             const vec2 q = top[first + i] * scale_;
             p.v[2 * i]     = {q, white_u_, white_v_, ct};
             p.v[2 * i + 1] = {{q.x, by}, white_u_, white_v_, cb};
+            alo = {std::min(alo.x, q.x), std::min(alo.y, q.y)};
+            ahi = {std::max(ahi.x, q.x), std::max(ahi.y, q.y)};
         }
+        note_bounds(alo, ahi);
         for (u32 i = 0; i + 1 < n; ++i) {
             const u32 a = p.base + 2 * i;
             index_t* idx = p.i + 6 * i;
@@ -708,16 +752,23 @@ void draw_list::polyline(std::span<const vec2> points, color col, f32 thickness,
         if (!reserve(4 * count, 18 * (count - 1), p)) {
             return;
         }
+        vec2 rlo{1.0e9f, 1.0e9f};
+        vec2 rhi{-1.0e9f, -1.0e9f};
         for (u32 i = 0; i < count; ++i) {
             const u32  at  = (first + i) % n;
             const vec2 m   = mitre(at);
             const vec2 pos = poly_pts_[at];
+            const vec2 p0  = pos - m * outer;
+            const vec2 p3  = pos + m * outer;
             vertex* v = p.v + 4 * i;
-            v[0] = {pos - m * outer, white_u_, white_v_, clear};
+            v[0] = {p0, white_u_, white_v_, clear};
             v[1] = {pos - m * inner, white_u_, white_v_, solid};
             v[2] = {pos + m * inner, white_u_, white_v_, solid};
-            v[3] = {pos + m * outer, white_u_, white_v_, clear};
+            v[3] = {p3, white_u_, white_v_, clear};
+            rlo = {std::min({rlo.x, p0.x, p3.x}), std::min({rlo.y, p0.y, p3.y})};
+            rhi = {std::max({rhi.x, p0.x, p3.x}), std::max({rhi.y, p0.y, p3.y})};
         }
+        note_bounds(rlo, rhi);
         u32 k = 0;
         for (u32 s = 0; s + 1 < count; ++s) {
             const u32 a = p.base + 4 * s;
@@ -873,18 +924,24 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
     u32  cap_i = 0; // ... and indices
     u32  nv    = 0; // ... and what has been written into it
     u32  ni    = 0;
+    vec2 clo{1.0e9f, 1.0e9f};
+    vec2 chi{-1.0e9f, -1.0e9f};
 
     // return what culling and whitespace left unused; valid because this reservation is the arrays' tail.
     const auto close_chunk = [&]() noexcept {
         vertices_.shrink(cap_v - nv);
         indices_.shrink(cap_i - ni);
         commands_.back().idx_count -= cap_i - ni;
+        cmd_meta_.back().vtx_count -= cap_v - nv;
+        if (nv != 0) { note_bounds(clo, chi); }
     };
     const auto open_chunk = [&](u32 want_glyphs) noexcept {
         const u32 n = std::min(want_glyphs, glyph_chunk);
         cap_v = 4 * quads * n;
         cap_i = 6 * quads * n;
         nv = ni = 0;
+        clo = {1.0e9f, 1.0e9f};
+        chi = {-1.0e9f, -1.0e9f};
         return reserve(cap_v, cap_i, p);
     };
 
@@ -935,11 +992,17 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
             if (x1 + top_shift + smear >= clip.min.x && x0 + bottom_shift <= clip.max.x && y1 >= clip.min.y && y0 <= clip.max.y) {
                 for (u32 pass = 0; pass < quads; ++pass) {
                     const f32 dx = static_cast<f32>(pass) * smear;
+                    const f32 gx0 = x0 + top_shift + dx;
+                    const f32 gx1 = x1 + top_shift + dx;
+                    const f32 gx2 = x1 + bottom_shift + dx;
+                    const f32 gx3 = x0 + bottom_shift + dx;
                     vertex* v = p.v + nv;
-                    v[0] = {{x0 + top_shift + dx, y0}, g.u0, g.v0, c};
-                    v[1] = {{x1 + top_shift + dx, y0}, g.u1, g.v0, c};
-                    v[2] = {{x1 + bottom_shift + dx, y1}, g.u1, g.v1, c};
-                    v[3] = {{x0 + bottom_shift + dx, y1}, g.u0, g.v1, c};
+                    v[0] = {{gx0, y0}, g.u0, g.v0, c};
+                    v[1] = {{gx1, y0}, g.u1, g.v0, c};
+                    v[2] = {{gx2, y1}, g.u1, g.v1, c};
+                    v[3] = {{gx3, y1}, g.u0, g.v1, c};
+                    clo = {std::min({clo.x, gx0, gx3}), std::min(clo.y, y0)};
+                    chi = {std::max({chi.x, gx1, gx2}), std::max(chi.y, y1)};
 
                     const index_t b0 = p.idx(nv);
                     index_t* idx = p.i + ni;

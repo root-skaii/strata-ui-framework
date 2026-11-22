@@ -149,11 +149,12 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         }
         impl::window_nest& n = m_->nest_[m_->nest_depth_++];
         n = {m_->cur_, m_->cur_window_, m_->cur_flags_, m_->cur_frame_, m_->layout_, m_->window_faded_, m_->run_owner_,
-             m_->child_base_, m_->tree_table_.table_, false};
+             m_->child_base_, m_->tree_table_.table_, m_->win_.cur_z_, false};
         m_->tree_table_.table_ = {};
         m_->child_base_        = m_->children_cards_.child_depth_;
         m_->window_faded_      = false;
         m_->cur_               = nullptr;
+        m_->win_.cur_z_        = no_z;
         m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_}); // not clipped to the parent
     }
     window_state* st = window_for(*this, wid, initial_pos, size.x);
@@ -184,11 +185,16 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
             st->height = std::max(size.y, 0.0f);
         }
     }
-    st->last_frame = m_->frame_;
-    st->passive    = has_flag(flags, window_flags::no_inputs);
+    st->last_frame    = m_->frame_;
+    st->passive       = has_flag(flags, window_flags::no_inputs);
+    st->click_through = !st->passive && has_flag(flags, window_flags::click_through);
     if (st->passive) { // nothing to grab, move, resize or dock
         constexpr u16 drop = static_cast<u16>(window_flags::resizable) | static_cast<u16>(window_flags::drag_by_body) | static_cast<u16>(window_flags::dockable);
         flags = static_cast<window_flags>(static_cast<u16>(flags) & ~drop) | window_flags::no_move | window_flags::no_collapse;
+    } else if (st->click_through) {
+        constexpr u16 drop = static_cast<u16>(window_flags::drag_by_body) | static_cast<u16>(window_flags::dockable);
+        flags = static_cast<window_flags>(static_cast<u16>(flags) & ~drop);
+        if (has_flag(flags, window_flags::no_title_bar)) { flags = flags | window_flags::no_move; }
     }
     const bool is_menubar   = std::exchange(m_->next_window_menubar_, false);
     const u32  modal_level  = std::exchange(m_->modal_.next_window_modal_level_, 0);
@@ -253,12 +259,21 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         bring_to_front(*this, wid); // first appearance: on top
     }
     // a press on the topmost window under the pointer raises it (docked windows stay behind)
-    if (m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && (!docked || st->dock_owner != 0)) {
+    if (!st->passive && m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && (!docked || st->dock_owner != 0)) {
         bring_to_front(*this, docked ? st->dock_owner : wid); // (a window in a floating dock raises the whole dock)
     }
     // ... and focuses it, docked windows too (without restacking), so panel shortcuts know which panel is active
-    if (m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && !st->menubar && m_->modal_.modal_top_prev_ == 0) {
+    if (!st->passive && m_->input_.mouse_pressed_ && m_->win_.hovered_window_prev_ == wid && !st->menubar && m_->modal_.modal_top_prev_ == 0) {
         m_->key_window_ = wid;
+    }
+
+    // stacking rank of this window (a floating window beats a docked one, the menu bar beats both, a modal beats all)
+    {
+        const bool in_float = docked && st->dock_owner != 0;
+        const u32 rank = modal_level != 0 ? 0x30000u + modal_level * 0x10000u : (is_menubar ? 0x20000u : (docked && !in_float ? 0u : 0x10000u));
+        u32 zi = z_index(*this, in_float ? st->dock_owner : wid);
+        if (zi == no_z) { zi = 0; }
+        m_->win_.cur_z_ = zi * 2 + (in_float ? 1u : 0u) + rank; // a window docked in a floating dock sits just above that dock
     }
 
     // every window's draw commands form their own run so the windows can be restacked
@@ -354,19 +369,16 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     const rect bar     = rect::from_size(st->pos, {st->width, title_h});
     m_->cur_frame_ = frame;
 
-    // a modal takes the input from everything else
+    // a modal takes the input from everything else; click_through windows only claim the pointer over their title bar
+    // here (interactive widgets claim it inside interact_core)
     const bool input_blocked = m_->modal_.modal_top_prev_ != 0 && wid != m_->modal_.modal_top_prev_;
-    if (frame.contains(m_->input_.mouse_) && !hidden_tab && !input_blocked && !st->passive) {
-        // a floating window beats a docked one, the menu bar beats both, a modal beats them all
-        const bool in_float = docked && st->dock_owner != 0;
-        const u32 rank = modal_level != 0 ? 0x30000u + modal_level * 0x10000u : (is_menubar ? 0x20000u : (docked && !in_float ? 0u : 0x10000u));
-        u32 zi = z_index(*this, in_float ? st->dock_owner : wid);
-        if (zi == no_z) { zi = 0; }
-        const u32 z = zi * 2 + (in_float ? 1u : 0u) + rank; // a window docked in a floating dock is just above that dock
+    const bool hit_frame     = st->click_through ? (has_title && bar.contains(m_->input_.mouse_)) : frame.contains(m_->input_.mouse_);
+    if (hit_frame && !hidden_tab && !input_blocked && !st->passive) {
+        const u32 z = m_->win_.cur_z_;
         if (m_->win_.hovered_z_ == no_z || z > m_->win_.hovered_z_) {
             m_->win_.hovered_window_cur_ = wid; // highest z under the pointer wins
             m_->win_.hovered_z_          = z;
-            m_->hovered_docked_cur_ = docked;
+            m_->hovered_docked_cur_      = docked;
         }
     }
 
@@ -561,6 +573,7 @@ void context::end_window()
     pop_id();
     m_->cur_        = nullptr;
     m_->cur_window_ = 0;
+    m_->win_.cur_z_ = no_z;
     if (m_->nest_depth_ > 0) {
         resume_parent_window(*this);
     }
@@ -579,6 +592,7 @@ static void resume_parent_window(context& ui) noexcept
     m.window_faded_      = n.faded;
     m.child_base_        = n.child_base;
     m.tree_table_.table_ = n.table;
+    m.win_.cur_z_        = n.cur_z;
     switch_run(ui, n.run_owner);
 }
 

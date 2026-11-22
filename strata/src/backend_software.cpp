@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <thread>
 #include <vector>
 
 namespace strata {
@@ -51,19 +50,27 @@ struct vec4 {
     const vec2 p     = pixel - s.center;
     const f32  d     = sd_round_box(p, s.half_size, s.radius);
     const f32  outer = saturate(0.5f - d);
-    const f32  inner = saturate(0.5f - (d + s.border_width));
+    const f32  inner = s.border_width > 0.0f ? saturate(0.5f - (d + s.border_width)) : outer;
 
-    const f32 extent = std::max(std::abs(s.gradient_dir.x) * 2.0f * s.half_size.x +
-                                    std::abs(s.gradient_dir.y) * 2.0f * s.half_size.y, 1.0e-3f);
-    const f32 t = s.gradient_kind > 0.5f
-                      ? saturate(std::hypot(p.x / std::max(s.half_size.x, 1.0e-3f), p.y / std::max(s.half_size.y, 1.0e-3f)))
-                      : saturate(dot(p, s.gradient_dir) / extent + 0.5f);
-    const vec4 fill = mix(unpack(s.fill_top), unpack(s.fill_bottom), t);
-    const vec4 edge = unpack(s.border);
-    const f32  ring = std::max(outer - inner, 0.0f);
+    vec4 fill = unpack(s.fill_top);
+    if (s.fill_top != s.fill_bottom) {
+        const f32 extent = std::max(std::abs(s.gradient_dir.x) * 2.0f * s.half_size.x +
+                                        std::abs(s.gradient_dir.y) * 2.0f * s.half_size.y, 1.0e-3f);
+        const f32 t = s.gradient_kind > 0.5f
+                          ? saturate(std::hypot(p.x / std::max(s.half_size.x, 1.0e-3f), p.y / std::max(s.half_size.y, 1.0e-3f)))
+                          : saturate(dot(p, s.gradient_dir) / extent + 0.5f);
+        fill = mix(fill, unpack(s.fill_bottom), t);
+    }
 
-    vec4 out{fill.r * fill.a * inner + edge.r * edge.a * ring, fill.g * fill.a * inner + edge.g * edge.a * ring,
-             fill.b * fill.a * inner + edge.b * edge.a * ring, fill.a * inner + edge.a * ring};
+    vec4 out{fill.r * fill.a * inner, fill.g * fill.a * inner, fill.b * fill.a * inner, fill.a * inner};
+    if (s.border_width > 0.0f) {
+        const vec4 edge = unpack(s.border);
+        const f32  ring = std::max(outer - inner, 0.0f);
+        out.r += edge.r * edge.a * ring;
+        out.g += edge.g * edge.a * ring;
+        out.b += edge.b * edge.a * ring;
+        out.a += edge.a * ring;
+    }
 
     const vec4 sh = unpack(s.shadow);
     if (sh.a > 0.0f && s.shadow_blur > 0.0f) {
@@ -481,21 +488,9 @@ void software_renderer::render(const draw_data& data)
     if (w == 0 || h == 0) { return; }
     impl& im = *impl_;
 
-    // rows are independent, so the target is cut into bands drawn on their own threads. a backdrop command reads the
-    // frame so far: everything before it finishes first, and its blur is made once
-    const u32 bands = std::min<u32>(std::clamp<u32>(std::thread::hardware_concurrency(), 1, 8), std::max<u32>(h / 48, 1));
-    const auto run_bands = [&](const auto& fn) {
+    const auto run_serial = [&](auto&& fn) {
         const i32 rows = static_cast<i32>(h);
-        if (bands <= 1) { fn(0, rows); return; }
-        const i32 step = (rows + static_cast<i32>(bands) - 1) / static_cast<i32>(bands);
-        std::vector<std::thread> pool;
-        pool.reserve(bands - 1);
-        for (u32 b = 1; b < bands; ++b) {
-            const i32 lo = static_cast<i32>(b) * step;
-            if (lo < rows) { pool.emplace_back([&fn, lo, hi = std::min(lo + step, rows)] { fn(lo, hi); }); }
-        }
-        fn(0, std::min(step, rows));
-        for (std::thread& t : pool) { t.join(); }
+        fn(0, rows);
     };
 
     const std::span<const draw_cmd> cmds = data.commands;
@@ -504,14 +499,14 @@ void software_renderer::render(const draw_data& data)
         if (cmds[i].blur > 0.0f) {
             blur_copy blurred;
             if (im.backdrop_blur(data, cmds[i], blurred)) {
-                run_bands([&](i32 lo, i32 hi) { im.draw(data, cmds[i], &blurred, lo, hi); });
+                run_serial([&](i32 lo, i32 hi) { im.draw(data, cmds[i], &blurred, lo, hi); });
             }
             ++i;
             continue;
         }
         std::size_t j = i;
         while (j < cmds.size() && cmds[j].blur <= 0.0f) { ++j; }
-        run_bands([&](i32 lo, i32 hi) {
+        run_serial([&](i32 lo, i32 hi) {
             for (std::size_t k = i; k < j; ++k) { im.draw(data, cmds[k], nullptr, lo, hi); }
         });
         i = j;

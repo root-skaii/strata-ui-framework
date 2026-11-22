@@ -248,9 +248,25 @@ namespace strata::themes {
 [[nodiscard]] bool by_name(std::string_view name, style& out) noexcept;
 
 // the theme matching system settings (win32_platform::appearance()): high contrast if on, else midnight / light,
-// with the system accent if known (alpha 0 = theme's). re-apply on win32_platform::appearance_changed()
-[[nodiscard]] style for_appearance(bool dark, bool high_contrast, color accent = color{0, 0, 0, 0},
-                                   bool reduced_motion = false) noexcept;
+// with the system accent if known (alpha 0 = theme's). re-apply on win32_platform::appearance_changed().
+// inline so callers that follow the system theme do not pull in the named-theme registry or theme parser
+[[nodiscard]] inline style for_appearance(bool dark, bool high_contrast, color accent = color{0, 0, 0, 0},
+                                          bool reduced_motion = false) noexcept
+{
+    if (high_contrast) {
+        style hc = themes::high_contrast(); // (its own accent: the system one may not have the contrast this needs)
+        hc.reduce_motion = reduced_motion;
+        return hc;
+    }
+    style s = dark ? midnight() : light();
+    s.reduce_motion = reduced_motion;
+    if (accent.a != 0) {
+        accent.a       = 255;
+        s.accent       = accent;
+        s.accent_hover = lerp(accent, dark ? color{255, 255, 255, 255} : color{0, 0, 0, 255}, 0.2f);
+    }
+    return s;
+}
 
 // WCAG contrast ratio of two colours, 1 (same) to 21 (black on white); alpha is ignored
 [[nodiscard]] f32 contrast_ratio(color a, color b) noexcept;

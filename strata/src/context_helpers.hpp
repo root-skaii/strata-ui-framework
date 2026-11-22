@@ -9,6 +9,12 @@
 
 namespace strata::internal {
 
+// empty ui_strings field -> built-in English default (resolved per widget so unused widgets' literals stay unlinked)
+[[nodiscard]] constexpr std::string_view ui_str(std::string_view custom, std::string_view fallback) noexcept
+{
+    return custom.empty() ? fallback : custom;
+}
+
 // context.cpp
 // widget id from a label in the current scope; debug builds also record the label for collision reports
 [[nodiscard]] id widget_id(context& ui, std::string_view label) noexcept;
@@ -40,6 +46,7 @@ void switch_run(context& ui, u32 owner) noexcept;
 [[nodiscard]] f32 scrollbar(context& ui, id key, const rect& track, bool horizontal, f32 view, f32 content, f32 scroll, f32& grab);
 [[nodiscard]] f32 layout_next_y(const context& ui) noexcept;
 void wipe_edit_buffer(context& ui) noexcept;
+[[nodiscard]] bool window_accepts_pointer(const context& ui) noexcept;
 [[nodiscard]] interaction interact_impl(context& ui, id key, const rect& r, bool in_window) noexcept;
 
 // context_access.cpp

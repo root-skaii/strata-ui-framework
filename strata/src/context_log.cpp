@@ -72,30 +72,36 @@ void context::log_view(std::string_view id_label, log_buffer& log, vec2 size, lo
     // toolbar -------------------------------------------------------------------------------------------
     if (!has_flag(flags, log_view_flags::no_toolbar)) {
         set_next_item_width(std::max(m_->layout_.width * 0.22f, 90.0f));
-        (void)input_text("##filter", v.filter, m_->strings_.log_filter);
+        (void)input_text("##filter", v.filter, ui_str(m_->strings_.log_filter, "filter..."));
         same_line();
         int level = static_cast<int>(v.min_level);
         set_next_item_width(86.0f);
-        if (combo("##level", level, m_->strings_.log_levels)) {
+        static constexpr std::array<std::string_view, 5> default_levels{"trace", "debug", "info", "warn", "error"};
+        std::array<std::string_view, 5> levels;
+        for (std::size_t i = 0; i < levels.size(); ++i) {
+            levels[i] = ui_str(m_->strings_.log_levels[i], default_levels[i]);
+        }
+        if (combo("##level", level, levels)) {
             v.min_level = static_cast<log_level>(level);
         }
         same_line();
-        (void)checkbox(m_->strings_.follow, v.follow);
+        (void)checkbox(ui_str(m_->strings_.follow, "follow"), v.follow);
         same_line();
-        (void)checkbox(m_->strings_.time, v.show_time);
-        tooltip(v.clock ? m_->strings_.time_tip_clock : m_->strings_.time_tip_ui);
+        (void)checkbox(ui_str(m_->strings_.time, "time"), v.show_time);
+        tooltip(v.clock ? ui_str(m_->strings_.time_tip_clock, "the time of day when the line was added")
+                        : ui_str(m_->strings_.time_tip_ui, "seconds of ui time when the line was added"));
         if (v.show_time) {
             same_line();
-            (void)checkbox(m_->strings_.clock, v.clock);
-            tooltip(m_->strings_.clock_tip);
+            (void)checkbox(ui_str(m_->strings_.clock, "clock"), v.clock);
+            tooltip(ui_str(m_->strings_.clock_tip, "time of day instead of ui seconds"));
         }
         same_line();
-        (void)checkbox(m_->strings_.wrap, v.wrap);
-        tooltip(m_->strings_.wrap_tip);
+        (void)checkbox(ui_str(m_->strings_.wrap, "wrap"), v.wrap);
+        tooltip(ui_str(m_->strings_.wrap_tip, "long lines take several rows"));
         same_line();
-        const bool copy_clicked = button(m_->strings_.copy, "##copy");
+        const bool copy_clicked = button(ui_str(m_->strings_.copy, "copy"), "##copy");
         same_line();
-        if (button(m_->strings_.clear, "##clear")) {
+        if (button(ui_str(m_->strings_.clear, "clear"), "##clear")) {
             log.clear();
             v.follow = true;
         }

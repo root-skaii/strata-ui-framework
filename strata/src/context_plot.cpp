@@ -232,7 +232,7 @@ static void plot_impl(context& ui, std::string_view label, std::span<const plot_
     if (series.size() > 1) {
         f32 x = box.max.x - 8.0f;
         for (std::size_t si = series.size(); si-- > 0;) {
-            const std::string_view name = series[si].name.empty() ? m.strings_.series : series[si].name;
+            const std::string_view name = series[si].name.empty() ? ui_str(m.strings_.series, "series") : series[si].name;
             const f32 tw = m.font_.measure(f, name).x;
             x -= tw;
             m.dl_.text({x, box.min.y + 3.0f}, m.style_.text_dim, name, f);
@@ -487,7 +487,7 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
         if (legend) {
             f32 x = box.max.x - 8.0f;
             for (std::size_t si = series.size(); si-- > 0;) {
-                const std::string_view name = series[si].name.empty() ? st.strings_.series : series[si].name;
+                const std::string_view name = series[si].name.empty() ? ui_str(st.strings_.series, "series") : series[si].name;
                 x -= st.font_.measure(f, name).x;
                 st.dl_.text({x, box.min.y + 4.0f}, st.style_.text_dim, name, f);
                 x -= 12.0f;

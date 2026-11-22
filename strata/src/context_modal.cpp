@@ -196,14 +196,14 @@ int context::confirm(std::string_view id_label, std::initializer_list<std::strin
         if (options.remember != nullptr && *options.remember) {
             return options.remembered; // the user asked not to be asked
         }
-        open_modal(options.title.empty() ? m_->strings_.confirm : options.title);
+        open_modal(options.title.empty() ? ui_str(m_->strings_.confirm, "Confirm") : options.title);
         m_->confirm_.confirm_open_ = key;
     }
     if (m_->confirm_.confirm_open_ != key) {
         return 0;
     }
 
-    const std::string_view title = options.title.empty() ? m_->strings_.confirm : options.title;
+    const std::string_view title = options.title.empty() ? ui_str(m_->strings_.confirm, "Confirm") : options.title;
     const id wid = hash_id(title, m_->ids_.root());
     bool open = false;
     for (u32 i = 0; i < m_->modal_.modal_count_; ++i) { open = open || m_->modal_.modal_stack_[i] == wid; }

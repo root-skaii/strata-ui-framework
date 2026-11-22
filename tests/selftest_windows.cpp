@@ -950,6 +950,64 @@ void test_layers_and_passive_windows()
     CHECK(near_eq(before.min.x, after.min.x, 0.5f) && near_eq(before.min.y, after.min.y, 0.5f));
 }
 
+void test_click_through_windows()
+{
+    std::fprintf(stderr, "[click_through windows]\n");
+    harness h;
+    bool under_clicked = false;
+    bool hud_clicked   = false;
+    bool cover_open    = false;
+    rect under_btn{};
+    rect hud_btn{};
+    const auto build = [&] {
+        if (auto w = h.ui.window("under", {80, 80}, {260, 200}, window_flags::no_title_bar | window_flags::no_move)) {
+            h.ui.spacing(70.0f);
+            if (h.ui.button("under btn")) { under_clicked = true; }
+            under_btn = h.ui.item_rect();
+        }
+        if (auto w = h.ui.window("hud", {60, 60}, {320, 240},
+                                 window_flags::no_title_bar | window_flags::no_background | window_flags::click_through)) {
+            if (h.ui.button("hud btn")) { hud_clicked = true; }
+            hud_btn = h.ui.item_rect();
+        }
+        if (cover_open) {
+            if (auto w = h.ui.window("cover", {50, 50}, {340, 260}, window_flags::no_title_bar | window_flags::no_move)) {
+                h.ui.text("opaque cover");
+            }
+        }
+    };
+    h.frames(build, 3);
+
+    // empty area of the click-through window outside the lower window does not capture the pointer
+    h.move({355.0f, 285.0f});
+    h.frames(build, 2);
+    CHECK(!h.ui.want_capture_mouse());
+
+    // clicking the click-through window's own button (while stacked above "under") works and captures the pointer
+    h.move(hud_btn.center());
+    h.frames(build, 2);
+    CHECK(h.ui.want_capture_mouse());
+    h.click(hud_btn.center(), build);
+    CHECK(hud_clicked && !under_clicked);
+
+    // moving back to empty space releases mouse capture
+    h.move({355.0f, 285.0f});
+    h.frames(build, 2);
+    CHECK(!h.ui.want_capture_mouse());
+
+    // empty area of the click-through window over the lower window lets clicks reach the lower window's button
+    hud_clicked = false;
+    h.click(under_btn.center(), build);
+    CHECK(under_clicked && !hud_clicked);
+
+    // an opaque window stacked above the click-through window blocks its widgets
+    hud_clicked = false;
+    cover_open  = true;
+    h.frames(build, 2);
+    h.click(hud_btn.center(), build);
+    CHECK(!hud_clicked);
+}
+
 } // namespace
 
 void run_windows_tests()
@@ -966,4 +1024,5 @@ void run_windows_tests()
     test_layout_scrolled_above_screen();
     test_scale();
     test_layers_and_passive_windows();
+    test_click_through_windows();
 }

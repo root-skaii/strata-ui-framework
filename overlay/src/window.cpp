@@ -54,14 +54,15 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
             (void)g.platform.handle_message(hwnd, msg, wparam, static_cast<std::intptr_t>(lparam));
         }
         if (win32_platform::swallows(msg)) { return 0; }
-        const bool block_all = g.opt.block_game_input;
-        if (msg == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT) {
+        const bool block_all   = g.opt.block_game_input;
+        const bool block_mouse = block_all || g.capture_mouse.load();
+        if (msg == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT && block_mouse) {
             const std::lock_guard lock{g.platform_mutex};
             if (g.platform.apply_cursor()) { return TRUE; }
         }
-        if (is_mouse_message(msg) && (block_all || g.capture_mouse.load())) { return 0; }
+        if (is_mouse_message(msg) && block_mouse) { return 0; }
         if (is_key_message(msg) && (block_all || g.capture_keys.load())) { return 0; }
-        if (msg == WM_INPUT && block_all) { return ::DefWindowProcW(hwnd, msg, wparam, lparam); } // (raw mouse for a camera: cleaned up, not delivered)
+        if (msg == WM_INPUT && block_mouse) { return ::DefWindowProcW(hwnd, msg, wparam, lparam); } // (raw mouse for a camera: cleaned up, not delivered)
     }
     return ::CallWindowProcW(next, hwnd, msg, wparam, lparam);
 }

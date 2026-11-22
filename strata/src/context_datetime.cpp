@@ -128,7 +128,8 @@ static bool calendar_body(context& ui, date& value, bool close_on_pick)
             m.dl_.line({c.x + ox + d * k * 0.5f, c.y}, {c.x + ox - d * k * 0.5f, c.y + k}, m.style_.text, 1.4f);
         }
     }
-    const std::string title = std::format("{} {}", m.strings_.months[static_cast<std::size_t>(std::clamp(m.date_.cal_month_, 1, 12) - 1)], m.date_.cal_year_);
+    const i32 m_num = std::clamp(m.date_.cal_month_, 1, 12);
+    const std::string title = std::format("{} {}", ui_str(m.strings_.months[static_cast<std::size_t>(m_num - 1)], month_name(m_num)), m.date_.cal_year_);
     const vec2 tsz = label_size(ui, f, title);
     label_draw(ui, {bar.center().x - tsz.x * 0.5f, bar.min.y + (head - tsz.y) * 0.5f}, m.style_.text, title, f);
 
@@ -137,7 +138,7 @@ static bool calendar_body(context& ui, date& value, bool close_on_pick)
     const f32  lh   = m.font_.line_height(f);
     const rect days = layout_place(ui, {w, lh + 4.0f});
     for (i32 i = 0; i < 7; ++i) {
-        const std::string_view name = m.strings_.weekdays[static_cast<std::size_t>(i)];
+        const std::string_view name = ui_str(m.strings_.weekdays[static_cast<std::size_t>(i)], weekday_short(i));
         const vec2 ns = label_size(ui, f, name);
         label_draw(ui, {days.min.x + cw * (static_cast<f32>(i) + 0.5f) - ns.x * 0.5f, days.min.y + 2.0f},
                    i >= 5 ? m.style_.text_dim.scaled_alpha(0.7f) : m.style_.text_dim, name, f);
@@ -236,7 +237,7 @@ bool context::date_picker(std::string_view label, date& value)
     if (auto p = popup("##calendar", std::max(fl.control.width(), 260.0f))) {
         changed = calendar_body(*this, value, true);
         spacing(2.0f);
-        if (button(m_->strings_.today)) {
+        if (button(ui_str(m_->strings_.today, "Today"))) {
             value   = today();
             m_->date_.cal_key_ = 0;
             changed = true;
@@ -266,12 +267,12 @@ bool context::time_picker(std::string_view label, time_of_day& value, bool secon
     if (auto p = popup("##clock", std::max(fl.control.width(), 240.0f))) {
         changed = time_body(*this, value, seconds);
         spacing(2.0f);
-        if (button(m_->strings_.now)) {
+        if (button(ui_str(m_->strings_.now, "Now"))) {
             value   = now();
             changed = true;
         }
         same_line();
-        if (button(m_->strings_.done)) { close_popup(); }
+        if (button(ui_str(m_->strings_.done, "Done"))) { close_popup(); }
     }
     const bool engaged = popup_open("##clock"); // (in the widget's id scope: before pop_id)
     pop_id();
@@ -300,14 +301,14 @@ bool context::datetime_picker(std::string_view label, date& d, time_of_day& t, b
         separator();
         changed = time_body(*this, t, seconds) || changed;
         spacing(2.0f);
-        if (button(m_->strings_.now)) {
+        if (button(ui_str(m_->strings_.now, "Now"))) {
             d       = today();
             t       = now();
             m_->date_.cal_key_ = 0;
             changed = true;
         }
         same_line();
-        if (button(m_->strings_.done)) { close_popup(); }
+        if (button(ui_str(m_->strings_.done, "Done"))) { close_popup(); }
     }
     const bool engaged = popup_open("##datetime"); // (in the widget's id scope: before pop_id)
     pop_id();

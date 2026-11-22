@@ -113,12 +113,12 @@ void draw_frame(IDXGISwapChain* sc)
     g.ui->end_frame();
     g.capture_mouse.store(open && g.ui->want_capture_mouse());
     g.capture_keys.store(open && g.ui->want_text_input());
-    if (open) {
+    if (open && (g.opt.block_game_input || g.capture_mouse.load())) {
         {
             const std::lock_guard lock{g.platform_mutex};
             g.platform.set_cursor(g.ui->cursor());
         }
-        ::ClipCursor(nullptr); // (games clipping the cursor every frame are overridden: the ui needs the whole desktop)
+        ::ClipCursor(nullptr); // (games clipping the cursor every frame are overridden while the ui holds the pointer)
     }
 
     const bool want_capture = !g.opt.capture_path.empty() && !g.captured && g.visible_frames + 1 >= g.opt.capture_frame;

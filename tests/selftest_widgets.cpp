@@ -1110,7 +1110,7 @@ void test_ui_strings()
     de.unbound = "Keine Taste belegt"; // longer than "None": more glyphs
     h.ui.set_strings(de);
     h.frames(build, 2);
-    CHECK(h.ui.strings().unbound == "Keine Taste belegt" && h.ui.strings().today == "Today");
+    CHECK(h.ui.strings().unbound == "Keine Taste belegt" && h.ui.strings().today.empty());
     CHECK(h.ui.stats().vertices > english);
 }
 

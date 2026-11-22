@@ -5,6 +5,15 @@
 
 namespace strata {
 
+namespace {
+
+[[nodiscard]] constexpr std::string_view ui_str(std::string_view custom, std::string_view fallback) noexcept
+{
+    return custom.empty() ? fallback : custom;
+}
+
+} // namespace
+
 u32 keybinds::add(std::string_view name, std::string_view default_chord, std::string_view description, std::string_view context)
 {
     for (std::size_t i = 0; i < actions_.size(); ++i) {
@@ -130,8 +139,8 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
     if (!ui.begin_table(id, 3, table_default, height)) {
         return false;
     }
-    ui.table_setup_column(ui.strings().action);
-    ui.table_setup_column(ui.strings().key, 190.0f);
+    ui.table_setup_column(ui_str(ui.strings().action, "Action"));
+    ui.table_setup_column(ui_str(ui.strings().key, "Key"), 190.0f);
     ui.table_setup_column("", 64.0f);
     (void)ui.table_headers_row();
     for (const keybinds::action& a : binds.actions()) {
@@ -147,7 +156,7 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
             if (const keybinds::action* other = binds.conflict(a.name)) {
                 ui.same_line();
                 ui.text_colored(color{255, 176, 64, 255}, "!");
-                ui.tooltip(std::string{ui.strings().key_shared_with} + other->name);
+                ui.tooltip(std::string{ui_str(ui.strings().key_shared_with, "the same key is used by ")} + other->name);
             }
 
             ui.table_next_column();
@@ -158,7 +167,7 @@ bool keybind_editor(context& ui, keybinds& binds, std::string_view id, f32 heigh
             }
 
             ui.table_next_column();
-            if (a.chord != a.default_chord && ui.button(ui.strings().reset, "##reset")) {
+            if (a.chord != a.default_chord && ui.button(ui_str(ui.strings().reset, "reset"), "##reset")) {
                 (void)binds.reset(a.name);
                 changed = true;
             }
@@ -231,7 +240,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         return chosen;
     }
 
-    const std::string_view title = ui.strings().palette_title;
+    const std::string_view title = ui_str(ui.strings().palette_title, "Command palette");
     if (just_opened_) { ui.open_modal(title); }
     auto m = ui.modal(title, {560.0f, 0.0f}, modal_flags::esc_closes | modal_flags::backdrop_closes | modal_flags::no_title_bar);
     if (!m) {
@@ -247,7 +256,7 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         ui.request_text_focus("##palette_query");
         just_opened_ = false;
     }
-    if (ui.input_text("##palette_query", query_, ui.strings().palette_hint, input_flags::none, 96)) { selected_ = 0; top_ = 0; }
+    if (ui.input_text("##palette_query", query_, ui_str(ui.strings().palette_hint, "Type a command..."), input_flags::none, 96)) { selected_ = 0; top_ = 0; }
 
     struct hit {
         const keybinds::action* action;
@@ -335,11 +344,11 @@ std::string command_palette::show(context& ui, const keybinds& binds)
         const f32 x = rows_right + 5.0f; // (right of the rows, in the modal's padding)
         ui.draw().rect_filled({{x, thumb_y}, {x + 3.0f, thumb_y + thumb_h}}, theme.text_dim.scaled_alpha(0.45f), 1.5f);
     }
-    if (n == 0) { ui.text_dim(ui.strings().no_commands); }
+    if (n == 0) { ui.text_dim(ui_str(ui.strings().no_commands, "no matching commands")); }
     if (!cut_description.empty()) {
         ui.text_dim(cut_description); // (the hovered / selected command, in full)
     } else if (n > shown) {
-        ui.text_dim(std::to_string(n) + " " + std::string{ui.strings().commands});
+        ui.text_dim(std::to_string(n) + " " + std::string{ui_str(ui.strings().commands, "commands")});
     }
 
     if (ui.input_submitted() && n > 0) { chosen = hits[static_cast<std::size_t>(selected_)].action->name; }

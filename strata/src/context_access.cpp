@@ -24,11 +24,10 @@ draw_data context::render_data() const noexcept
         for (std::size_t c = d.overlay_first; c < d.commands.size(); ++c) {
             const draw_cmd& cmd = d.commands[c];
             if (cmd.idx_count == 0 || cmd.clip.empty()) { continue; }
-            for (u32 i = 0; i < cmd.idx_count; ++i) {
-                const vertex& v = d.vertices[cmd.vtx_offset + d.indices[cmd.idx_offset + i]];
-                lo = {std::min(lo.x, v.pos.x), std::min(lo.y, v.pos.y)};
-                hi = {std::max(hi.x, v.pos.x), std::max(hi.y, v.pos.y)};
-            }
+            const rect b = m_->dl_.command_bounds(static_cast<u32>(c));
+            if (b.empty()) { continue; }
+            lo = {std::min(lo.x, b.min.x), std::min(lo.y, b.min.y)};
+            hi = {std::max(hi.x, b.max.x), std::max(hi.y, b.max.y)};
         }
         if (hi.x > lo.x && hi.y > lo.y) { d.overlay_bounds = {lo, hi}; }
     }

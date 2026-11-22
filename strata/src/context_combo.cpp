@@ -39,7 +39,7 @@ namespace {
 
 bool context::combo_filtered(std::string_view label, int& current, const item_list& items, std::string_view hint)
 {
-    if (hint.empty()) { hint = m_->strings_.filter_hint; }
+    if (hint.empty()) { hint = ui_str(m_->strings_.filter_hint, "type to filter"); }
     const std::size_t count = items.size();
     if (m_->cur_ == nullptr || count == 0) {
         return false;
@@ -134,7 +134,7 @@ bool context::combo_filtered(std::string_view label, int& current, const item_li
 
         if (auto list = child("##hits", {0.0f, list_h}, child_flags::none)) {
             if (hits == 0) {
-                text_dim(m_->strings_.no_match);
+                text_dim(ui_str(m_->strings_.no_match, "no match"));
             } else {
                 list_clipper clip{*this, static_cast<std::size_t>(hits), row_h};
                 while (clip.step()) {
@@ -171,7 +171,7 @@ bool context::combo_filtered(std::string_view label, int& current, const item_li
 
 bool context::combo_multi(std::string_view label, bool* selected, const item_list& items, std::string_view placeholder)
 {
-    if (placeholder.empty()) { placeholder = m_->strings_.nothing_selected; }
+    if (placeholder.empty()) { placeholder = ui_str(m_->strings_.nothing_selected, "none"); }
     const std::size_t count = items.size();
     if (m_->cur_ == nullptr || count == 0 || selected == nullptr) {
         return false;
@@ -212,7 +212,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
         summary       = std::string{placeholder};
         summary_color = m_->style_.text_dim;
     } else if (chosen == count && count > 2) {
-        summary = std::string{m_->strings_.all_selected} + " (" + std::to_string(count) + ")";
+        summary = std::string{ui_str(m_->strings_.all_selected, "all")} + " (" + std::to_string(count) + ")";
     } else {
         for (std::size_t i = 0; i < count; ++i) {
             if (selected[i]) {
@@ -314,7 +314,7 @@ bool context::combo_multi(std::string_view label, bool* selected, const item_lis
                 row.fill_bottom = row.fill_top;
                 m_->dl_.shape(r, row);
             }
-            const std::string_view t = k == 0 ? m_->strings_.select_all : m_->strings_.select_none;
+            const std::string_view t = k == 0 ? ui_str(m_->strings_.select_all, "select all") : ui_str(m_->strings_.select_none, "clear");
             const vec2 ts = m_->font_.measure(f, t);
             m_->dl_.text({r.center().x - ts.x * 0.5f, r.min.y + (r.height() - ts.y) * 0.5f}, ti.hovered ? m_->style_.text : m_->style_.text_dim, t, f);
         }

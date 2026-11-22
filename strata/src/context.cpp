@@ -359,7 +359,9 @@ void context::begin_frame(const input_state& in)
     m_->win_.hovered_window_cur_  = 0;
     m_->hovered_docked_prev_ = m_->hovered_docked_cur_;
     m_->hovered_docked_cur_  = false;
+    m_->win_.hovered_z_prev_      = m_->win_.hovered_z_;
     m_->win_.hovered_z_           = no_z;
+    m_->win_.cur_z_               = no_z;
     m_->win_.frame_window_count_  = 0;
     m_->style_stack_.reset_font();
     m_->rich_.rich_depth_          = 0;
@@ -1183,11 +1185,22 @@ static void check_id([[maybe_unused]] context& ui, [[maybe_unused]] id key, [[ma
 #endif
 }
 
-interaction internal::interact(context& ui, id key, const rect& r) noexcept
+bool internal::window_accepts_pointer(const context& ui) noexcept
 {
     auto& m = context_access::of(ui);
-    // popup content ignores window hover (it extends past the window)
-    return interact_impl(ui, key, r, m.in_overlay_ || (m.cur_window_ != 0 && m.win_.hovered_window_prev_ == m.cur_window_));
+    if (m.in_overlay_) { return true; }
+    if (m.cur_window_ == 0 || m.cur_ == nullptr || m.cur_->passive) { return false; }
+    if (m.win_.hovered_window_prev_ == m.cur_window_) { return true; }
+    if (m.cur_->click_through) {
+        const bool modal_ok = m.modal_.modal_top_prev_ == 0 || m.cur_window_ == m.modal_.modal_top_prev_;
+        return modal_ok && (m.win_.hovered_z_prev_ == no_z || m.win_.cur_z_ >= m.win_.hovered_z_prev_);
+    }
+    return false;
+}
+
+interaction internal::interact(context& ui, id key, const rect& r) noexcept
+{
+    return interact_impl(ui, key, r, window_accepts_pointer(ui));
 }
 
 static interaction interact_core(context& ui, id key, const rect& r, bool in_window) noexcept;
@@ -1215,6 +1228,13 @@ static interaction interact_core(context& ui, id key, const rect& r, bool in_win
 
     // what lies under an open popup (or a popup level above this one, or a menu) gets no pointer
     const bool over      = in_window && !m.pointer_blocked() && m.dl_.clip().contains(m.input_.mouse_) && r.contains(m.input_.mouse_);
+    // a click-through window only claims the pointer over its own interactive widgets
+    if (over && !m.in_overlay_ && m.cur_ != nullptr && m.cur_->click_through &&
+        (m.win_.hovered_z_ == no_z || m.win_.cur_z_ > m.win_.hovered_z_)) {
+        m.win_.hovered_window_cur_ = m.cur_window_;
+        m.win_.hovered_z_          = m.win_.cur_z_;
+        m.hovered_docked_cur_      = m.cur_->docked_now;
+    }
 
     // an allow_item_overlap() item loses the press to anything submitted over it. the press is resolved this frame;
     // the hover can only be removed a frame late (the covering item is submitted after), so it uses last frame's cover.

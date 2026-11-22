@@ -28,9 +28,9 @@ namespace {
 [[nodiscard]] std::string_view kind_name(toast_kind k, const ui_strings& s) noexcept
 {
     switch (k) {
-    case toast_kind::success: return s.toast_success;
-    case toast_kind::warning: return s.toast_warning;
-    case toast_kind::error:   return s.toast_error;
+    case toast_kind::success: return ui_str(s.toast_success, "done");
+    case toast_kind::warning: return ui_str(s.toast_warning, "warning");
+    case toast_kind::error:   return ui_str(s.toast_error, "error");
     default:                  return {};
     }
 }

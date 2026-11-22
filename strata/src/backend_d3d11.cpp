@@ -355,7 +355,11 @@ struct d3d11_renderer::impl {
         return true;
     }
     UINT                             vb_capacity{};
+    UINT                             vb_cursor{};
+    UINT                             vb_draw_offset{}; // element offset of the slice currently bound / cached
     UINT                             ib_capacity{};
+    UINT                             ib_cursor{};
+    UINT                             ib_draw_offset{};
     UINT                             shape_capacity{};
     // content hash of the dynamic buffers, to skip identical uploads. 0 = unknown / reset by reallocation.
     u64                              uploaded_hash{};
@@ -380,12 +384,13 @@ struct d3d11_renderer::impl {
         zero(shape_buf.Get());
     }
 
-    [[nodiscard]] bool ensure_buffer(ComPtr<ID3D11Buffer>& buf, UINT& capacity, UINT needed, UINT stride, UINT bind) noexcept
+    // ring buffer: 4x headroom lets consecutive dirty frames append via WRITE_NO_OVERWRITE before renaming with DISCARD
+    [[nodiscard]] bool ensure_buffer(ComPtr<ID3D11Buffer>& buf, UINT& capacity, UINT& cursor, UINT& draw_offset, UINT needed, UINT stride, UINT bind) noexcept
     {
         if (buf != nullptr && capacity >= needed) {
             return true;
         }
-        const UINT new_capacity = needed + needed / 2 + 1024; // headroom so steady state never reallocates
+        const UINT new_capacity = std::max(needed * 4, needed + needed / 2 + 4096);
         D3D11_BUFFER_DESC desc{};
         desc.ByteWidth      = new_capacity * stride;
         desc.Usage          = D3D11_USAGE_DYNAMIC;
@@ -397,7 +402,26 @@ struct d3d11_renderer::impl {
         }
         buf           = std::move(fresh);
         capacity      = new_capacity;
+        cursor        = 0;
+        draw_offset   = 0;
         uploaded_hash = 0; // a fresh buffer holds nothing
+        return true;
+    }
+
+    // appends into the ring via NO_OVERWRITE, wrapping with DISCARD only when full
+    [[nodiscard]] bool upload_ring(ID3D11Buffer* buf, UINT capacity, UINT& cursor, UINT& draw_offset,
+                                   const void* src, UINT count, UINT stride, UINT align_elems = 1) noexcept
+    {
+        if (count == 0) { return true; }
+        const bool wrap = cursor == 0 || cursor + count > capacity;
+        const D3D11_MAP mode = wrap ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE;
+        const UINT at = wrap ? 0u : cursor;
+        D3D11_MAPPED_SUBRESOURCE map{};
+        if (FAILED(context->Map(buf, 0, mode, 0, &map))) { return false; }
+        std::memcpy(static_cast<std::byte*>(map.pData) + static_cast<std::size_t>(at) * stride, src, static_cast<std::size_t>(count) * stride);
+        context->Unmap(buf, 0);
+        draw_offset = at;
+        cursor      = (at + count + align_elems - 1) & ~(align_elems - 1);
         return true;
     }
 
@@ -734,25 +758,21 @@ void d3d11_renderer::render(const draw_data& data)
     const auto vcount = static_cast<UINT>(data.vertices.size());
     const auto icount = static_cast<UINT>(data.indices.size());
     const auto scount = static_cast<UINT>(data.shapes.size());
-    if (!s.ensure_buffer(s.vb, s.vb_capacity, vcount, sizeof(vertex), D3D11_BIND_VERTEX_BUFFER) ||
-        !s.ensure_buffer(s.ib, s.ib_capacity, icount, sizeof(index_t), D3D11_BIND_INDEX_BUFFER) ||
+    if (!s.ensure_buffer(s.vb, s.vb_capacity, s.vb_cursor, s.vb_draw_offset, vcount, sizeof(vertex), D3D11_BIND_VERTEX_BUFFER) ||
+        !s.ensure_buffer(s.ib, s.ib_capacity, s.ib_cursor, s.ib_draw_offset, icount, sizeof(index_t), D3D11_BIND_INDEX_BUFFER) ||
         !s.ensure_shapes(std::max(scount, 1u))) {
         return;
     }
 
     D3D11_MAPPED_SUBRESOURCE map{};
-    // unchanged hash: the buffers already hold this frame, so skip three Map(WRITE_DISCARD) + memcpy (most of a static
-    // panel's cpu cost). the draws still happen: the target was cleared or redrawn by a game.
+    // unchanged hash: the buffers already hold this frame, so skip Map + memcpy (most of a static panel's cpu cost).
+    // the draws still happen: the target was cleared or redrawn by a game.
     const bool have_geometry = data.content_hash != 0 && data.content_hash == s.uploaded_hash;
     if (!have_geometry) {
-        if (FAILED(ctx->Map(s.vb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
-        std::memcpy(map.pData, data.vertices.data(), data.vertices.size_bytes());
-        ctx->Unmap(s.vb.Get(), 0);
-
-        if (FAILED(ctx->Map(s.ib.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
-        std::memcpy(map.pData, data.indices.data(), data.indices.size_bytes());
-        ctx->Unmap(s.ib.Get(), 0);
-
+        if (!s.upload_ring(s.vb.Get(), s.vb_capacity, s.vb_cursor, s.vb_draw_offset, data.vertices.data(), vcount, sizeof(vertex)) ||
+            !s.upload_ring(s.ib.Get(), s.ib_capacity, s.ib_cursor, s.ib_draw_offset, data.indices.data(), icount, sizeof(index_t), 8)) {
+            return;
+        }
         if (scount != 0) {
             if (FAILED(ctx->Map(s.shape_buf.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) { return; }
             std::memcpy(map.pData, data.shapes.data(), data.shapes.size_bytes());
@@ -787,10 +807,11 @@ void d3d11_renderer::render(const draw_data& data)
 
     ctx->IASetInputLayout(s.layout.Get());
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    const UINT stride = sizeof(vertex);
-    const UINT offset = 0;
-    ctx->IASetVertexBuffers(0, 1, s.vb.GetAddressOf(), &stride, &offset);
-    ctx->IASetIndexBuffer(s.ib.Get(), DXGI_FORMAT_R16_UINT, 0);
+    const UINT stride    = sizeof(vertex);
+    const UINT vb_offset = s.vb_draw_offset * sizeof(vertex);
+    const UINT ib_offset = s.ib_draw_offset * sizeof(index_t);
+    ctx->IASetVertexBuffers(0, 1, s.vb.GetAddressOf(), &stride, &vb_offset);
+    ctx->IASetIndexBuffer(s.ib.Get(), DXGI_FORMAT_R16_UINT, ib_offset);
 
     ctx->VSSetShader(s.vs.Get(), nullptr, 0);
     ctx->VSSetConstantBuffers(0, 1, s.cb.GetAddressOf());
@@ -819,9 +840,20 @@ void d3d11_renderer::render(const draw_data& data)
     float blur_radius     = -1.0f;
     rect  blur_exact{};           // where the blur that was made is exact: a panel inside it can use it again
     UINT  blur_vw = 0, blur_vh = 0;
+    bool       has_scissor = false;
+    D3D11_RECT bound_scissor{};
 
     for (const draw_cmd& cmd : data.commands) {
         if (cmd.idx_count == 0 || cmd.clip.empty()) {
+            continue;
+        }
+        // (clips are in the ui's pixels: shifted into the target, and kept inside it)
+        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(v, 0.0f, hi)); };
+        const D3D11_RECT scissor{fit(cmd.clip.min.x - data.origin.x, data.display_size.x),
+                                 fit(cmd.clip.min.y - data.origin.y, data.display_size.y),
+                                 fit(cmd.clip.max.x - data.origin.x, data.display_size.x),
+                                 fit(cmd.clip.max.y - data.origin.y, data.display_size.y)};
+        if (scissor.right <= scissor.left || scissor.bottom <= scissor.top) {
             continue;
         }
 
@@ -839,8 +871,9 @@ void d3d11_renderer::render(const draw_data& data)
                     if (!panel.empty() && s.run_blur(host_rtv.Get(), host_dsv.Get(), cmd.blur, panel, vp, blur_vw, blur_vh, blur_exact)) {
                         blur_dirty  = false;
                         blur_radius = cmd.blur;
-                        mode  = ps_mode::main; // run_blur left the pipeline in the ui's state, but not the shaders / views
-                        bound = 0;
+                        mode        = ps_mode::main; // run_blur left the pipeline in the ui's state, but not the shaders / views
+                        bound       = 0;
+                        has_scissor = false; // run_blur overwrote the scissor
                         ctx->PSSetShader(s.ps.Get(), nullptr, 0);
                         ctx->PSSetSamplers(0, 1, s.sampler.GetAddressOf());
                         ID3D11ShaderResourceView* srvs_again[2] = {s.atlas_srv.Get(), s.shape_srv.Get()};
@@ -879,11 +912,12 @@ void d3d11_renderer::render(const draw_data& data)
         if (want == ps_mode::main && cmd.texture == 0) { blur_dirty = true; }
         if (want == ps_mode::image) { blur_dirty = true; }
         mode = want;
-        // (clips are in the ui's pixels: shifted into the target, and kept inside it)
-        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(v, 0.0f, hi)); };
-        const D3D11_RECT scissor{fit(cmd.clip.min.x - data.origin.x, data.display_size.x), fit(cmd.clip.min.y - data.origin.y, data.display_size.y),
-                                 fit(cmd.clip.max.x - data.origin.x, data.display_size.x), fit(cmd.clip.max.y - data.origin.y, data.display_size.y)};
-        ctx->RSSetScissorRects(1, &scissor);
+        if (!has_scissor || scissor.left != bound_scissor.left || scissor.top != bound_scissor.top ||
+            scissor.right != bound_scissor.right || scissor.bottom != bound_scissor.bottom) {
+            ctx->RSSetScissorRects(1, &scissor);
+            bound_scissor = scissor;
+            has_scissor   = true;
+        }
         ctx->DrawIndexed(cmd.idx_count, cmd.idx_offset, static_cast<INT>(cmd.vtx_offset));
     }
 }

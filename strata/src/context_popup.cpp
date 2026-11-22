@@ -287,8 +287,7 @@ drop_result context::drop_target(std::string_view type, drop_flags flags)
 bool internal::pointer_over(const context& ui, const rect& r) noexcept
 {
     auto& m = context_access::of(ui);
-    const bool in_window = m.in_overlay_ || (m.cur_window_ != 0 && m.win_.hovered_window_prev_ == m.cur_window_);
-    return in_window && !m.pointer_blocked() && m.dl_.clip().contains(m.input_.mouse_) && r.contains(m.input_.mouse_);
+    return window_accepts_pointer(ui) && !m.pointer_blocked() && m.dl_.clip().contains(m.input_.mouse_) && r.contains(m.input_.mouse_);
 }
 
 // draws the popup frame in its overlay layer and redirects layout into it until end_popup(). false while closed.

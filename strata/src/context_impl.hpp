@@ -160,6 +160,7 @@ struct context::impl {
         u32                   run_owner{};
         u32                   child_base{};
         internal::table_frame table{};
+        u32                   cur_z{internal::no_z};
         bool                  dud{};
     };
     static constexpr u32 max_window_nesting = 4;

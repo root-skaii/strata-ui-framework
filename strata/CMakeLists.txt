@@ -49,6 +49,8 @@ add_library(strata STATIC
     src/platform_win32.cpp
     src/texture.cpp
     src/themes.cpp
+    src/themes_contrast.cpp
+    src/themes_io.cpp
     src/vmem.cpp
 )
 add_library(strata::strata ALIAS strata)

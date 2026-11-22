@@ -271,65 +271,65 @@ struct style_override {
     return {false, static_cast<u8>(which), {}, v};
 }
 
-// the words widgets show on their own (not the labels you pass), in English by default. translate by filling this
+// the words widgets show on their own (not the labels passed in), in English by default. empty fields fall back to
+// English inside the widget that draws them so unused widgets' literals are not linked in. translate by filling fields
 // in context_config::strings or ui.set_strings(). views, not copies: they must outlive the context (literals, or
-// strings you keep). key names stay English: they are also the format of saved key bindings.
+// strings kept alive). key names stay English: they are also the format of saved key bindings.
 struct ui_strings {
     // date / time pickers (weekdays from Monday)
-    std::array<std::string_view, 12> months{"January", "February", "March", "April", "May", "June", "July", "August",
-                                            "September", "October", "November", "December"};
-    std::array<std::string_view, 7> weekdays{"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
-    std::string_view today = "Today";
-    std::string_view now   = "Now";
-    std::string_view done  = "Done";
+    std::array<std::string_view, 12> months{};   // "January" .. "December"
+    std::array<std::string_view, 7>  weekdays{}; // "Mo" .. "Su"
+    std::string_view today{};                    // "Today"
+    std::string_view now{};                      // "Now"
+    std::string_view done{};                     // "Done"
     // combos
-    std::string_view filter_hint      = "type to filter";
-    std::string_view no_match         = "no match";
-    std::string_view nothing_selected = "none";
-    std::string_view all_selected     = "all"; // shown as "all (N)"
-    std::string_view select_all       = "select all";
-    std::string_view select_none      = "clear";
+    std::string_view filter_hint{};              // "type to filter"
+    std::string_view no_match{};                 // "no match"
+    std::string_view nothing_selected{};         // "none"
+    std::string_view all_selected{};             // "all" (shown as "all (N)")
+    std::string_view select_all{};               // "select all"
+    std::string_view select_none{};              // "clear"
     // hotkey fields
-    std::string_view press_a_key = "press a key...";
-    std::string_view unbound     = "None";
+    std::string_view press_a_key{};              // "press a key..."
+    std::string_view unbound{};                  // "None"
     // code editor find bar
-    std::string_view find           = "Find";
-    std::string_view replace_with   = "Replace with";
-    std::string_view replace        = "Replace";
-    std::string_view replace_all    = "All";
-    std::string_view match_case     = "match case";
-    std::string_view show_replace   = "replace";
-    std::string_view type_to_search = "type to search";
-    std::string_view no_matches     = "no matches";
+    std::string_view find{};                     // "Find"
+    std::string_view replace_with{};             // "Replace with"
+    std::string_view replace{};                  // "Replace"
+    std::string_view replace_all{};              // "All"
+    std::string_view match_case{};               // "match case"
+    std::string_view show_replace{};             // "replace"
+    std::string_view type_to_search{};           // "type to search"
+    std::string_view no_matches{};               // "no matches"
     // log view
-    std::array<std::string_view, 5> log_levels{"trace", "debug", "info", "warn", "error"};
-    std::string_view log_filter     = "filter...";
-    std::string_view follow         = "follow";
-    std::string_view time           = "time";
-    std::string_view time_tip_clock = "the time of day when the line was added";
-    std::string_view time_tip_ui    = "seconds of ui time when the line was added";
-    std::string_view clock          = "clock";
-    std::string_view clock_tip      = "time of day instead of ui seconds";
-    std::string_view wrap           = "wrap";
-    std::string_view wrap_tip       = "long lines take several rows";
-    std::string_view copy           = "copy";
-    std::string_view clear          = "clear";
+    std::array<std::string_view, 5> log_levels{}; // "trace", "debug", "info", "warn", "error"
+    std::string_view log_filter{};               // "filter..."
+    std::string_view follow{};                   // "follow"
+    std::string_view time{};                     // "time"
+    std::string_view time_tip_clock{};           // "the time of day when the line was added"
+    std::string_view time_tip_ui{};              // "seconds of ui time when the line was added"
+    std::string_view clock{};                    // "clock"
+    std::string_view clock_tip{};                // "time of day instead of ui seconds"
+    std::string_view wrap{};                     // "wrap"
+    std::string_view wrap_tip{};                 // "long lines take several rows"
+    std::string_view copy{};                     // "copy"
+    std::string_view clear{};                    // "clear"
     // key binding editor and command palette
-    std::string_view action          = "Action";
-    std::string_view key             = "Key";
-    std::string_view reset           = "reset";
-    std::string_view key_shared_with = "the same key is used by ";
-    std::string_view palette_title   = "Command palette";
-    std::string_view palette_hint    = "Type a command...";
-    std::string_view no_commands     = "no matching commands";
-    std::string_view commands        = "commands"; // "80 commands"
+    std::string_view action{};                   // "Action"
+    std::string_view key{};                      // "Key"
+    std::string_view reset{};                    // "reset"
+    std::string_view key_shared_with{};          // "the same key is used by "
+    std::string_view palette_title{};            // "Command palette"
+    std::string_view palette_hint{};             // "Type a command..."
+    std::string_view no_commands{};              // "no matching commands"
+    std::string_view commands{};                 // "commands" ("80 commands")
     // dialogs, docking, charts, toasts
-    std::string_view confirm       = "Confirm";
-    std::string_view drop_here     = "drop windows here";
-    std::string_view series        = "series";
-    std::string_view toast_success = "done";
-    std::string_view toast_warning = "warning";
-    std::string_view toast_error   = "error";
+    std::string_view confirm{};                  // "Confirm"
+    std::string_view drop_here{};                // "drop windows here"
+    std::string_view series{};                   // "series"
+    std::string_view toast_success{};            // "done"
+    std::string_view toast_warning{};            // "warning"
+    std::string_view toast_error{};              // "error"
 };
 
 // how many windows / tables / child regions / cards keep state at once. allocated at create(), never later; past them
@@ -455,6 +455,10 @@ enum class window_flags : u16 {
     // position and size are taken from the call every frame (a panel the application lays out itself, following the
     // display): never moved or resized by the user, so it implies no_move and ignores resizable
     placed        = 1024,
+    // empty areas of the window pass the pointer through to whatever is below (and do not count toward
+    // want_capture_mouse()); interactive widgets inside (and the title bar, if any) still take input.
+    // ignores drag_by_body and dockable; implies no_move when combined with no_title_bar
+    click_through = 2048,
 };
 
 [[nodiscard]] constexpr window_flags operator|(window_flags a, window_flags b) noexcept

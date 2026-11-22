@@ -619,8 +619,7 @@ Windows drag, collapse and stack; pressing one raises it. Input goes to the topm
 
 - **Sideways scrolling:** `window_flags::horizontal` (and `child_flags::horizontal`) scrolls content wider than the window by scrollbar,
   tilt wheel or Shift + wheel; `ui.scroll_x()` / `set_scroll_x()` read and move it.
-- **Passive windows:** `window_flags::no_inputs` (hud, name plates, readouts) is never hovered, focused, moved or
-  docked; the pointer goes to whatever is below and it doesn't count toward `want_capture_mouse()`.
+- **Passive and click-through windows:** `window_flags::no_inputs` (hud, name plates, readouts) passes all pointer input through; `window_flags::click_through` lets clicks pass through empty areas of the window while its widgets (and title bar, if shown) stay interactive.
 - **Layers:** `{ auto fg = ui.layer(strata::layer::foreground); ui.draw().rect_filled(...); }` draws above every window
   and popup from anywhere (`layer::background` goes behind them all); drawing only, no input.
 - **Nesting:** a window begun inside another window's code is its own window; the outer one carries on after it.
@@ -893,4 +892,4 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Acknowledgments
 
-Portions of this project's documentation and code were developed with assistance from Claude (Anthropic). Design decisions, architecture and direction are my own.
+Portions of this project's documentation and code were developed with assistance from Claude (Anthropic), Gemini (Google). Design decisions, architecture and direction are my own.

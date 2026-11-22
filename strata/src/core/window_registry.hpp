@@ -42,6 +42,7 @@ struct window_state {
     u64  last_frame{};
     id   dock_owner{};     // in a floating dock: that dock's window (they stack together)
     bool passive{};        // window_flags::no_inputs
+    bool click_through{};  // window_flags::click_through: empty body passes pointer through; widgets still take input
     bool menubar{};        // the main menu bar (no padding, above the other windows)
     u32  modal_level{};    // 1 + index in the modal stack, 0 = not a modal
     u8   title_len{};
@@ -67,6 +68,8 @@ struct window_registry {
     id  hovered_window_prev_{};
     id  hovered_window_cur_{};
     u32 hovered_z_{no_z};
+    u32 hovered_z_prev_{no_z};
+    u32 cur_z_{no_z};      // stacking rank of the window currently being built
     id  focused_window_{}; // topmost window of the previous frame
 };
 

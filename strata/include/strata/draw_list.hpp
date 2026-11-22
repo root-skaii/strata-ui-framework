@@ -252,6 +252,8 @@ public:
         u32 count{};
     };
     [[nodiscard]] u32 command_count() const noexcept { return static_cast<u32>(commands_.size()); }
+    // physical bounding box of command `index`'s vertices (empty if out of range or no geometry)
+    [[nodiscard]] rect command_bounds(u32 index) const noexcept;
     void break_command() noexcept { force_new_command_ = true; } // next primitive opens a new command
     // rewrites the command list as `order`: slices covering every command exactly once
     void reorder_commands(std::span<const command_range> order);
@@ -289,11 +291,32 @@ private:
     // texture_ / blur_ pick the command flavour
     [[nodiscard]] bool emit_quad_for(const rect& bounds, u32 record_index, color vertex_color) noexcept;
 
+    // parallel per-command bounds and vertex count kept outside draw_cmd so its public / C ABI stays untouched
+    struct cmd_meta {
+        rect bounds{};
+        u32  vtx_count{};
+        bool has_bounds{};
+    };
+
+    void note_bounds(vec2 lo, vec2 hi) noexcept
+    {
+        cmd_meta& m = cmd_meta_.back();
+        if (!m.has_bounds) {
+            m.bounds     = {lo, hi};
+            m.has_bounds = true;
+        } else {
+            m.bounds.min = {std::min(m.bounds.min.x, lo.x), std::min(m.bounds.min.y, lo.y)};
+            m.bounds.max = {std::max(m.bounds.max.x, hi.x), std::max(m.bounds.max.y, hi.y)};
+        }
+    }
+
     vmem_array<vertex>   vertices_;
     vmem_array<index_t>  indices_;
     vmem_array<draw_cmd> commands_;
     vmem_array<shape_record> shapes_;
     vmem_array<draw_cmd> reorder_scratch_;
+    vmem_array<cmd_meta> cmd_meta_;
+    vmem_array<cmd_meta> reorder_meta_scratch_;
 
     const font_atlas* atlas_{};
     vec2              display_size_{};

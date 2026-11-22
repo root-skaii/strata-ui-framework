@@ -66,28 +66,74 @@ namespace {
     return d;
 }
 
-[[nodiscard]] ComPtr<ID3D12Resource> create_upload_buffer(ID3D12Device* dev, UINT64 bytes) noexcept
+[[nodiscard]] constexpr UINT64 align_up(UINT64 v, UINT64 a) noexcept
 {
-    const auto props = heap_props(D3D12_HEAP_TYPE_UPLOAD);
+    return (v + a - 1) & ~(a - 1);
+}
+
+[[nodiscard]] ComPtr<ID3D12Resource> create_buffer(ID3D12Device* dev, D3D12_HEAP_TYPE heap, UINT64 bytes, D3D12_RESOURCE_STATES initial) noexcept
+{
+    const auto props = heap_props(heap);
     const auto desc  = buffer_desc(bytes);
     ComPtr<ID3D12Resource> res;
-    if (FAILED(dev->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
-                                            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&res)))) {
+    if (FAILED(dev->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc, initial, nullptr, IID_PPV_ARGS(&res)))) {
         return nullptr;
     }
     return res;
 }
 
+[[nodiscard]] ComPtr<ID3D12Resource> create_upload_buffer(ID3D12Device* dev, UINT64 bytes) noexcept
+{
+    return create_buffer(dev, D3D12_HEAP_TYPE_UPLOAD, bytes, D3D12_RESOURCE_STATE_GENERIC_READ);
+}
+
+// one persistently mapped upload buffer holding vb, ib and shapes for a frame slot
 struct frame_buffers {
-    ComPtr<ID3D12Resource> vb;
-    ComPtr<ID3D12Resource> ib;
-    ComPtr<ID3D12Resource> shapes;
-    UINT                   vb_capacity{};
-    UINT                   ib_capacity{};
-    UINT                   shape_capacity{};
-    // content hash of this slot's buffers. per slot because with frames in flight consecutive frames use different
+    ComPtr<ID3D12Resource> buf;
+    std::byte*             mapped{};
+    UINT64                 capacity{};
+    UINT64                 ib_offset{};
+    UINT64                 shapes_offset{};
+    // content hash of this slot's buffer. per slot because with frames in flight consecutive frames use different
     // slots, so a slot can be several frames behind. 0 = empty / reset by reallocation.
     u64                    uploaded_hash{};
+
+    void reset() noexcept
+    {
+        if (buf != nullptr && mapped != nullptr) {
+            buf->Unmap(0, nullptr);
+        }
+        mapped        = nullptr;
+        buf.Reset();
+        capacity      = 0;
+        uploaded_hash = 0;
+    }
+
+    ~frame_buffers() { reset(); }
+    frame_buffers() noexcept = default;
+    frame_buffers(frame_buffers&& o) noexcept
+        : buf{std::move(o.buf)}
+        , mapped{std::exchange(o.mapped, nullptr)}
+        , capacity{std::exchange(o.capacity, 0)}
+        , ib_offset{o.ib_offset}
+        , shapes_offset{o.shapes_offset}
+        , uploaded_hash{std::exchange(o.uploaded_hash, 0)}
+    {}
+    frame_buffers& operator=(frame_buffers&& o) noexcept
+    {
+        if (this != &o) {
+            reset();
+            buf           = std::move(o.buf);
+            mapped        = std::exchange(o.mapped, nullptr);
+            capacity      = std::exchange(o.capacity, 0);
+            ib_offset     = o.ib_offset;
+            shapes_offset = o.shapes_offset;
+            uploaded_hash = std::exchange(o.uploaded_hash, 0);
+        }
+        return *this;
+    }
+    frame_buffers(const frame_buffers&)            = delete;
+    frame_buffers& operator=(const frame_buffers&) = delete;
 };
 
 } // namespace
@@ -123,6 +169,16 @@ struct d3d12_renderer::impl {
     std::array<texture_meta, d3d12_renderer::max_textures> texture_meta_;
     UINT                              srv_size{};
     std::vector<frame_buffers>        frames;
+    // shared default-heap (VRAM) mirror promoted once geometry stays unchanged across consecutive frames; avoids
+    // repeated PCIe reads in static overlays while keeping changing frames copy-free
+    ComPtr<ID3D12Resource>            static_buf;
+    UINT64                            static_capacity{};
+    UINT64                            static_ib_offset{};
+    UINT64                            static_shapes_offset{};
+    u64                               static_hash{};
+    u64                               prev_hash{};
+    u32                               static_cooldown{}; // renders left before in-flight frames finish reading static_buf
+    bool                              static_in_copy_dest{};
 
     // backdrop blur. heap slots after the textures: the frame snapshot, then the two blur targets
     static constexpr u32 snap_slot = 1 + d3d12_renderer::max_textures;
@@ -298,8 +354,11 @@ struct d3d12_renderer::impl {
             return false;
         }
 
-        barrier(list, t.resource, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        barrier(list, snap.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        D3D12_RESOURCE_BARRIER pre[2]{};
+        pre[0].Type = pre[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        pre[0].Transition = {t.resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        pre[1].Transition = {snap.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST};
+        list->ResourceBarrier(2, pre);
         D3D12_TEXTURE_COPY_LOCATION dst{};
         dst.pResource        = snap.Get();
         dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -308,8 +367,11 @@ struct d3d12_renderer::impl {
         src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         const D3D12_BOX box{plan.x0, plan.y0, 0, plan.x1, plan.y1, 1};
         list->CopyTextureRegion(&dst, plan.x0, plan.y0, 0, &src, &box);
-        barrier(list, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        barrier(list, snap.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        D3D12_RESOURCE_BARRIER post[2]{};
+        post[0].Type = post[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        post[0].Transition = {t.resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+        post[1].Transition = {snap.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+        list->ResourceBarrier(2, post);
 
         const UINT  ds = plan.ds;
         const UINT  vw = std::max(1u, (snap_w + ds - 1) / ds);
@@ -355,31 +417,51 @@ struct d3d12_renderer::impl {
         for (pending_copy& pc : pending) { wipe_upload(pc.upload.Get()); } // staged, never recorded
         for (grave& g : graveyard) { if (g.wipe) { wipe_upload(g.res.Get()); } }
         for (frame_buffers& f : frames) {
-            for (ID3D12Resource* res : {f.vb.Get(), f.ib.Get(), f.shapes.Get()}) {
-                if (res == nullptr) { continue; }
-                void* mapped{};
-                const D3D12_RANGE none{0, 0};
-                if (SUCCEEDED(res->Map(0, &none, &mapped))) {
-                    std::memset(mapped, 0, static_cast<std::size_t>(res->GetDesc().Width));
-                    res->Unmap(0, nullptr);
-                }
+            if (f.mapped != nullptr && f.capacity != 0) {
+                ::SecureZeroMemory(f.mapped, static_cast<SIZE_T>(f.capacity));
             }
+            f.reset();
         }
     }
 
-    [[nodiscard]] bool ensure(ComPtr<ID3D12Resource>& res, UINT& capacity, UINT needed, UINT stride) noexcept
+    [[nodiscard]] bool ensure_frame_buffer(frame_buffers& fb, UINT64 needed) noexcept
     {
-        if (res != nullptr && capacity >= needed) {
+        if (fb.buf != nullptr && fb.capacity >= needed) {
             return true;
         }
-        const UINT new_capacity = needed + needed / 2 + 1024;
-        auto fresh = create_upload_buffer(device.Get(), static_cast<UINT64>(new_capacity) * stride);
+        const UINT64 new_capacity = align_up(needed + needed / 2 + 65536, 4096);
+        auto fresh = create_upload_buffer(device.Get(), new_capacity);
         if (fresh == nullptr) {
             return false;
         }
+        void* ptr{};
+        const D3D12_RANGE none{0, 0};
+        if (FAILED(fresh->Map(0, &none, &ptr))) {
+            return false;
+        }
         // the previous buffer of this frame slot is no longer in flight (host waited on its fence)
-        res      = std::move(fresh);
-        capacity = new_capacity;
+        fb.reset();
+        fb.buf      = std::move(fresh);
+        fb.mapped   = static_cast<std::byte*>(ptr);
+        fb.capacity = new_capacity;
+        return true;
+    }
+
+    [[nodiscard]] bool ensure_static_buffer(UINT64 needed) noexcept
+    {
+        if (static_buf != nullptr && static_capacity >= needed) {
+            return true;
+        }
+        const UINT64 new_capacity = align_up(needed + needed / 2 + 65536, 4096);
+        auto fresh = create_buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, new_capacity, D3D12_RESOURCE_STATE_COPY_DEST);
+        if (fresh == nullptr) {
+            return false;
+        }
+        retire(static_buf);
+        static_buf          = std::move(fresh);
+        static_capacity     = new_capacity;
+        static_hash         = 0;
+        static_in_copy_dest = true;
         return true;
     }
 
@@ -940,35 +1022,62 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     s.record_pending(list); // staged texture copies, ahead of the draws that read them
     frame_buffers& fb = s.frames[frame_index];
 
-    const auto vcount = static_cast<UINT>(data.vertices.size());
-    const auto icount = static_cast<UINT>(data.indices.size());
-    const auto scount = static_cast<UINT>(data.shapes.size());
-    const UINT was_vb = fb.vb_capacity, was_ib = fb.ib_capacity, was_sh = fb.shape_capacity;
-    if (!s.ensure(fb.vb, fb.vb_capacity, vcount, sizeof(vertex)) ||
-        !s.ensure(fb.ib, fb.ib_capacity, icount, sizeof(index_t)) ||
-        !s.ensure(fb.shapes, fb.shape_capacity, std::max(scount, 1u), sizeof(shape_record))) {
-        return;
-    }
-    if (was_vb != fb.vb_capacity || was_ib != fb.ib_capacity || was_sh != fb.shape_capacity) {
-        fb.uploaded_hash = 0; // a buffer was replaced: this slot holds nothing
-    }
+    const UINT64 vb_bytes = data.vertices.size_bytes();
+    const UINT64 ib_bytes = data.indices.size_bytes();
+    const UINT64 sh_bytes = std::max<UINT64>(data.shapes.size_bytes(), sizeof(shape_record));
+    const UINT64 ib_off   = align_up(vb_bytes, 16);
+    const UINT64 sh_off   = align_up(ib_off + ib_bytes, 16);
+    const UINT64 total    = sh_off + sh_bytes;
 
-    // this slot may already hold these exact bytes: skip the upload. the host waited on its fence, so the gpu is done.
-    if (data.content_hash == 0 || data.content_hash != fb.uploaded_hash) {
-        void* mapped{};
-        if (FAILED(fb.vb->Map(0, nullptr, &mapped))) { return; }
-        std::memcpy(mapped, data.vertices.data(), data.vertices.size_bytes());
-        fb.vb->Unmap(0, nullptr);
-        if (FAILED(fb.ib->Map(0, nullptr, &mapped))) { return; }
-        std::memcpy(mapped, data.indices.data(), data.indices.size_bytes());
-        fb.ib->Unmap(0, nullptr);
-        if (scount != 0) {
-            if (FAILED(fb.shapes->Map(0, nullptr, &mapped))) { return; }
-            std::memcpy(mapped, data.shapes.data(), data.shapes.size_bytes());
-            fb.shapes->Unmap(0, nullptr);
+    D3D12_GPU_VIRTUAL_ADDRESS gpu_base{};
+    UINT64                    bound_ib_off{};
+    UINT64                    bound_sh_off{};
+
+    if (data.content_hash != 0 && data.content_hash == s.static_hash && s.static_buf != nullptr) {
+        // shared VRAM buffer already holds this exact frame: zero upload, zero barrier
+        gpu_base          = s.static_buf->GetGPUVirtualAddress();
+        bound_ib_off      = s.static_ib_offset;
+        bound_sh_off      = s.static_shapes_offset;
+        s.static_cooldown = s.frames_in_flight;
+    } else {
+        if (!s.ensure_frame_buffer(fb, total)) {
+            return;
         }
-        fb.uploaded_hash = data.content_hash;
+        // this slot may already hold these exact bytes: skip the memcpy. the host waited on its fence, so the gpu is done.
+        if (data.content_hash == 0 || data.content_hash != fb.uploaded_hash) {
+            if (vb_bytes != 0) { std::memcpy(fb.mapped, data.vertices.data(), static_cast<std::size_t>(vb_bytes)); }
+            if (ib_bytes != 0) { std::memcpy(fb.mapped + ib_off, data.indices.data(), static_cast<std::size_t>(ib_bytes)); }
+            if (!data.shapes.empty()) {
+                std::memcpy(fb.mapped + sh_off, data.shapes.data(), data.shapes.size_bytes());
+            }
+            fb.ib_offset     = ib_off;
+            fb.shapes_offset = sh_off;
+            fb.uploaded_hash = data.content_hash;
+        }
+
+        // promote once unchanged across consecutive frames and no in-flight frame still reads static_buf
+        if (data.content_hash != 0 && data.content_hash == s.prev_hash && s.static_cooldown == 0 && s.ensure_static_buffer(total)) {
+            if (!s.static_in_copy_dest) {
+                s.barrier(list, s.static_buf.Get(), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
+            }
+            list->CopyBufferRegion(s.static_buf.Get(), 0, fb.buf.Get(), 0, total);
+            s.barrier(list, s.static_buf.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+            s.static_in_copy_dest  = false;
+            s.static_ib_offset     = fb.ib_offset;
+            s.static_shapes_offset = fb.shapes_offset;
+            s.static_hash          = data.content_hash;
+            s.static_cooldown      = s.frames_in_flight;
+            gpu_base               = s.static_buf->GetGPUVirtualAddress();
+            bound_ib_off           = s.static_ib_offset;
+            bound_sh_off           = s.static_shapes_offset;
+        } else {
+            if (s.static_cooldown > 0) { --s.static_cooldown; }
+            gpu_base     = fb.buf->GetGPUVirtualAddress();
+            bound_ib_off = fb.ib_offset;
+            bound_sh_off = fb.shapes_offset;
+        }
     }
+    s.prev_hash = data.content_hash;
 
     const D3D12_VIEWPORT vp{0.0f, 0.0f, data.display_size.x, data.display_size.y, 0.0f, 1.0f};
     const D3D12_GPU_DESCRIPTOR_HANDLE heap_start = s.srv_heap->GetGPUDescriptorHandleForHeapStart();
@@ -983,10 +1092,10 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         list->SetGraphicsRootDescriptorTable(1, heap_start);
         list->SetGraphicsRootDescriptorTable(3, heap_start); // t2 / t3 are only read by ps_image / ps_backdrop;
         list->SetGraphicsRootDescriptorTable(4, heap_start); // keep them valid regardless
-        list->SetGraphicsRootShaderResourceView(2, fb.shapes->GetGPUVirtualAddress());
+        list->SetGraphicsRootShaderResourceView(2, gpu_base + bound_sh_off);
         list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        const D3D12_VERTEX_BUFFER_VIEW vbv{fb.vb->GetGPUVirtualAddress(), static_cast<UINT>(data.vertices.size_bytes()), sizeof(vertex)};
-        const D3D12_INDEX_BUFFER_VIEW  ibv{fb.ib->GetGPUVirtualAddress(), static_cast<UINT>(data.indices.size_bytes()), DXGI_FORMAT_R16_UINT};
+        const D3D12_VERTEX_BUFFER_VIEW vbv{gpu_base, static_cast<UINT>(vb_bytes), sizeof(vertex)};
+        const D3D12_INDEX_BUFFER_VIEW  ibv{gpu_base + bound_ib_off, static_cast<UINT>(ib_bytes), DXGI_FORMAT_R16_UINT};
         list->IASetVertexBuffers(0, 1, &vbv);
         list->IASetIndexBuffer(&ibv);
         const float blend_factor[4] = {0, 0, 0, 0};
@@ -996,7 +1105,8 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     list->SetDescriptorHeaps(1, heaps);
     bind_main();
 
-    const bool can_blur = s.blur_supported && target != nullptr && target->resource != nullptr && target->rtv != 0;
+    const bool can_blur = s.blur_supported && target != nullptr && target->resource != nullptr && target->rtv != 0 &&
+                          data.origin.x == 0.0f && data.origin.y == 0.0f;
     enum class ps_mode { main, image, backdrop };
     ps_mode    mode  = ps_mode::main;
     texture_id bound = 0;
@@ -1005,9 +1115,19 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
     float blur_radius = -1.0f;
     rect  blur_exact{};           // where the blur that was made is exact: a panel inside it can use it again
     UINT  blur_vw = 0, blur_vh = 0;
+    bool       has_scissor = false;
+    D3D12_RECT bound_scissor{};
 
     for (const draw_cmd& cmd : data.commands) {
         if (cmd.idx_count == 0 || cmd.clip.empty()) {
+            continue;
+        }
+        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(v, 0.0f, hi)); };
+        const D3D12_RECT scissor{fit(cmd.clip.min.x - data.origin.x, data.display_size.x),
+                                 fit(cmd.clip.min.y - data.origin.y, data.display_size.y),
+                                 fit(cmd.clip.max.x - data.origin.x, data.display_size.x),
+                                 fit(cmd.clip.max.y - data.origin.y, data.display_size.y)};
+        if (scissor.right <= scissor.left || scissor.bottom <= scissor.top) {
             continue;
         }
 
@@ -1021,8 +1141,9 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
                     blur_dirty  = false;
                     blur_radius = cmd.blur;
                     bind_main(); // (this resets the pipeline to ps_main)
-                    mode  = ps_mode::main;
-                    bound = 0;
+                    mode        = ps_mode::main;
+                    bound       = 0;
+                    has_scissor = false; // run_blur overwrote the scissor
                 }
             }
             if (blur_ready && !blur_dirty) { want = ps_mode::backdrop; }
@@ -1055,9 +1176,12 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         if (want != ps_mode::backdrop) { blur_dirty = true; }
         mode = want;
 
-        const D3D12_RECT scissor{static_cast<LONG>(cmd.clip.min.x), static_cast<LONG>(cmd.clip.min.y),
-                                 static_cast<LONG>(cmd.clip.max.x), static_cast<LONG>(cmd.clip.max.y)};
-        list->RSSetScissorRects(1, &scissor);
+        if (!has_scissor || scissor.left != bound_scissor.left || scissor.top != bound_scissor.top ||
+            scissor.right != bound_scissor.right || scissor.bottom != bound_scissor.bottom) {
+            list->RSSetScissorRects(1, &scissor);
+            bound_scissor = scissor;
+            has_scissor   = true;
+        }
         list->DrawIndexedInstanced(cmd.idx_count, 1, cmd.idx_offset, static_cast<INT>(cmd.vtx_offset), 0);
     }
 }

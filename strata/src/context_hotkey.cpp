@@ -171,8 +171,8 @@ bool context::hotkey_sequence(std::string_view label, key_sequence& seq)
     } else if (!capturing) {
         shown_text = sequence_to_string(seq);
     }
-    const std::string_view shown = capturing && m_->hotkey_.seq_edit_count_ == 0 ? m_->strings_.press_a_key
-                                  : !capturing && shown_text.empty() ? m_->strings_.unbound
+    const std::string_view shown = capturing && m_->hotkey_.seq_edit_count_ == 0 ? ui_str(m_->strings_.press_a_key, "press a key...")
+                                  : !capturing && shown_text.empty() ? ui_str(m_->strings_.unbound, "None")
                                                                      : std::string_view{shown_text};
     color tc = !capturing && !seq.bound() ? m_->style_.text_dim : m_->style_.text;
     if (capturing) {
@@ -243,9 +243,10 @@ static bool hotkey_field(context& ui, std::string_view label, strata::key& key_c
 
     std::string chord_text;
     if (chord != nullptr && !capturing) { chord_text = chord_to_string(*chord); }
-    std::string_view shown = capturing ? m.strings_.press_a_key
-                           : chord != nullptr ? (chord_text.empty() ? m.strings_.unbound : std::string_view{chord_text})
-                                              : key_code == strata::key::none ? m.strings_.unbound : key_name(key_code);
+    const std::string_view unbound = ui_str(m.strings_.unbound, "None");
+    std::string_view shown = capturing ? ui_str(m.strings_.press_a_key, "press a key...")
+                           : chord != nullptr ? (chord_text.empty() ? unbound : std::string_view{chord_text})
+                                              : key_code == strata::key::none ? unbound : key_name(key_code);
     color tc = key_code == strata::key::none && !capturing ? m.style_.text_dim : m.style_.text;
     if (capturing) {
         const f32 pulse = 0.65f + 0.35f * std::sin(static_cast<f32>(m.time_) * 7.0f);

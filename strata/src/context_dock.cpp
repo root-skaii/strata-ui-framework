@@ -226,7 +226,7 @@ bool context::floating_dock(std::string_view title, vec2 initial_pos, vec2 size,
         dock_set_space(*this, si, body, body, body);
         sp.hidden = st.collapsed;
         if (open && sp.root == no_node) { // nothing in it yet
-            const std::string_view hint = m_->strings_.drop_here;
+            const std::string_view hint = ui_str(m_->strings_.drop_here, "drop windows here");
             const vec2 ts = m_->font_.measure(current_font(), hint);
             m_->dl_.text({body.center().x - ts.x * 0.5f, body.center().y - ts.y * 0.5f}, m_->style_.text_dim.scaled_alpha(0.6f), hint, current_font());
         }

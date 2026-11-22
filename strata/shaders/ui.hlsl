@@ -140,17 +140,24 @@ float4 shade_shape(shape s, float2 pixel)
     float  d = sd_round_box(p, s.half_size, s.radius);
 
     float outer = saturate(0.5f - d);
-    float inner = saturate(0.5f - (d + s.border_width));
+    float inner = s.border_width > 0.0f ? saturate(0.5f - (d + s.border_width)) : outer;
 
-    // linear gradient along gradient_dir, or radial from centre to edge
-    float  extent = max(abs(s.gradient_dir.x) * 2.0f * s.half_size.x + abs(s.gradient_dir.y) * 2.0f * s.half_size.y, 1.0e-3f);
-    float  t      = s.gradient_kind > 0.5f ? saturate(length(p / max(s.half_size, 1.0e-3f)))
-                                           : saturate(dot(p, s.gradient_dir) / extent + 0.5f);
-    float4 fill = lerp(unpack_color(s.fill_top), unpack_color(s.fill_bottom), t);
-    float4 edge = unpack_color(s.border_color);
+    // linear gradient along gradient_dir, or radial from centre to edge (skipped for solid fills: uniform across the quad)
+    float4 fill = unpack_color(s.fill_top);
+    if (s.fill_top != s.fill_bottom)
+    {
+        float extent = max(abs(s.gradient_dir.x) * 2.0f * s.half_size.x + abs(s.gradient_dir.y) * 2.0f * s.half_size.y, 1.0e-3f);
+        float t      = s.gradient_kind > 0.5f ? saturate(length(p / max(s.half_size, 1.0e-3f)))
+                                              : saturate(dot(p, s.gradient_dir) / extent + 0.5f);
+        fill = lerp(fill, unpack_color(s.fill_bottom), t);
+    }
 
-    float4 result = float4(fill.rgb * fill.a, fill.a) * inner
-                  + float4(edge.rgb * edge.a, edge.a) * max(outer - inner, 0.0f);
+    float4 result = float4(fill.rgb * fill.a, fill.a) * inner;
+    if (s.border_width > 0.0f)
+    {
+        float4 edge = unpack_color(s.border_color);
+        result += float4(edge.rgb * edge.a, edge.a) * max(outer - inner, 0.0f);
+    }
 
     float4 sh = unpack_color(s.shadow_color);
     if (sh.a > 0.0f && s.shadow_blur > 0.0f)
