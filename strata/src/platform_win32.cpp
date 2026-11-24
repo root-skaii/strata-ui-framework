@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <imm.h>
+#include <shellapi.h>
 
 #include "strata/vmem.hpp"
 
@@ -149,6 +150,13 @@ win32_platform::appearance_settings win32_platform::appearance() noexcept
 clipboard_hooks win32_platform::clipboard() noexcept
 {
     return {&clipboard_set, &clipboard_get, hwnd_};
+}
+
+void win32_platform::enable_file_drop(bool on) noexcept
+{
+    if (hwnd_ != nullptr) {
+        ::DragAcceptFiles(static_cast<HWND>(hwnd_), on ? TRUE : FALSE);
+    }
 }
 
 void win32_platform::push_press(key k) noexcept
@@ -332,6 +340,26 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         }
         return false;
 
+    case WM_DROPFILES: {
+        auto drop = reinterpret_cast<HDROP>(wparam);
+        const UINT count = ::DragQueryFileW(drop, 0xffffffffu, nullptr, 0);
+        for (UINT i = 0; i < count; ++i) {
+            const UINT len = ::DragQueryFileW(drop, i, nullptr, 0);
+            if (len == 0) { continue; }
+            std::wstring w(len + 1, L'\0');
+            if (::DragQueryFileW(drop, i, w.data(), len + 1) > 0) {
+                const int u8_len = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(len), nullptr, 0, nullptr, nullptr);
+                if (u8_len > 0) {
+                    std::string path(static_cast<std::size_t>(u8_len), '\0');
+                    ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(len), path.data(), u8_len, nullptr, nullptr);
+                    pending_drops_.push_back(std::move(path));
+                }
+            }
+        }
+        ::DragFinish(drop);
+        return true;
+    }
+
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
         // every key but the modifiers themselves (they arrive as flags on the others)
@@ -441,6 +469,8 @@ input_state win32_platform::new_frame() noexcept
             release_pending_[i] = false;
         }
     }
+    frame_drops_.swap(pending_drops_);
+    pending_drops_.clear();
     return in;
 }
 

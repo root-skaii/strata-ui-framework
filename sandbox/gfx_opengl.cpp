@@ -21,7 +21,9 @@ constexpr int kWGL_ALPHA_BITS_ARB                 = 0x201B;
 constexpr int kWGL_CONTEXT_MAJOR_VERSION_ARB      = 0x2091;
 constexpr int kWGL_CONTEXT_MINOR_VERSION_ARB      = 0x2092;
 constexpr int kWGL_CONTEXT_FLAGS_ARB              = 0x2094;
+#ifndef NDEBUG
 constexpr int kWGL_CONTEXT_DEBUG_BIT_ARB          = 0x0001;
+#endif
 constexpr int kWGL_CONTEXT_PROFILE_MASK_ARB       = 0x9126;
 constexpr int kWGL_CONTEXT_CORE_PROFILE_BIT_ARB   = 0x0001;
 
@@ -73,9 +75,9 @@ public:
                 if (pf != 0 && ::SetPixelFormat(ddc, pf, &pfd)) {
                     if (HGLRC drc = ::wglCreateContext(ddc); drc != nullptr) {
                         ::wglMakeCurrent(ddc, drc);
-                        wgl_choose_pf     = reinterpret_cast<wgl_choose_pf_fn>(::wglGetProcAddress("wglChoosePixelFormatARB"));
-                        wgl_create_ctx    = reinterpret_cast<wgl_create_ctx_fn>(::wglGetProcAddress("wglCreateContextAttribsARB"));
-                        wgl_swap_interval = reinterpret_cast<wgl_swap_interval_fn>(::wglGetProcAddress("wglSwapIntervalEXT"));
+                        wgl_choose_pf     = reinterpret_cast<wgl_choose_pf_fn>(reinterpret_cast<void*>(::wglGetProcAddress("wglChoosePixelFormatARB")));
+                        wgl_create_ctx    = reinterpret_cast<wgl_create_ctx_fn>(reinterpret_cast<void*>(::wglGetProcAddress("wglCreateContextAttribsARB")));
+                        wgl_swap_interval = reinterpret_cast<wgl_swap_interval_fn>(reinterpret_cast<void*>(::wglGetProcAddress("wglSwapIntervalEXT")));
                         ::wglMakeCurrent(nullptr, nullptr);
                         ::wglDeleteContext(drc);
                     }

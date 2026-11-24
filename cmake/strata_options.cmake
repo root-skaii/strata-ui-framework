@@ -132,6 +132,9 @@ if(MSVC)
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         # clang-cl is conforming by default and warns these MSVC-only switches as unused
         target_compile_options(strata_options INTERFACE /Zc:preprocessor /Zc:throwingNew)
+    else()
+        # C++20 designated initializers and C Vulkan/Win32 structs intentionally zero-init omitted fields
+        target_compile_options(strata_options INTERFACE -Wno-missing-field-initializers)
     endif()
     target_link_options(strata_options INTERFACE
         $<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
@@ -162,7 +165,7 @@ if(MSVC)
     endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(strata_options INTERFACE
-        -Wall -Wextra -fno-exceptions -fno-rtti
+        -Wall -Wextra -Wno-missing-field-initializers -fno-exceptions -fno-rtti
         $<$<NOT:$<CONFIG:Debug>>:-ffunction-sections -fdata-sections>
     )
     if(STRATA_FAST_MATH)

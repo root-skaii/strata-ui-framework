@@ -140,7 +140,7 @@ bool unpatch_slot(void** vt, int index, void* hook, void* original, bool& patche
 {
     // d3d12.dll is already loaded (that is why it was picked): no LoadLibrary, nothing to free
     using create_fn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
-    const auto create = reinterpret_cast<create_fn>(::GetProcAddress(::GetModuleHandleW(L"d3d12.dll"), "D3D12CreateDevice"));
+    const auto create = reinterpret_cast<create_fn>(reinterpret_cast<void*>(::GetProcAddress(::GetModuleHandleW(L"d3d12.dll"), "D3D12CreateDevice")));
     ComPtr<ID3D12Device>       device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<IDXGIFactory2>      factory;
@@ -218,8 +218,31 @@ void hook_queue_vtable(ID3D12Device* device)
 
 hook_result install_hooks()
 {
+#if STRATA_HAS_OPENGL
+    const bool prefer_gl = g.opt.backend == backend_kind::opengl ||
+                           (g.opt.backend == backend_kind::auto_detect &&
+                            ::GetModuleHandleW(L"opengl32.dll") != nullptr &&
+                            ::GetModuleHandleW(L"d3d11.dll") == nullptr &&
+                            ::GetModuleHandleW(L"d3d12.dll") == nullptr);
+    if (prefer_gl) {
+        return install_gl_hooks() ? hook_result::ok : hook_result::patch_failed;
+    }
+#else
+    if (g.opt.backend == backend_kind::opengl) {
+        set_error("opengl overlay support was not compiled in");
+        return hook_result::no_vtable;
+    }
+#endif
+
     g.vtable = find_swap_chain_vtable();
-    if (g.vtable == nullptr) { return hook_result::no_vtable; }
+    if (g.vtable == nullptr) {
+#if STRATA_HAS_OPENGL
+        if (g.opt.backend == backend_kind::auto_detect && ::GetModuleHandleW(L"opengl32.dll") != nullptr) {
+            return install_gl_hooks() ? hook_result::ok : hook_result::patch_failed;
+        }
+#endif
+        return hook_result::no_vtable;
+    }
     g.patched_present  = patch_slot(g.vtable, vt_present, reinterpret_cast<void*>(&hook_present), reinterpret_cast<void**>(&g.orig_present));
     g.patched_present1 = g.has_sc1 && patch_slot(g.vtable, vt_present1, reinterpret_cast<void*>(&hook_present1), reinterpret_cast<void**>(&g.orig_present1));
     log_line("vtable %p, present1 %d", static_cast<void*>(g.vtable), g.has_sc1 ? 1 : 0);
@@ -249,6 +272,9 @@ bool remove_hooks()
     if (g.queue_vtable != nullptr) {
         all &= unpatch_slot(g.queue_vtable, vt_queue_execute, reinterpret_cast<void*>(&hook_execute), reinterpret_cast<void*>(g.orig_execute), g.patched_execute);
     }
+#if STRATA_HAS_OPENGL
+    all &= remove_gl_hooks();
+#endif
     return all;
 }
 

@@ -51,7 +51,7 @@ int wmain(int argc, wchar_t** argv)
     void* remote = ::VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     int rc = 6;
     if (remote != nullptr && ::WriteProcessMemory(process, remote, full, bytes, nullptr)) {
-        const auto load = reinterpret_cast<LPTHREAD_START_ROUTINE>(::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
+        const auto load = reinterpret_cast<LPTHREAD_START_ROUTINE>(reinterpret_cast<void*>(::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW")));
         if (HANDLE thread = ::CreateRemoteThread(process, nullptr, 0, load, remote, 0, nullptr)) {
             ::WaitForSingleObject(thread, 10000);
             DWORD module = 0;

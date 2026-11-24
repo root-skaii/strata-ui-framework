@@ -1,6 +1,9 @@
 #include "strata/strata_c.h"
 
 #include "strata/backend/software.hpp"
+#if STRATA_HAS_OPENGL
+#include "strata/backend/opengl.hpp"
+#endif
 #include "strata/context.hpp"
 #include "strata/node_editor.hpp"
 #include "strata/themes.hpp"
@@ -156,6 +159,14 @@ int strata_slider_int(strata_context* ui, const char* label, int* value, int lo,
 {
     return ctx(ui).slider<int>(sv(label), *value, lo, hi);
 }
+int strata_range_slider(strata_context* ui, const char* label, float* lo_val, float* hi_val, float lo, float hi)
+{
+    return ctx(ui).range_slider(sv(label), *lo_val, *hi_val, lo, hi) ? 1 : 0;
+}
+int strata_knob(strata_context* ui, const char* label, float* value, float lo, float hi, float default_val)
+{
+    return ctx(ui).knob(sv(label), *value, lo, hi, default_val) ? 1 : 0;
+}
 int strata_drag_float(strata_context* ui, const char* label, float* value, float speed, float lo, float hi)
 {
     return ctx(ui).drag_float(sv(label), *value, speed, lo, hi);
@@ -235,6 +246,58 @@ void strata_end_child(strata_context* ui) { ctx(ui).end_child(); }
 void strata_push_id_str(strata_context* ui, const char* id) { ctx(ui).push_id(sv(id)); }
 void strata_push_id_int(strata_context* ui, int id) { ctx(ui).push_id(id); }
 void strata_pop_id(strata_context* ui) { ctx(ui).pop_id(); }
+
+void     strata_set_keyboard_nav(strata_context* ui, int enabled) { ctx(ui).set_keyboard_nav(enabled != 0); }
+int      strata_keyboard_nav(const strata_context* ui) { return ui->ui.keyboard_nav() ? 1 : 0; }
+uint64_t strata_keyboard_focus_id(const strata_context* ui) { return ui->ui.keyboard_focus_id(); }
+
+void strata_dock_area(strata_context* ui, const char* space, strata_rect area)
+{
+    const rect r{{area.min_x, area.min_y}, {area.max_x, area.max_y}};
+    const std::string_view sp = sv(space);
+    if (sp.empty()) { ctx(ui).dock_area(r); } else { ctx(ui).dock_area(sp, r); }
+}
+
+strata_rect strata_dock_edge(strata_context* ui, const char* space, int side, float size, strata_rect region)
+{
+    const dock_side s = side == STRATA_DOCK_SIDE_RIGHT  ? dock_side::right
+                      : side == STRATA_DOCK_SIDE_TOP    ? dock_side::top
+                      : side == STRATA_DOCK_SIDE_BOTTOM ? dock_side::bottom
+                                                        : dock_side::left;
+    const rect out = ctx(ui).dock_edge(sv(space), s, size, {{region.min_x, region.min_y}, {region.max_x, region.max_y}});
+    return {out.min.x, out.min.y, out.max.x, out.max.y};
+}
+
+int strata_floating_dock(strata_context* ui, const char* title, float x, float y, float width, float height, uint32_t flags)
+{
+    return ctx(ui).floating_dock(sv(title), {x, y}, {width, height}, static_cast<window_flags>(flags)) ? 1 : 0;
+}
+
+int strata_dock_window(strata_context* ui, const char* title, int zone, const char* target, float size, const char* space)
+{
+    const dock_zone z = zone == STRATA_DOCK_LEFT   ? dock_zone::left
+                      : zone == STRATA_DOCK_RIGHT  ? dock_zone::right
+                      : zone == STRATA_DOCK_TOP    ? dock_zone::top
+                      : zone == STRATA_DOCK_BOTTOM ? dock_zone::bottom
+                                                   : dock_zone::center;
+    return ctx(ui).dock_window(sv(title), z, sv(target), size, sv(space)) ? 1 : 0;
+}
+
+void strata_undock_window(strata_context* ui, const char* title) { ctx(ui).undock_window(sv(title)); }
+int  strata_window_docked(const strata_context* ui, const char* title) { return ui->ui.window_docked(sv(title)) ? 1 : 0; }
+
+size_t strata_dock_save_layout(const strata_context* ui, char* out, size_t capacity)
+{
+    const std::string text = ui->ui.dock_save_layout();
+    if (out != nullptr && capacity > 0) {
+        const std::size_t n = std::min(text.size(), capacity - 1);
+        if (n > 0) { std::memcpy(out, text.data(), n); }
+        out[n] = '\0';
+    }
+    return text.size();
+}
+
+int strata_dock_load_layout(strata_context* ui, const char* text) { return ctx(ui).dock_load_layout(sv(text)) ? 1 : 0; }
 
 int strata_begin_table(strata_context* ui, const char* id, uint32_t columns, uint32_t flags, float height)
 {
@@ -431,5 +494,54 @@ int strata_software_read_pixels(const strata_software_renderer* r, uint8_t* out,
     const std::size_t need = static_cast<std::size_t>(r->renderer.width()) * r->renderer.height() * 4;
     return capacity >= need && r->renderer.copy_straight({out, need});
 }
+
+#if STRATA_HAS_OPENGL
+struct strata_gl_renderer {
+    gl_renderer renderer;
+};
+
+strata_gl_renderer* strata_gl_create(const strata_context* ui, strata_gl_proc_loader loader)
+{
+    if (ui == nullptr) { return nullptr; }
+    auto* r = new (std::nothrow) strata_gl_renderer;
+    if (r != nullptr && !r->renderer.create(ui->ui.font(), loader)) {
+        delete r;
+        return nullptr;
+    }
+    return r;
+}
+
+void strata_gl_destroy(strata_gl_renderer* r) { delete r; }
+void strata_gl_render(strata_gl_renderer* r, const strata_context* ui)
+{
+    if (r != nullptr && ui != nullptr) { r->renderer.render(ui->ui.render_data()); }
+}
+int strata_gl_update_atlas(strata_gl_renderer* r, const strata_context* ui)
+{
+    return (r != nullptr && ui != nullptr && r->renderer.update_atlas(ui->ui.font())) ? 1 : 0;
+}
+void strata_gl_set_state_restore(strata_gl_renderer* r, int on)
+{
+    if (r != nullptr) { r->renderer.set_state_restore(on != 0); }
+}
+uint32_t strata_gl_create_texture(strata_gl_renderer* r, uint32_t width, uint32_t height, const uint8_t* rgba)
+{
+    if (r == nullptr || rgba == nullptr || width == 0 || height == 0) { return 0; }
+    const std::size_t bytes = static_cast<std::size_t>(width) * height * 4;
+    return static_cast<uint32_t>(r->renderer.create_texture(width, height, {rgba, bytes}));
+}
+void strata_gl_destroy_texture(strata_gl_renderer* r, uint32_t texture_id)
+{
+    if (r != nullptr) { r->renderer.destroy_texture(static_cast<strata::texture_id>(texture_id)); }
+}
+#else
+strata_gl_renderer* strata_gl_create(const strata_context*, strata_gl_proc_loader) { return nullptr; }
+void                strata_gl_destroy(strata_gl_renderer*) {}
+void                strata_gl_render(strata_gl_renderer*, const strata_context*) {}
+int                 strata_gl_update_atlas(strata_gl_renderer*, const strata_context*) { return 0; }
+void                strata_gl_set_state_restore(strata_gl_renderer*, int) {}
+uint32_t            strata_gl_create_texture(strata_gl_renderer*, uint32_t, uint32_t, const uint8_t*) { return 0; }
+void                strata_gl_destroy_texture(strata_gl_renderer*, uint32_t) {}
+#endif
 
 } // extern "C"

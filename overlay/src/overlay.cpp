@@ -103,7 +103,7 @@ float ui_scale() noexcept
 unsigned long long frames() noexcept { return g.frame_count.load(); }
 const char* last_error() noexcept { return g.error; }
 output_space output_space_in_use() noexcept { return static_cast<output_space>(g.output_now.load()); }
-bool attached() noexcept { return g.chain != nullptr && g.subclassed; }
+bool attached() noexcept { return (g.chain != nullptr || g.backend == state::api::opengl) && g.subclassed; }
 void* window() noexcept { return g.hwnd; }
 void* device11() noexcept { return g.backend == state::api::d3d11 ? static_cast<void*>(g.device.Get()) : nullptr; }
 

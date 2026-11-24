@@ -217,14 +217,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     if (!dll.empty()) {
         module = ::LoadLibraryW(dll.c_str());
         if (module == nullptr) { std::fprintf(stderr, "cannot load the dll (%lu)\n", ::GetLastError()); return 20; }
-        frames   = reinterpret_cast<frames_fn>(::GetProcAddress(module, "strata_overlay_frames"));
-        attached = reinterpret_cast<attached_fn>(::GetProcAddress(module, "strata_overlay_attached"));
+        frames   = reinterpret_cast<frames_fn>(reinterpret_cast<void*>(::GetProcAddress(module, "strata_overlay_frames")));
+        attached = reinterpret_cast<attached_fn>(reinterpret_cast<void*>(::GetProcAddress(module, "strata_overlay_attached")));
         if (frames == nullptr || attached == nullptr) { std::fprintf(stderr, "the dll lacks its c api\n"); return 21; }
 
         // the hook installs on a thread of its own and attaches to the swap chain at the next Present
         for (int i = 0; i < 600 && attached() == 0 && !quit; ++i) { run_frame(); }
         if (attached() == 0) {
-            const auto err = reinterpret_cast<error_fn>(::GetProcAddress(module, "strata_overlay_last_error"));
+            const auto err = reinterpret_cast<error_fn>(reinterpret_cast<void*>(::GetProcAddress(module, "strata_overlay_last_error")));
             std::fprintf(stderr, "FAIL: the overlay never attached (%s)\n", err != nullptr ? err() : "?");
             ++failures;
         } else {
@@ -257,7 +257,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             std::printf("overlay drew %llu frames while it was open\n", shown);
 
             // the encoding the overlay picked for this swap chain
-            const auto output_space = reinterpret_cast<output_fn>(::GetProcAddress(module, "strata_overlay_output_space"));
+            const auto output_space = reinterpret_cast<output_fn>(reinterpret_cast<void*>(::GetProcAddress(module, "strata_overlay_output_space")));
             const int want_space = fp16 ? 2 : 0; // scRGB / srgb
             if (output_space == nullptr || output_space() != want_space) {
                 std::fprintf(stderr, "FAIL: the overlay encodes for output space %d, expected %d\n", output_space != nullptr ? output_space() : -1, want_space);

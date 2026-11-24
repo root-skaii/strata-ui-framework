@@ -3,7 +3,10 @@
 #include "strata/context.hpp"
 
 #include <cstdint>
+#include <span>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace strata {
 
@@ -49,6 +52,11 @@ public:
     // text-field clipboard: ui.set_clipboard(platform.clipboard()). keep this object at a fixed address while in use.
     [[nodiscard]] clipboard_hooks clipboard() noexcept;
 
+    // OS file drag-and-drop (WM_DROPFILES): enable_file_drop(true) calls DragAcceptFiles; dropped_files() holds UTF-8
+    // paths dropped during the previous frame (cleared each new_frame())
+    void enable_file_drop(bool on) noexcept;
+    [[nodiscard]] std::span<const std::string> dropped_files() const noexcept { return frame_drops_; }
+
 private:
     // key / extra mouse button down: queued with the modifiers held now
     void push_press(key k) noexcept;
@@ -77,6 +85,8 @@ private:
     bool                                  ime_enabled_{true};
     vec2                                  ime_pos_{-1.0f, -1.0f};
     bool                                  appearance_changed_{};
+    std::vector<std::string>              pending_drops_;
+    std::vector<std::string>              frame_drops_;
 };
 
 } // namespace strata

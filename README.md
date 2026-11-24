@@ -133,6 +133,8 @@ whether the frame needs rendering.
 
 - **Direct3D 11 / OpenGL 3.3+:** `render(data)` draws into the currently bound target/framebuffer and saves/restores modified pipeline state by default (`set_state_restore(false)` disables the guard for dedicated hosts). OpenGL accepts an optional `proc_loader` (`glfwGetProcAddress`, `SDL_GL_GetProcAddress`, etc.) or resolves WGL entry points automatically on Windows.
 - **Direct3D 12 / Vulkan:** `render(data, cmd, frame_index, target)` records into the host's open command list / command buffer using per-frame upload slots (the host waits on that slot's fence before reuse). Vulkan records outside a render pass so staged texture copies and backdrop blur passes execute cleanly without extra host hooks.
+- **Platform adapters:** `strata/platform/win32.hpp` (Win32 + IME + `enable_file_drop` / `dropped_files()`), plus header-only `strata/platform/glfw.hpp` (`glfw_platform`) and `strata/platform/sdl3.hpp` (`sdl3_platform`) for cross-platform hosts.
+- **Ready-made host (`strata::app`):** `strata/app.hpp` creates a Win32 window and device for `app_backend::d3d11`, `opengl`, or `vulkan` (`auto_select` picks the first compiled-in backend) with idling, DPI, theme tracking, and saved layout.
 
 ## Design notes
 
@@ -738,11 +740,9 @@ Output follows the shaders but is not bit-identical to the gpu renderers; compar
 `input_recorder` / `input_replayer` (`strata/input_record.hpp`) save the `input_state` of each frame and play it back, so a
 bug report or a test is a file; the sandbox has `--record FILE` and `--replay FILE [--shot out.png]`.
 
-## C interface
+## C interface and Rust bindings
 
-`strata/strata_c.h` wraps the context, the common widgets, the draw data and the software renderer for C and other
-languages: windows, text, buttons, inputs, tables, tabs, menus, popups, plots, the node editor, the debug windows, the draw data
-and the software renderer. Opaque handles, plain structs, no exceptions; the draw data layouts match the C++ ones.
+`strata/strata_c.h` wraps the context, widgets (`range_slider`, `knob`, tables, tabs, menus, popups, docking, plots, node editor, debug windows), draw data, CPU software renderer, and OpenGL renderer for C and FFI consumers. Opaque handles, plain structs, no exceptions; draw data layouts match the C++ ones.
 
 ```c
 strata_context* ui = strata_context_create(NULL);
@@ -751,6 +751,8 @@ if (strata_begin_window(ui, "hello", 20, 20, 300, 160, 0)) { if (strata_button(u
 strata_end_window(ui);
 strata_end_frame(ui);
 ```
+
+`bindings/rust/` provides a Cargo workspace (`strata-sys` static CMake build + safe `strata` wrapper crate) built directly on `strata_c.h`.
 
 ## Accessibility basics
 
@@ -762,8 +764,8 @@ for (const auto& issue : strata::themes::check_contrast(ui.theme())) { /* issue.
 
 `style::reduce_motion` makes hover, toggle, scroll and dock animations jump to their end state; `for_appearance` takes it
 from the Windows "show animations" setting. `check_contrast` flags text and accent pairs below WCAG 4.5:1 / 3:1.
-Layouts are exercised at 150 % and 200 % scale (`ui.set_scale`). Screen readers (UI Automation) and keyboard focus
-rings for every widget are not there yet: only text fields and combos take the keyboard.
+`Tab` / `Shift+Tab` cycles keyboard focus across interactive widgets in the focused window with an accent focus ring (`Space` / `Enter` activates, `Esc` or mouse click clears; toggle via `ui.set_keyboard_nav(bool)`).
+Layouts are exercised at 150 % and 200 % scale (`ui.set_scale`). Screen readers (UI Automation) are not implemented yet.
 
 ## Footprint
 
@@ -817,9 +819,9 @@ The DPI scale is a good default, not a setting -- overlays are often wanted smal
 works from any thread and applies on the next frame. Each rebuild costs tens of ms per font, so drive it from a
 stepper rather than a dragged slider.
 
-## In-game overlay (Direct3D 11 and 12)
+## In-game overlay (Direct3D 11, Direct3D 12, and OpenGL)
 
-`overlay/` is a DLL loaded into a Direct3D program (modding tools, inspectors, profilers) that draws a strata UI over
+`overlay/` is a DLL loaded into a Direct3D or OpenGL program (modding tools, inspectors, profilers) that draws a strata UI over
 every frame and takes keyboard and mouse input while open.
 
 ```cpp
@@ -828,9 +830,8 @@ opt.ui = [](strata::context& ui) { if (auto w = ui.window("my tool", {40, 40}, {
 strata::overlay::install(opt);       // call from a dedicated thread, not from DllMain; F1 (opt.toggle_key) toggles it
 ```
 
-- **The hook:** a dummy swap chain yields `IDXGISwapChain`'s shared vtable, so `Present` / `Present1` /
-  `ResizeBuffers` can be replaced on the target's swap chain with no code patched (`uninstall()` restores them, and
-  reports whether the DLL is safe to unload).
+- **The hook:** for DXGI (D3D11/12), a dummy swap chain yields `IDXGISwapChain`'s shared vtable so `Present` / `Present1` /
+  `ResizeBuffers` are replaced with no code patched; for OpenGL (`options::backend = backend_kind::opengl` or auto-detected when `opengl32.dll` is loaded without D3D), `SwapBuffers` / `wglSwapBuffers` IAT slots are patched the same way (`uninstall()` restores them and reports `done` / `busy` / `pinned`).
 - **Input:** the host window is subclassed and feeds `win32_platform`; while open, keyboard and mouse input can
   optionally be blocked from reaching the underlying application (`options.block_game_input`).
 - **HUD:** `options.hud` runs on every frame, menu open or not, with no input capture while the host keeps mouse and
@@ -839,8 +840,7 @@ strata::overlay::install(opt);       // call from a dedicated thread, not from D
   <pid|exe> <dll>` (LoadLibrary injector), `strata_overlay_host` (stand-in host used by `ctest`).
 - **Direct3D 12:** the queue seen calling `ExecuteCommandLists` is hooked the same way; the overlay submits its own
   command list before `Present`.
-- **Limits:** overlay hooking currently targets DXGI (Direct3D 11 and 12); Vulkan and OpenGL overlays require their own
-  present/swapchain hooks. Not intended for online games with anti-cheat.
+- **Limits:** Vulkan overlays require an explicit layer or swapchain hook. Not intended for online games with anti-cheat.
 
 ## VR and XR overlays
 

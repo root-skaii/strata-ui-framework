@@ -28,7 +28,14 @@
 
 namespace strata::overlay {
 
+enum class backend_kind : u8 {
+    auto_detect, // DXGI (D3D11/D3D12), or OpenGL when opengl32.dll is loaded without D3D11/D3D12
+    dxgi,        // force DXGI vtable hook (Direct3D 11 / 12)
+    opengl,      // force OpenGL IAT hook (SwapBuffers / wglSwapBuffers)
+};
+
 struct options {
+    backend_kind backend = backend_kind::auto_detect;
     // called every visible frame between begin_frame and end_frame, on the game's render thread
     std::function<void(context&)> ui;
     // called on every frame the game presents, hidden or not, before `ui` and on the same context. while hidden the ui

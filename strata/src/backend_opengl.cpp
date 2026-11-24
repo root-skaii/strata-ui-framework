@@ -109,7 +109,6 @@ constexpr GLenum     kGL_FRAGMENT_SHADER            = 0x8B30;
 constexpr GLenum     kGL_VERTEX_SHADER              = 0x8B31;
 constexpr GLenum     kGL_COMPILE_STATUS             = 0x8B81;
 constexpr GLenum     kGL_LINK_STATUS                = 0x8B82;
-constexpr GLenum     kGL_FRAMEBUFFER                = 0x8D40;
 constexpr GLenum     kGL_READ_FRAMEBUFFER           = 0x8CA8;
 constexpr GLenum     kGL_DRAW_FRAMEBUFFER           = 0x8CA9;
 constexpr GLenum     kGL_DRAW_FRAMEBUFFER_BINDING   = 0x8CA6;
@@ -184,7 +183,7 @@ struct gl_procs {
         if (opengl_mod == nullptr) { opengl_mod = ::LoadLibraryW(L"opengl32.dll"); }
         using wgl_get_proc_fn = PROC(WINAPI*)(LPCSTR);
         const auto wgl_get_proc = opengl_mod != nullptr
-                                      ? reinterpret_cast<wgl_get_proc_fn>(::GetProcAddress(opengl_mod, "wglGetProcAddress"))
+                                      ? reinterpret_cast<wgl_get_proc_fn>(reinterpret_cast<void*>(::GetProcAddress(opengl_mod, "wglGetProcAddress")))
                                       : nullptr;
 #endif
         const auto resolve = [&](const char* name) -> void* {

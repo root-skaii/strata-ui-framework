@@ -242,7 +242,7 @@ void test_dock_layout()
     std::fprintf(stderr, "[dock layout save / restore]\n");
     constexpr window_flags flags = window_flags::dockable | window_flags::resizable;
     const auto build_for = [&](harness& h) {
-        return [&h, flags] {
+        return [&h] {
             rect client{{0, 0}, {800, 600}};
             client = h.ui.dock_edge("side", dock_side::left, 200.0f, client);
             h.ui.dock_area(client);
@@ -566,7 +566,7 @@ void test_dock_group_drag()
     constexpr window_flags flags = window_flags::dockable | window_flags::resizable;
     rect area{{0, 0}, {800, 600}};
     const auto make = [&](harness& h) {
-        return [&h, &area, flags] {
+        return [&h, &area] {
             h.ui.dock_area(area);
             for (const char* name : {"A", "B", "C"}) {
                 if (auto w = h.ui.window(name, {560, 400}, {200, 120}, flags)) { h.ui.text(name); }

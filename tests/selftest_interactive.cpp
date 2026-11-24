@@ -443,6 +443,154 @@ void test_interactive_workspace_session()
     CHECK(h.ui.stats().limits_hit == 0);
 }
 
+// exercises new widgets (range_slider, knob), chart clickable legend + ref lines, code editor Ctrl+/, and Tab keyboard nav
+void test_interactive_new_features()
+{
+    std::fprintf(stderr, "[interactive: range_slider, knob, chart legend/ref lines, Ctrl+/ comment, Tab focus nav]\n");
+    harness h;
+    h.in.display_size = {1024.0f, 768.0f};
+    null_renderer nr;
+    CHECK(nr.create(h.ui.font()));
+
+    float r_lo = 20.0f, r_hi = 80.0f;
+    float knob_v = 0.5f;
+    int   btn_clicks = 0;
+    bool  chk_val = false;
+    std::string code = "int a = 1;\nint b = 2;\n";
+    rect rc_range{}, rc_knob{}, rc_code{}, rc_chart{};
+
+    static constexpr float s0[] = {10.0f, 20.0f, 15.0f, 30.0f};
+    static constexpr float s1[] = {5.0f, 8.0f, 12.0f, 9.0f};
+    const plot_series series[2] = {
+        {.name = "Alpha", .values = s0, .col = {80, 180, 255, 255}},
+        {.name = "Beta",  .values = s1, .col = {255, 160, 80, 255}},
+    };
+    const plot_ref_line refs[2] = {
+        {.value = 18.0f, .vertical = false, .col = {255, 80, 80, 220},  .label = "limit"},
+        {.value = 2.0f,  .vertical = true,  .col = {120, 220, 120, 220}, .label = "t=2"},
+    };
+    plot_options popt;
+    popt.size               = {460.0f, 150.0f};
+    popt.interactive_legend = true;
+    popt.ref_lines          = refs;
+
+    const auto build = [&] {
+        if (auto w = h.ui.window("new_features", {20, 20}, {520, 680})) {
+            if (h.ui.button("nav_btn")) { ++btn_clicks; }
+            h.ui.checkbox("nav_chk", chk_val);
+            h.ui.range_slider("bounds", r_lo, r_hi, 0.0f, 100.0f);
+            rc_range = h.ui.item_rect();
+            h.ui.knob("gain", knob_v, 0.0f, 1.0f, 0.5f);
+            rc_knob = h.ui.item_rect();
+            h.ui.input_code("src", code, {460.0f, 110.0f});
+            rc_code = h.ui.item_rect();
+            h.ui.plot("metrics", series, popt);
+            rc_chart = h.ui.item_rect();
+        }
+    };
+
+    h.frames(build, 3);
+    CHECK(rc_range.width() > 60.0f && rc_knob.width() > 20.0f && rc_chart.height() > 100.0f);
+
+    // 1. range_slider: drag left handle right, then drag right handle left
+    const float track_w = rc_range.width();
+    const vec2 lo_pt{rc_range.min.x + track_w * 0.20f, rc_range.center().y};
+    h.move(lo_pt); h.frames(build, 2);
+    h.down(); h.frame(build);
+    h.move({rc_range.min.x + track_w * 0.40f, rc_range.center().y}); h.frames(build, 3);
+    h.up(); h.frames(build, 2);
+    CHECK(r_lo > 30.0f && r_lo <= r_hi);
+
+    const vec2 hi_pt{rc_range.min.x + track_w * 0.80f, rc_range.center().y};
+    h.move(hi_pt); h.frames(build, 2);
+    h.down(); h.frame(build);
+    h.move({rc_range.min.x + track_w * 0.60f, rc_range.center().y}); h.frames(build, 3);
+    h.up(); h.frames(build, 2);
+    CHECK(r_hi < 70.0f && r_hi >= r_lo);
+
+    // 2. knob: drag up increases value; Shift fine drag changes less; double-click resets to 0.5
+    const vec2 kpt = rc_knob.center();
+    h.move(kpt); h.frames(build, 2);
+    h.down(); h.frame(build);
+    h.move({kpt.x, kpt.y - 60.0f}); h.frames(build, 3);
+    h.up(); h.frames(build, 2);
+    CHECK(knob_v > 0.7f);
+    const float before_fine = knob_v;
+    h.modifiers(false, true, false);
+    h.move(kpt); h.frames(build, 1);
+    h.down(); h.frame(build);
+    h.move({kpt.x, kpt.y + 40.0f}); h.frames(build, 2);
+    h.up(); h.frames(build, 1);
+    h.modifiers(false, false, false);
+    CHECK(knob_v < before_fine && (before_fine - knob_v) < 0.1f);
+    // double-click reset to default (0.5)
+    h.click(kpt, build);
+    h.click(kpt, build);
+    CHECK(std::fabs(knob_v - 0.5f) < 0.01f);
+
+    // 3. code editor Ctrl+/ comment toggle + Ctrl+Z undo
+    h.click({rc_code.min.x + 80.0f, rc_code.min.y + 12.0f}, build);
+    h.frames(build, 2);
+    h.press(strata::key::slash, true);
+    h.frames(build, 2);
+    CHECK(code.starts_with("// int a = 1;"));
+    h.press(strata::key::slash, true);
+    h.frames(build, 2);
+    CHECK(code.starts_with("int a = 1;"));
+    // select all and comment both lines
+    h.press(strata::key::a, true);
+    h.frames(build, 1);
+    h.press(strata::key::slash, true);
+    h.frames(build, 2);
+    CHECK(code == "// int a = 1;\n// int b = 2;\n");
+    h.press(strata::key::z, true);
+    h.frames(build, 2);
+    CHECK(code == "int a = 1;\nint b = 2;\n");
+    // click away so code editor releases keyboard focus, then click window background to refocus window
+    h.click({800.0f, 600.0f}, build);
+    h.click({rc_chart.min.x + 8.0f, rc_chart.max.y - 8.0f}, build);
+    h.frames(build, 2);
+
+    // 4. chart interactive legend toggle (legend sits at top-right of chart header)
+    const std::size_t verts_before = h.ui.render_data().vertices.size();
+    h.click({rc_chart.max.x - 20.0f, rc_chart.min.y + 10.0f}, build);
+    h.frames(build, 2);
+    const std::size_t verts_after = h.ui.render_data().vertices.size();
+    CHECK(verts_after != verts_before); // toggling series visibility changes emitted geometry
+    // restore series
+    h.click({rc_chart.max.x - 20.0f, rc_chart.min.y + 10.0f}, build);
+    h.frames(build, 2);
+
+    // 5. Tab / Shift+Tab keyboard navigation + Space activation + Esc clear
+    h.ui.set_keyboard_nav(true);
+    CHECK(h.ui.keyboard_nav());
+    h.press(strata::key::tab);
+    h.frames(build, 2);
+    const id first_focus = h.ui.keyboard_focus_id();
+    CHECK(first_focus != 0);
+    h.press(strata::key::space);
+    h.frames(build, 2);
+    CHECK(btn_clicks == 1);
+
+    h.press(strata::key::tab);
+    h.frames(build, 2);
+    const id second_focus = h.ui.keyboard_focus_id();
+    CHECK(second_focus != 0 && second_focus != first_focus);
+    h.press(strata::key::enter);
+    h.frames(build, 2);
+    CHECK(chk_val);
+
+    h.press(strata::key::tab, false, true); // Shift+Tab returns to first control
+    h.frames(build, 2);
+    CHECK(h.ui.keyboard_focus_id() == first_focus);
+
+    h.press(strata::key::escape);
+    h.frames(build, 2);
+    CHECK(h.ui.keyboard_focus_id() == 0);
+
+    check_finite_and_valid(h.ui.render_data(), nr);
+}
+
 } // namespace
 
 void run_interactive_tests()
@@ -450,4 +598,5 @@ void run_interactive_tests()
     test_interactive_charts_and_extremes();
     test_interactive_controls_click_drag();
     test_interactive_workspace_session();
+    test_interactive_new_features();
 }

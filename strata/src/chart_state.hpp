@@ -20,6 +20,7 @@ struct chart_view {
     rect inner;                          // ... and where
     f64  last_click{-10.0};
     u64  last_frame{};
+    u32  hidden_mask{};                  // bit i hides series i (toggled by clicking the legend)
 };
 
 struct chart_state {

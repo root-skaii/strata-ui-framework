@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [x64-dev, x64-clang-release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build (${{ matrix.preset }})
+        shell: cmd
+        run: .\build_vs.cmd ${{ matrix.preset }} -DSTRATA_WERROR=ON
+
+      - name: Run headless tests
+        shell: pwsh
+        run: ctest --test-dir build/${{ matrix.preset }} -R "strata_selftest|strata_c_api_test|strata_overlay_modules" --output-on-failure
+
+  linux-headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build cmake
+
+      - name: Configure and build headless library & C API test
+        run: |
+          cmake -S . -B build/linux -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_BUILD_OPENGL=ON \
+            -DSTRATA_BUILD_VULKAN=OFF \
+            -DSTRATA_BUILD_TESTS=ON \
+            -DSTRATA_WERROR=ON
+          cmake --build build/linux
+          ctest --test-dir build/linux --output-on-failure

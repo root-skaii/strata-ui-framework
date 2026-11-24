@@ -91,6 +91,8 @@ target_sources(strata PUBLIC
         include/strata/log.hpp
         include/strata/log_queue.hpp
         include/strata/node_editor.hpp
+        include/strata/platform/glfw.hpp
+        include/strata/platform/sdl3.hpp
         include/strata/platform/win32.hpp
         include/strata/strata.hpp
         include/strata/strata_c.h
@@ -236,15 +238,24 @@ if(STRATA_BUILD_OPENVR)
 endif()
 
 if(WIN32)
-    target_link_libraries(strata PRIVATE gdi32.lib user32.lib advapi32.lib imm32.lib)
+    target_link_libraries(strata PRIVATE gdi32.lib user32.lib advapi32.lib imm32.lib shell32.lib)
 endif()
 
-# strata::app: ready-made Win32 window + Direct3D 11 host around the library
-if(STRATA_BUILD_DX11)
+# strata::app: ready-made Win32 window + D3D11 / OpenGL / Vulkan host around the library
+if(WIN32 AND (STRATA_BUILD_DX11 OR STRATA_BUILD_OPENGL OR STRATA_BUILD_VULKAN))
     add_library(strata_app STATIC src/app_win32.cpp)
     add_library(strata::app ALIAS strata_app)
     target_sources(strata_app PUBLIC FILE_SET HEADERS BASE_DIRS include FILES include/strata/app.hpp)
-    target_link_libraries(strata_app PUBLIC strata::strata PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib dxgi.lib user32.lib)
+    target_link_libraries(strata_app PUBLIC strata::strata PRIVATE $<BUILD_INTERFACE:strata_options> gdi32.lib user32.lib)
+    if(STRATA_BUILD_DX11)
+        target_link_libraries(strata_app PRIVATE d3d11.lib dxgi.lib)
+    endif()
+    if(STRATA_BUILD_OPENGL)
+        target_link_libraries(strata_app PRIVATE opengl32.lib)
+    endif()
+    if(STRATA_BUILD_VULKAN)
+        target_link_libraries(strata_app PRIVATE Vulkan::Vulkan)
+    endif()
 endif()
 
 if(STRATA_INSTALL)

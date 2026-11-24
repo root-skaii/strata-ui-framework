@@ -1,0 +1,9 @@
+[package]
+name = "strata-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Raw C FFI bindings to the strata immediate-mode UI static library"
+license = "MIT"
+links = "strata"
+
+[dependencies]

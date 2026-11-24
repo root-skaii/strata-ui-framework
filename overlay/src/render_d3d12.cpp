@@ -190,6 +190,9 @@ void release_device_objects()
     g.renderer_format12 = DXGI_FORMAT_UNKNOWN;
     g.ctx.Reset();
     g.device.Reset();
+#if STRATA_HAS_OPENGL
+    release_gl_objects();
+#endif
     g.backend = state::api::none;
 }
 

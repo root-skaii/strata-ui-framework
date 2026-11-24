@@ -24,6 +24,14 @@ struct nav_state {
     id                    activate_pending{}; // row Enter picked last frame, reported as a press
     bool                  active{};     // the scope has the keyboard (no text field has it)
     std::vector<nav_item> items;        // every row this frame, culled ones included
+
+    // Tab / Shift+Tab widget focus cycling within the focused window
+    bool                  kbd_enabled{true};
+    bool                  kbd_suppress{};
+    id                    kbd_focus{};
+    id                    kbd_activate{};
+    id                    kbd_window{};
+    std::vector<id>       kbd_order;
 };
 
 } // namespace strata::internal

@@ -14,6 +14,7 @@ add_library(strata_overlay STATIC
     src/output.cpp
     src/overlay.cpp
     src/render_d3d12.cpp
+    src/render_opengl.cpp
     src/window.cpp
 )
 add_library(strata::overlay ALIAS strata_overlay)
@@ -22,8 +23,15 @@ target_include_directories(strata_overlay PUBLIC
 )
 target_link_libraries(strata_overlay
     PUBLIC  strata::strata
-    PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib dxgi.lib user32.lib
+    PRIVATE $<BUILD_INTERFACE:strata_options> d3d11.lib dxgi.lib user32.lib gdi32.lib
 )
+if(STRATA_BUILD_OPENGL)
+    target_link_libraries(strata_overlay PRIVATE opengl32.lib)
+    if(MSVC)
+        target_link_options(strata_overlay INTERFACE /DELAYLOAD:opengl32.dll)
+        target_link_libraries(strata_overlay INTERFACE delayimp.lib)
+    endif()
+endif()
 
 add_library(strata_overlay_demo SHARED demo/demo_dll.cpp)
 target_link_libraries(strata_overlay_demo PRIVATE strata_overlay $<BUILD_INTERFACE:strata_options> user32.lib)

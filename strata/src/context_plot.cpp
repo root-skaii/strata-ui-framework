@@ -407,7 +407,11 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
         i1 = static_cast<std::size_t>(std::clamp(b, static_cast<f32>(i0), static_cast<f32>(n - 1)));
     }
 
-    // the y range: fixed, zoomed, or the visible samples
+    const auto is_hidden = [&](std::size_t si) noexcept {
+        return si < 32 && (view.hidden_mask & (1u << si)) != 0;
+    };
+
+    // the y range: fixed, zoomed, or the visible samples (skipping legend-hidden series)
     f32 yv0 = o.y.lo, yv1 = o.y.hi;
     if (view.y_set) {
         yv0 = view.y_lo;
@@ -415,7 +419,9 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
     } else if (is_nan_f32(yv0) || is_nan_f32(yv1)) {
         f32 mn = std::numeric_limits<f32>::max();
         f32 mx = std::numeric_limits<f32>::lowest();
-        for (const plot_series& sr : series) {
+        for (std::size_t si = 0; si < series.size(); ++si) {
+            if (is_hidden(si)) { continue; }
+            const plot_series& sr = series[si];
             for (std::size_t i = i0; i <= i1 && n > 0; ++i) {
                 const f32 v = sample(sr, i);
                 if (is_finite_f32(v)) { mn = std::min(mn, v); mx = std::max(mx, v); }
@@ -519,10 +525,25 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
             f32 x = box.max.x - 8.0f;
             for (std::size_t si = series.size(); si-- > 0;) {
                 const std::string_view name = series[si].name.empty() ? ui_str(st.strings_.series, "series") : series[si].name;
-                x -= st.font_.measure(f, name).x;
-                st.dl_.text({x, box.min.y + 4.0f}, st.style_.text_dim, name, f);
+                const f32 tw = st.font_.measure(f, name).x;
+                const f32 entry_x0 = x - tw - 14.0f;
+                const rect entry_r{{entry_x0, box.min.y + 2.0f}, {x + 2.0f, box.min.y + 4.0f + lh + 2.0f}};
+                const bool hidden = is_hidden(si);
+                bool hovered_leg = false;
+                if (o.interactive_legend && si < 32 && in.hovered && entry_r.contains(st.input_.mouse_)) {
+                    hovered_leg = true;
+                    st.cursor_  = cursor_kind::hand;
+                    if (st.input_.mouse_pressed_ && !st.swallow_press_) {
+                        view.hidden_mask ^= (1u << si);
+                    }
+                }
+                const color tc = hidden ? st.style_.text_dim.scaled_alpha(0.45f)
+                                        : (hovered_leg ? st.style_.text : st.style_.text_dim);
+                const color dc = series_color(si, series[si].col, st.style_).scaled_alpha(hidden ? 0.3f : 1.0f);
+                x -= tw;
+                st.dl_.text({x, box.min.y + 4.0f}, tc, name, f);
                 x -= 12.0f;
-                st.dl_.circle_filled({x + 4.0f, box.min.y + 4.0f + lh * 0.5f}, 3.5f, series_color(si, series[si].col, st.style_));
+                st.dl_.circle_filled({x + 4.0f, box.min.y + 4.0f + lh * 0.5f}, 3.5f, dc);
                 x -= 10.0f;
             }
         }
@@ -538,6 +559,7 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
     st.dl_.push_clip(inner.expanded(2.0f));
     for (int pass = 0; pass < 2 && count > 0; ++pass) { // pass 0: fills, pass 1: lines / bars
         for (std::size_t si = 0; si < series.size(); ++si) {
+            if (is_hidden(si)) { continue; }
             const color c = series_color(si, series[si].col, st.style_);
             if (!hist) {
                 if (pass == 0 && !o.fill) { continue; }
@@ -590,6 +612,27 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
             }
         }
     }
+    // optional horizontal / vertical reference lines
+    for (const plot_ref_line& rl : o.ref_lines) {
+        if (!is_finite_f32(rl.value)) { continue; }
+        const color rc = rl.col.a != 0 ? rl.col : st.style_.accent.scaled_alpha(0.75f);
+        if (!rl.vertical) {
+            if (rl.value < yv0 || rl.value > yv1) { continue; }
+            const f32 y = std::round(y_of(rl.value));
+            st.dl_.rect_filled({{inner.min.x, y}, {inner.max.x, y + 1.0f}}, rc);
+            if (!rl.label.empty()) {
+                const f32 tw = st.font_.measure(f, rl.label).x;
+                st.dl_.text({inner.max.x - tw - 4.0f, y - lh - 1.0f}, rc, rl.label, f);
+            }
+        } else {
+            if (rl.value < xv0 || rl.value > xv1) { continue; }
+            const f32 x = std::round(x_of(rl.value));
+            st.dl_.rect_filled({{x, inner.min.y}, {x + 1.0f, inner.max.y}}, rc);
+            if (!rl.label.empty()) {
+                st.dl_.text({x + 4.0f, inner.min.y + 3.0f}, rc, rl.label, f);
+            }
+        }
+    }
     st.dl_.pop_clip();
 
     if (view.x_set || view.y_set) {
@@ -609,6 +652,7 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
             const f32 ys_step = (yv1 - yv0) / 50.0f;
             std::string tip = (o.x.title.empty() ? std::string{"x"} : std::string{o.x.title}) + " = " + tick_text(xval, std::min(xs_step, x_step), o.x.unit);
             for (std::size_t si = 0; si < series.size(); ++si) {
+                if (is_hidden(si)) { continue; }
                 const f32 v = sample(series[si], idx);
                 if (!hist) { st.dl_.circle_filled({sx, y_of(v)}, 3.5f, series_color(si, series[si].col, st.style_)); }
                 tip += '\n';

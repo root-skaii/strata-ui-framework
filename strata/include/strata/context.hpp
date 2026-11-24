@@ -663,18 +663,28 @@ struct plot_axis {
     f32              hi{plot_auto};
 };
 
+// optional horizontal or vertical threshold / reference line on a chart
+struct plot_ref_line {
+    f32              value{};
+    bool             vertical{};        // false: horizontal line at y = value; true: vertical at x = value
+    color            col{0, 0, 0, 0};   // alpha 0: theme accent
+    std::string_view label;             // optional tag drawn beside the line
+};
+
 struct plot_options {
-    plot_kind kind{plot_kind::lines};
-    vec2      size{0.0f, 160.0f};
-    plot_axis x;
-    plot_axis y;
-    f32       x_start{0.0f};            // sample i is at x_start + i * x_step on the x axis
-    f32       x_step{1.0f};
-    u32       offset{0};                // ring buffer: index of the oldest sample
-    bool      ticks{true};              // nice ticks, labels and grid lines
-    bool      fill{false};              // line series: fill fading toward the axis
-    f32       fill_alpha{0.28f};
-    bool      zoom_pan{false};          // wheel zooms x (Ctrl: y), drag pans, double-click resets
+    plot_kind                     kind{plot_kind::lines};
+    vec2                          size{0.0f, 160.0f};
+    plot_axis                     x;
+    plot_axis                     y;
+    f32                           x_start{0.0f};            // sample i is at x_start + i * x_step on the x axis
+    f32                           x_step{1.0f};
+    u32                           offset{0};                // ring buffer: index of the oldest sample
+    bool                          ticks{true};              // nice ticks, labels and grid lines
+    bool                          fill{false};              // line series: fill fading toward the axis
+    f32                           fill_alpha{0.28f};
+    bool                          zoom_pan{false};          // wheel zooms x (Ctrl: y), drag pans, double-click resets
+    bool                          interactive_legend{true}; // clicking a legend entry toggles that series' visibility
+    std::span<const plot_ref_line> ref_lines{};             // optional threshold / marker lines
 };
 
 // menu row options (see context::menu_item)
@@ -1369,6 +1379,14 @@ public:
             return changed;
         }
     }
+    // two-handle range slider keeping lo_val <= hi_val within [min_v, max_v]
+    bool range_slider(std::string_view label, f32& lo_val, f32& hi_val, f32 min_v, f32 max_v, int decimals = 2);
+    // rotary dial knob (270 deg sweep). vertical drag edits (Shift fine, Alt coarse); double-click resets to default_v
+    bool knob(std::string_view label, f32& value, f32 min_v, f32 max_v, f32 default_v = plot_auto, f32 diameter = 44.0f, int decimals = 2);
+    // Tab / Shift+Tab keyboard focus cycling across widgets in the focused window (Space/Enter activates)
+    void set_keyboard_nav(bool on) noexcept;
+    [[nodiscard]] bool keyboard_nav() const noexcept;
+    [[nodiscard]] id   keyboard_focus_id() const noexcept;
 
     // single-line field, true when changed. `hint` shows while empty.
     bool input_text(std::string_view label, std::string& value, std::string_view hint = {},

@@ -30,6 +30,11 @@ static void build(strata_context* ui)
         strata_checkbox(ui, "enabled", &flag);
         strata_slider_float(ui, "level", &level, 0.0f, 1.0f);
         strata_slider_int(ui, "count", &count, 0, 10);
+        {
+            static float rlo = 0.2f, rhi = 0.8f, kv = 0.5f;
+            strata_range_slider(ui, "range", &rlo, &rhi, 0.0f, 1.0f);
+            strata_knob(ui, "gain", &kv, 0.0f, 1.0f, 0.5f);
+        }
         strata_input_text(ui, "name", name, sizeof name);
         strata_combo(ui, "choice", &choice, items, 3);
         strata_progress_bar(ui, level, NULL);
@@ -188,6 +193,28 @@ int main(void)
         strata_node_editor_set_view(graph, 5, 6, 1.5f);
         strata_node_editor_get_view(graph, &px, &py, &zoom);
         CHECK(px == 5 && py == 6 && zoom == 1.5f);
+
+        strata_set_keyboard_nav(ui, 1);
+        CHECK(strata_keyboard_nav(ui) == 1);
+        (void)strata_keyboard_focus_id(ui);
+
+        strata_rect area = {0, 0, 800, 600};
+        strata_begin_frame(ui, &in);
+        strata_dock_area(ui, NULL, area);
+        if (strata_begin_window(ui, "dock_a", 0, 0, 200, 200, STRATA_WINDOW_DOCKABLE)) { strata_text(ui, "a"); }
+        strata_end_window(ui);
+        strata_end_frame(ui);
+        CHECK(strata_dock_window(ui, "dock_a", STRATA_DOCK_CENTER, NULL, 0.5f, NULL));
+        CHECK(strata_window_docked(ui, "dock_a"));
+        {
+            char layout[512];
+            size_t len = strata_dock_save_layout(ui, layout, sizeof layout);
+            CHECK(len > 0 && len < sizeof layout);
+            strata_undock_window(ui, "dock_a");
+            CHECK(!strata_window_docked(ui, "dock_a"));
+            CHECK(strata_dock_load_layout(ui, layout));
+        }
+        strata_gl_destroy(NULL);
     }
     strata_node_editor_destroy(graph);
     strata_context_destroy(ui);

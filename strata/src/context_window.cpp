@@ -340,7 +340,8 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     if (!horiz) { st->overflow_x = false; }
     st->title_h       = title_h;
 
-    // collapse arrow + title drag use last frame's geometry
+    // collapse arrow + title drag use last frame's geometry (window chrome is excluded from Tab focus cycling)
+    m_->nav_.kbd_suppress = true;
     const rect arrow_hit = rect::from_size(st->pos, {title_h, title_h});
     const rect drag_hit  = {{st->pos.x + (can_collapse ? title_h : 0.0f), st->pos.y}, {st->pos.x + st->width, st->pos.y + title_h}};
 
@@ -395,6 +396,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
             st->height = std::clamp(prev_h + m_->input_.mouse_delta_.y, title_h + 48.0f, max_h); // a fixed height from now on
         }
     }
+    m_->nav_.kbd_suppress = false;
 
     if (!docked && m_->display_.x > 0 && m_->display_.y > 0) {
         st->pos.x = std::clamp(st->pos.x, 48.0f - st->width, m_->display_.x - 48.0f);
@@ -580,7 +582,9 @@ void context::end_window()
                 m_->wheel_consumed_ = true;
             }
             const rect track = {{body.min.x + 6.0f, body.max.y - 12.0f}, {body.max.x - 6.0f - (w.overflow ? 10.0f : 0.0f), body.max.y - 1.0f}};
+            m_->nav_.kbd_suppress = true;
             w.scroll_x = scrollbar(*this, part_id(part::window_scrollbar_x, m_->cur_window_), track, true, view_w, w.content_w, w.scroll_x, w.grab_x);
+            m_->nav_.kbd_suppress = false;
         } else {
             w.scroll_x = 0.0f;
         }
@@ -601,7 +605,9 @@ void context::end_window()
                 }
 
                 const rect track = {{body.max.x - 13.0f, body.min.y + 6.0f}, {body.max.x - 2.0f, body.min.y + body_h - 6.0f}};
+                m_->nav_.kbd_suppress = true;
                 w.scroll = scrollbar(*this, part_id(part::window_scrollbar, m_->cur_window_), track, false, body_h, full_h, w.scroll, w.grab);
+                m_->nav_.kbd_suppress = false;
             }
         }
     }

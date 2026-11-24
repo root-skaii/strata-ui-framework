@@ -438,6 +438,11 @@ void context::begin_frame(const input_state& in)
     m_->nav_.scope          = 0;
     m_->nav_.active         = false;
     m_->nav_.items.clear();
+    m_->nav_.kbd_order.clear();
+    if (m_->input_.mouse_pressed_) {
+        m_->nav_.kbd_focus    = 0;
+        m_->nav_.kbd_activate = 0;
+    }
     if (m_->tree_bulk_ != 0 && m_->tree_bulk_frames_ > 0) {
         --m_->tree_bulk_frames_;
     }
@@ -580,6 +585,44 @@ void context::end_frame()
     }
     if (m_->focus_id_ == 0 && !m_->edit_.edit_buf_.empty()) {
         wipe_edit_buffer(*this);
+    }
+
+    // Tab / Shift+Tab keyboard focus cycling across interactive widgets in the focused window
+    if (m_->nav_.kbd_enabled && m_->focus_id_ == 0 && m_->hotkey_.hotkey_capture_ == 0 &&
+        !m_->popup_.popup_any_prev() && m_->menu_.menu_open_[0].key == 0 && m_->nav_.scope == 0 && !m_->nav_.kbd_order.empty()) {
+        if (m_->nav_.kbd_window != m_->win_.focused_window_) {
+            m_->nav_.kbd_window   = m_->win_.focused_window_;
+            m_->nav_.kbd_focus    = 0;
+            m_->nav_.kbd_activate = 0;
+        }
+        const auto& order = m_->nav_.kbd_order;
+        for (u32 k = 0; k < m_->input_.key_count_; ++k) {
+            const key_event& ev = m_->input_.keys_[k];
+            if (ev.ctrl || ev.alt) { continue; }
+            if (ev.k == key::tab) {
+                const auto it = std::find(order.begin(), order.end(), m_->nav_.kbd_focus);
+                if (it == order.end()) {
+                    m_->nav_.kbd_focus = ev.shift ? order.back() : order.front();
+                } else {
+                    const std::size_t idx = static_cast<std::size_t>(it - order.begin());
+                    const std::size_t nxt = ev.shift ? (idx == 0 ? order.size() - 1 : idx - 1) : (idx + 1) % order.size();
+                    m_->nav_.kbd_focus = order[nxt];
+                }
+            } else if ((ev.k == key::space || ev.k == key::enter) && m_->nav_.kbd_focus != 0) {
+                m_->nav_.kbd_activate = m_->nav_.kbd_focus;
+            } else if (ev.k == key::escape && m_->nav_.kbd_focus != 0) {
+                m_->nav_.kbd_focus    = 0;
+                m_->nav_.kbd_activate = 0;
+            }
+        }
+        // Space is dispatched via pressed_key_ rather than the editing-key array
+        if (m_->nav_.kbd_focus != 0 && m_->input_.pressed_key_ == key::space &&
+            !m_->input_.press_ctrl_ && !m_->input_.press_alt_) {
+            m_->nav_.kbd_activate = m_->nav_.kbd_focus;
+        }
+        if (m_->nav_.kbd_focus != 0 && std::find(order.begin(), order.end(), m_->nav_.kbd_focus) == order.end()) {
+            m_->nav_.kbd_focus = 0;
+        }
     }
     detail::secure_wipe(m_->input_.typed_.data(), m_->input_.typed_.size());
     m_->input_.typed_len_ = 0;
@@ -1237,8 +1280,23 @@ static interaction interact_core(context& ui, id key, const rect& r, bool in_win
 
 interaction internal::interact_impl(context& ui, id key, const rect& r, bool in_window) noexcept
 {
-    const interaction out = interact_core(ui, key, r, in_window);
+    interaction out = interact_core(ui, key, r, in_window);
     auto& m = context_access::of(ui);
+    if (m.nav_.kbd_enabled && !m.nav_.kbd_suppress && m.disabled_depth_ == 0 && !m.in_overlay_ && key != 0 &&
+        m.cur_ != nullptr && m.cur_window_ == m.win_.focused_window_) {
+        if (m.nav_.kbd_order.empty() || m.nav_.kbd_order.back() != key) {
+            m.nav_.kbd_order.push_back(key);
+        }
+        if (m.nav_.kbd_activate == key) {
+            out.pressed          = true;
+            m.last_item_pressed_ = true;
+            m.nav_.kbd_activate  = 0;
+        }
+        if (m.nav_.kbd_focus == key) {
+            m.last_item_focused_ = true;
+            m.dl_.rect_outline(r.expanded(1.5f), m.style_.accent, m.style_.rounding * 0.8f, 2.0f);
+        }
+    }
     if (m.inspect_.recording && key != 0) {
         m.inspect_.note_item(key, r.intersect(m.dl_.clip()), m.cur_window_, static_cast<u8>(m.ids_.depth()),
                                static_cast<u8>((out.hovered ? 1 : 0) | (out.held ? 2 : 0) | (out.pressed ? 4 : 0)),
@@ -2164,6 +2222,198 @@ bool context::slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int
     } else {
         m_->dl_.text({fl.control.max.x - vsize.x, cy - vsize.y * 0.5f}, vcolor, vtext, f);
     }
+    track_edit(*this, key, changed, m_->active_ == key);
+    return changed;
+}
+
+void context::set_keyboard_nav(bool on) noexcept
+{
+    m_->nav_.kbd_enabled = on;
+    if (!on) {
+        m_->nav_.kbd_focus    = 0;
+        m_->nav_.kbd_activate = 0;
+    }
+}
+
+bool context::keyboard_nav() const noexcept { return m_->nav_.kbd_enabled; }
+id   context::keyboard_focus_id() const noexcept { return m_->nav_.kbd_focus; }
+
+bool context::range_slider(std::string_view label, f32& lo_val, f32& hi_val, f32 min_v, f32 max_v, int decimals)
+{
+    if (m_->cur_ == nullptr) { return false; }
+    const font_id          f     = current_font();
+    const id               key   = widget_id(*this, label);
+    const id               k_lo  = hash_id("##rlo", key);
+    const id               k_hi  = hash_id("##rhi", key);
+    const std::string_view shown = visible_label(label);
+
+    lo_val = std::clamp(lo_val, min_v, max_v);
+    hi_val = std::clamp(hi_val, lo_val, max_v);
+
+    constexpr f32 knob_r = 8.0f;
+    const field_layout fl = layout_field(*this, shown, knob_r * 2.0f + 6.0f);
+
+    std::array<char, 32> b0{}, b1{};
+    std::string vtext;
+    vtext.append(format_fixed(b0, lo_val, decimals));
+    vtext.append(" .. ");
+    vtext.append(format_fixed(b1, hi_val, decimals));
+    const vec2 vsize = m_->font_.measure(f, vtext);
+
+    rect area = fl.control;
+    if (!fl.has_label) { area.max.x -= vsize.x + m_->style_.item_spacing + 2.0f; }
+
+    const f32 x0 = area.min.x + knob_r;
+    const f32 x1 = area.max.x - knob_r;
+    const f32 cy = area.center().y;
+    const f32 t0 = max_v > min_v ? (lo_val - min_v) / (max_v - min_v) : 0.0f;
+    const f32 t1 = max_v > min_v ? (hi_val - min_v) / (max_v - min_v) : 1.0f;
+    const f32 kx0 = x0 + t0 * (x1 - x0);
+    const f32 kx1 = x0 + t1 * (x1 - x0);
+
+    // pick whichever handle is closer when pressing the track
+    const id target_key = (m_->active_ == k_lo || m_->active_ == k_hi)
+                              ? m_->active_
+                              : (std::abs(m_->input_.mouse_.x - kx0) <= std::abs(m_->input_.mouse_.x - kx1) ? k_lo : k_hi);
+    const interaction in = interact(*this, target_key, area);
+
+    bool changed = false;
+    if (in.held && max_v > min_v && x1 > x0) {
+        const f32 t    = std::clamp((m_->input_.mouse_.x - x0) / (x1 - x0), 0.0f, 1.0f);
+        const f32 next = min_v + t * (max_v - min_v);
+        if (target_key == k_lo) {
+            const f32 clamped = std::min(next, hi_val);
+            if (clamped != lo_val) { lo_val = clamped; changed = true; }
+        } else {
+            const f32 clamped = std::max(next, lo_val);
+            if (clamped != hi_val) { hi_val = clamped; changed = true; }
+        }
+    }
+
+    anim_slot& a = anim_for(*this, key);
+    a.hover = approach(*this, a.hover, in.hovered || in.held ? 1.0f : 0.0f);
+
+    const f32 nx0 = x0 + (max_v > min_v ? (lo_val - min_v) / (max_v - min_v) : 0.0f) * (x1 - x0);
+    const f32 nx1 = x0 + (max_v > min_v ? (hi_val - min_v) / (max_v - min_v) : 1.0f) * (x1 - x0);
+
+    constexpr f32 half_track = 3.0f;
+    shape_style track;
+    track.radius       = radii(half_track);
+    track.fill_top     = darken(m_->style_.widget_bg, 0.22f);
+    track.fill_bottom  = m_->style_.widget_bg;
+    track.border       = m_->style_.widget_border;
+    track.border_width = m_->style_.border_width;
+    m_->dl_.shape({{area.min.x, cy - half_track}, {area.max.x, cy + half_track}}, track);
+
+    if (nx1 > nx0 + 1.0f) {
+        shape_style fill;
+        fill.radius      = radii(half_track);
+        fill.fill_top    = lighten(m_->style_.accent, m_->style_.gradient * 1.5f);
+        fill.fill_bottom = darken(m_->style_.accent, m_->style_.gradient);
+        m_->dl_.shape({{nx0, cy - half_track}, {nx1, cy + half_track}}, fill);
+    }
+
+    const auto draw_handle = [&](f32 hx, bool active_h) {
+        const f32 kr = knob_r + (active_h ? 1.5f : 0.0f);
+        shape_style h;
+        h.radius        = radii(kr);
+        h.fill_top      = color{255, 255, 255, 255};
+        h.fill_bottom   = color{224, 230, 246, 255};
+        h.border        = lerp(m_->style_.widget_border, m_->style_.accent, active_h ? 1.0f : a.hover);
+        h.border_width  = 1.0f + (active_h ? 0.75f : a.hover * 0.5f);
+        h.shadow        = m_->style_.shadow_blur > 0.0f ? color{0, 0, 0, 120} : color{0, 0, 0, 0};
+        h.shadow_blur   = 5.0f;
+        h.shadow_offset = {0.0f, 1.5f};
+        m_->dl_.shape({{hx - kr, cy - kr}, {hx + kr, cy + kr}}, h);
+    };
+    draw_handle(nx0, m_->active_ == k_lo);
+    draw_handle(nx1, m_->active_ == k_hi);
+
+    const color vcolor = lerp(m_->style_.text_dim, m_->style_.text, a.hover);
+    if (fl.has_label) {
+        m_->dl_.text({fl.label_row.max.x - vsize.x - 1.0f, fl.label_row.min.y}, vcolor, vtext, f);
+    } else {
+        m_->dl_.text({fl.control.max.x - vsize.x, cy - vsize.y * 0.5f}, vcolor, vtext, f);
+    }
+    track_edit(*this, key, changed, m_->active_ == k_lo || m_->active_ == k_hi);
+    return changed;
+}
+
+bool context::knob(std::string_view label, f32& value, f32 min_v, f32 max_v, f32 default_v, f32 diameter, int decimals)
+{
+    if (m_->cur_ == nullptr) { return false; }
+    const font_id          f     = current_font();
+    const f32              lh    = m_->font_.line_height(f);
+    const id               key   = widget_id(*this, label);
+    const std::string_view shown = visible_label(label);
+    const f32              d     = std::max(diameter, 24.0f);
+    const f32              r     = d * 0.5f;
+
+    std::array<char, 32> buf{};
+    const std::string_view vtext = format_fixed(buf, value, decimals);
+    const f32 label_w = shown.empty() ? 0.0f : label_size(*this, f, shown).x;
+    const f32 val_w   = m_->font_.measure(f, vtext).x;
+    const f32 total_w = std::max({d + 10.0f, label_w, val_w});
+    const f32 top_h   = shown.empty() ? 0.0f : lh + 3.0f;
+    const f32 total_h = top_h + d + 4.0f + lh;
+
+    const rect slot = layout_place(*this, {total_w, total_h});
+    const vec2 center{slot.center().x, slot.min.y + top_h + r};
+    const rect hit{{center.x - r - 2.0f, center.y - r - 2.0f}, {center.x + r + 2.0f, center.y + r + 2.0f}};
+    const interaction in = interact(*this, key, hit);
+
+    bool changed = false;
+    value = std::clamp(value, min_v, max_v);
+    if (item_double_clicked() && !std::isnan(default_v)) {
+        const f32 clamped = std::clamp(default_v, min_v, max_v);
+        if (clamped != value) { value = clamped; changed = true; }
+    } else if (in.held && max_v > min_v && m_->input_.mouse_delta_.y != 0.0f) {
+        const f32 sens = m_->input_.mod_shift_ ? 0.001f : (m_->input_.mod_alt_ ? 0.02f : 0.005f);
+        const f32 next = std::clamp(value - m_->input_.mouse_delta_.y * sens * (max_v - min_v), min_v, max_v);
+        if (next != value) { value = next; changed = true; }
+    }
+
+    anim_slot& a = anim_for(*this, key);
+    a.hover  = approach(*this, a.hover, in.hovered || in.held ? 1.0f : 0.0f);
+    a.active = approach(*this, a.active, in.held ? 1.0f : 0.0f);
+
+    if (!shown.empty()) {
+        label_draw(*this, {slot.center().x - label_w * 0.5f, slot.min.y}, m_->style_.text, shown, f);
+    }
+
+    // 270 deg sweep from bottom-left (135 deg) clockwise to bottom-right (405 deg)
+    constexpr f32 pi      = 3.14159265358979323846f;
+    constexpr f32 a_start = pi * 0.75f;
+    constexpr f32 a_span  = pi * 1.50f;
+    const f32     t       = max_v > min_v ? (value - min_v) / (max_v - min_v) : 0.0f;
+    const f32     a_val   = a_start + t * a_span;
+
+    m_->dl_.arc(center, r, a_start, a_start + a_span, darken(m_->style_.widget_bg, 0.25f), 3.0f);
+    if (t > 0.001f) {
+        m_->dl_.arc(center, r, a_start, a_val, lerp(m_->style_.accent, m_->style_.accent_hover, a.hover), 3.0f);
+    }
+
+    const f32 br = r - 5.0f;
+    shape_style body;
+    body.radius        = radii(br);
+    body.fill_top      = lighten(m_->style_.widget_bg, 0.08f + 0.06f * a.hover);
+    body.fill_bottom   = darken(m_->style_.widget_bg, 0.14f);
+    body.border        = lerp(m_->style_.widget_border, m_->style_.accent, a.hover);
+    body.border_width  = 1.0f + 0.5f * a.active;
+    body.shadow        = m_->style_.shadow_blur > 0.0f ? color{0, 0, 0, 110} : color{0, 0, 0, 0};
+    body.shadow_blur   = 6.0f;
+    body.shadow_offset = {0.0f, 2.0f};
+    m_->dl_.shape({{center.x - br, center.y - br}, {center.x + br, center.y + br}}, body);
+
+    const vec2 dir{std::cos(a_val), std::sin(a_val)};
+    m_->dl_.line(center + dir * (br * 0.28f), center + dir * (br * 0.82f),
+                 lerp(m_->style_.text, m_->style_.accent, a.active), 2.0f);
+
+    const std::string_view vtext2 = format_fixed(buf, value, decimals);
+    const f32              vw2    = m_->font_.measure(f, vtext2).x;
+    m_->dl_.text({slot.center().x - vw2 * 0.5f, center.y + r + 3.0f},
+                 lerp(m_->style_.text_dim, m_->style_.text, a.hover), vtext2, f);
+
     track_edit(*this, key, changed, m_->active_ == key);
     return changed;
 }

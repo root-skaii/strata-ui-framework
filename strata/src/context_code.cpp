@@ -270,6 +270,89 @@ bool internal::edit_indent_lines(context& ui, bool unindent, int tab_size)
     return changed;
 }
 
+// Ctrl+/ over the lines a selection touches (or the caret's line): toggles line comments ("// ")
+static bool edit_toggle_comment(context& ui, std::string_view prefix = "//")
+{
+    auto& m = context_access::of(ui);
+    const std::string_view t = m.edit_.edit_buf_;
+    const std::size_t lo = std::min(m.edit_.edit_cursor_, m.edit_.edit_anchor_);
+    const std::size_t hi = std::max(m.edit_.edit_cursor_, m.edit_.edit_anchor_);
+    const std::size_t nl = lo == 0 ? npos : t.rfind('\n', lo - 1);
+    const std::size_t s  = nl == npos ? 0 : nl + 1;
+    std::size_t e = hi;
+    if (hi > lo && t[hi - 1] == '\n') {
+        e = hi - 1;
+    } else {
+        const std::size_t f = t.find('\n', hi);
+        e = f == npos ? t.size() : f;
+    }
+
+    // decide whether to uncomment (all non-empty lines start with prefix) or comment
+    bool all_commented = true;
+    bool any_nonempty  = false;
+    std::size_t min_indent = npos;
+    for (std::size_t pos = s;;) {
+        std::size_t le = t.find('\n', pos);
+        if (le == npos || le > e) { le = e; }
+        const std::string_view line = t.substr(pos, le - pos);
+        std::size_t ind = 0;
+        while (ind < line.size() && (line[ind] == ' ' || line[ind] == '\t')) { ++ind; }
+        if (ind < line.size()) {
+            any_nonempty = true;
+            min_indent   = std::min(min_indent, ind);
+            if (!line.substr(ind).starts_with(prefix)) { all_commented = false; }
+        }
+        if (le >= e) { break; }
+        pos = le + 1;
+    }
+    if (!any_nonempty) { all_commented = false; min_indent = 0; }
+    if (min_indent == npos) { min_indent = 0; }
+
+    std::string out;
+    std::ptrdiff_t first_delta = 0;
+    bool first = true;
+    for (std::size_t pos = s;;) {
+        std::size_t le = t.find('\n', pos);
+        if (le == npos || le > e) { le = e; }
+        const std::string_view line = t.substr(pos, le - pos);
+        std::size_t ind = 0;
+        while (ind < line.size() && (line[ind] == ' ' || line[ind] == '\t')) { ++ind; }
+        std::ptrdiff_t delta = 0;
+        if (all_commented && ind < line.size() && line.substr(ind).starts_with(prefix)) {
+            out.append(line.substr(0, ind));
+            std::size_t skip = ind + prefix.size();
+            if (skip < line.size() && line[skip] == ' ') { ++skip; }
+            out.append(line.substr(skip));
+            delta = -static_cast<std::ptrdiff_t>(skip - ind);
+        } else if (!all_commented && (ind < line.size() || !any_nonempty)) {
+            const std::size_t at = std::min(min_indent, line.size());
+            out.append(line.substr(0, at));
+            out.append(prefix);
+            out.push_back(' ');
+            out.append(line.substr(at));
+            delta = static_cast<std::ptrdiff_t>(prefix.size() + 1);
+        } else {
+            out.append(line);
+        }
+        if (first) { first_delta = delta; first = false; }
+        if (le >= e) { break; }
+        out.push_back('\n');
+        pos = le + 1;
+    }
+
+    if (std::string_view{out} == t.substr(s, e - s)) { return false; }
+    const bool ok = edit_replace(ui, s, e - s, out, edit_kind::other);
+    if (lo == hi) {
+        const std::ptrdiff_t at = static_cast<std::ptrdiff_t>(lo) + first_delta;
+        m.edit_.edit_cursor_ = m.edit_.edit_anchor_ =
+            std::clamp<std::size_t>(static_cast<std::size_t>(std::max<std::ptrdiff_t>(at, 0)), s, s + out.size());
+    } else {
+        m.edit_.edit_anchor_ = s;
+        m.edit_.edit_cursor_ = s + out.size();
+    }
+    return ok;
+}
+
 bool context::input_code(std::string_view label, std::string& value, vec2 size, code_flags flags, std::string_view hint,
                          std::size_t max_bytes, int tab_size)
 {
@@ -397,6 +480,13 @@ bool context::input_code(std::string_view label, std::string& value, vec2 size, 
         m_->code_.marks       = m_->code_marks_;
         m_->code_.mark_active = cs.active;
     }
+    if (focused_here && chord_pressed({key::slash, true, false, false})) {
+        if (edit_toggle_comment(*this)) {
+            value.assign(m_->edit_.edit_buf_.data(), m_->edit_.edit_buf_.size());
+            changed = true;
+        }
+    }
+
     vec2 field = size;
     if (field.y <= 0.0f) { field.y = m_->font_.line_height(current_font()) * 12.0f + m_->style_.frame_padding.y * 2.0f; }
     if (input_multiline_core(*this, label, value, field, input_flags::no_wrap, hint, max_bytes)) {

@@ -3,6 +3,8 @@
 # build output
 build/
 out/
+bindings/rust/target/
+bindings/rust/Cargo.lock
 
 # ide state
 .vs/

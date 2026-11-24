@@ -7,6 +7,9 @@
 
 #include <strata/backend/d3d11.hpp>
 #include <strata/backend/d3d12.hpp>
+#if STRATA_HAS_OPENGL
+#include <strata/backend/opengl.hpp>
+#endif
 #include <strata/platform/win32.hpp>
 
 #include <windows.h>
@@ -95,8 +98,20 @@ struct state {
     bool                             patched_execute{};
     std::atomic<ID3D12CommandQueue*> last_queue{nullptr};
 
-    enum class api { none, d3d11, d3d12 };
+    enum class api { none, d3d11, d3d12, opengl };
     api                              backend{api::none};
+
+#if STRATA_HAS_OPENGL
+    struct iat_patch {
+        void** slot{};
+        void*  hook{};
+        void*  orig{};
+        bool   patched{};
+    };
+    std::vector<iat_patch>           gl_iat_patches;
+    HGLRC                            gl_rc{};
+    gl_renderer                      renderer_gl;
+#endif
 
     struct frame12 {
         ComPtr<ID3D12CommandAllocator> alloc;
@@ -165,6 +180,14 @@ void apply_output(IDXGISwapChain* sc);
 
 // frame.cpp
 void on_present(IDXGISwapChain* sc); // called from the Present hooks
+
+#if STRATA_HAS_OPENGL
+// render_opengl.cpp
+void on_gl_swap(HDC hdc);
+[[nodiscard]] bool install_gl_hooks();
+[[nodiscard]] bool remove_gl_hooks();
+void release_gl_objects() noexcept;
+#endif
 
 // hooks.cpp: the vtable patches
 enum class hook_result { ok, no_vtable, patch_failed };

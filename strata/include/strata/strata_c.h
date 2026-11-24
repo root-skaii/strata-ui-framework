@@ -28,6 +28,7 @@ extern "C" {
 
 typedef struct strata_context strata_context;
 typedef struct strata_software_renderer strata_software_renderer;
+typedef struct strata_gl_renderer strata_gl_renderer;
 
 typedef struct strata_vec2 { float x, y; } strata_vec2;
 typedef struct strata_rect { float min_x, min_y, max_x, max_y; } strata_rect;
@@ -81,6 +82,7 @@ int strata_cursor(const strata_context* ui);
 #define STRATA_WINDOW_NO_COLLAPSE   4
 #define STRATA_WINDOW_NO_MOVE       8
 #define STRATA_WINDOW_NO_BACKGROUND 16
+#define STRATA_WINDOW_DOCKABLE      64
 #define STRATA_WINDOW_NO_INPUTS     256
 #define STRATA_WINDOW_CLICK_THROUGH 2048
 
@@ -111,6 +113,9 @@ int strata_splitter(strata_context* ui, const char* id, float* size, float min_s
 int strata_collapsing_header(strata_context* ui, const char* label, int default_open);
 int strata_slider_float(strata_context* ui, const char* label, float* value, float lo, float hi);
 int strata_slider_int(strata_context* ui, const char* label, int* value, int lo, int hi);
+int strata_range_slider(strata_context* ui, const char* label, float* lo_val, float* hi_val, float lo, float hi);
+/* pass NAN for `default_val` to disable double-click reset */
+int strata_knob(strata_context* ui, const char* label, float* value, float lo, float hi, float default_val);
 int strata_drag_float(strata_context* ui, const char* label, float* value, float speed, float lo, float hi);
 int strata_drag_int(strata_context* ui, const char* label, int* value, float speed, int lo, int hi);
 int strata_input_float(strata_context* ui, const char* label, float* value);
@@ -201,6 +206,35 @@ void strata_push_id_str(strata_context* ui, const char* id);
 void strata_push_id_int(strata_context* ui, int id);
 void strata_pop_id(strata_context* ui);
 
+/* keyboard focus navigation (Tab / Shift+Tab, Space / Enter, Esc) */
+void     strata_set_keyboard_nav(strata_context* ui, int enabled);
+int      strata_keyboard_nav(const strata_context* ui);
+uint64_t strata_keyboard_focus_id(const strata_context* ui);
+
+/* ---- docking -------------------------------------------------------------------------------------------------- */
+
+#define STRATA_DOCK_CENTER 0
+#define STRATA_DOCK_LEFT   1
+#define STRATA_DOCK_RIGHT  2
+#define STRATA_DOCK_TOP    3
+#define STRATA_DOCK_BOTTOM 4
+
+#define STRATA_DOCK_SIDE_LEFT   0
+#define STRATA_DOCK_SIDE_RIGHT  1
+#define STRATA_DOCK_SIDE_TOP    2
+#define STRATA_DOCK_SIDE_BOTTOM 3
+
+/* pass NULL or "" for `space` to target the main dock space */
+void        strata_dock_area(strata_context* ui, const char* space, strata_rect area);
+strata_rect strata_dock_edge(strata_context* ui, const char* space, int side, float size, strata_rect region);
+int         strata_floating_dock(strata_context* ui, const char* title, float x, float y, float width, float height, uint32_t flags);
+int         strata_dock_window(strata_context* ui, const char* title, int zone, const char* target, float size, const char* space);
+void        strata_undock_window(strata_context* ui, const char* title);
+int         strata_window_docked(const strata_context* ui, const char* title);
+/* writes nul-terminated layout text into `out`. returns required length (excluding nul); pass NULL/0 to query size */
+size_t      strata_dock_save_layout(const strata_context* ui, char* out, size_t capacity);
+int         strata_dock_load_layout(strata_context* ui, const char* text);
+
 /* ---- node editor (see strata/node_editor.hpp) ------------------------------------------------------------------- */
 
 typedef struct strata_node_editor strata_node_editor;
@@ -286,6 +320,20 @@ uint32_t strata_software_width(const strata_software_renderer* r);
 uint32_t strata_software_height(const strata_software_renderer* r);
 /* straight-alpha rgba8, top row first, width * height * 4 bytes. false if `capacity` is too small */
 int strata_software_read_pixels(const strata_software_renderer* r, uint8_t* out, size_t capacity);
+
+/* ---- opengl renderer: draws strata_draw_data on a current OpenGL 3.3+ core context ---------------------------- */
+
+typedef void* (*strata_gl_proc_loader)(const char* name);
+
+/* `loader` resolves GL entry points (e.g. glfwGetProcAddress / SDL_GL_GetProcAddress); NULL uses WGL on Windows.
+ * returns NULL if OpenGL support was not compiled in or shader/resource creation failed. */
+strata_gl_renderer* strata_gl_create(const strata_context* ui, strata_gl_proc_loader loader);
+void                strata_gl_destroy(strata_gl_renderer* r);
+void                strata_gl_render(strata_gl_renderer* r, const strata_context* ui);
+int                 strata_gl_update_atlas(strata_gl_renderer* r, const strata_context* ui);
+void                strata_gl_set_state_restore(strata_gl_renderer* r, int on);
+uint32_t            strata_gl_create_texture(strata_gl_renderer* r, uint32_t width, uint32_t height, const uint8_t* rgba);
+void                strata_gl_destroy_texture(strata_gl_renderer* r, uint32_t texture_id);
 
 #ifdef __cplusplus
 }
