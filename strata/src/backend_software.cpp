@@ -290,14 +290,14 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
     const std::span<const vertex> verts = d.vertices.subspan(cmd.vtx_offset);
 
     // pixels whose centre lies inside the clip intersected with the active damage rectangle
-    const i32 cx0 = std::max<i32>(x_lo, static_cast<i32>(std::ceil(cmd.clip.min.x - 0.5f)));
-    const i32 cy0 = std::max<i32>(y_lo, static_cast<i32>(std::ceil(cmd.clip.min.y - 0.5f)));
-    const i32 cx1 = std::min<i32>(x_hi, static_cast<i32>(std::ceil(cmd.clip.max.x - 0.5f)));
-    const i32 cy1 = std::min<i32>(y_hi, static_cast<i32>(std::ceil(cmd.clip.max.y - 0.5f)));
+    const vec2 origin = d.origin;
+    const i32 cx0 = std::max<i32>(x_lo, static_cast<i32>(std::ceil(cmd.clip.min.x - origin.x - 0.5f)));
+    const i32 cy0 = std::max<i32>(y_lo, static_cast<i32>(std::ceil(cmd.clip.min.y - origin.y - 0.5f)));
+    const i32 cx1 = std::min<i32>(x_hi, static_cast<i32>(std::ceil(cmd.clip.max.x - origin.x - 0.5f)));
+    const i32 cy1 = std::min<i32>(y_hi, static_cast<i32>(std::ceil(cmd.clip.max.y - origin.y - 0.5f)));
     if (cx1 <= cx0 || cy1 <= cy0) { return; }
 
-    const bool backdrop = cmd.blur > 0.0f;
-    if (backdrop && blurred == nullptr) { return; }
+    const bool backdrop = cmd.blur > 0.0f && blurred != nullptr;
     const texture_image* user_tex = nullptr;
     if (cmd.texture != 0) {
         if (cmd.texture > textures.size() || !textures[cmd.texture - 1].image.valid()) { return; }
@@ -322,14 +322,17 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
             rec = &d.shapes[index];
         }
 
-        f32 area = (b->pos.x - a->pos.x) * (c->pos.y - a->pos.y) - (b->pos.y - a->pos.y) * (c->pos.x - a->pos.x);
+        vec2 pa = a->pos - origin;
+        vec2 pb = b->pos - origin;
+        vec2 pc = c->pos - origin;
+        f32 area = (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x);
         if (area == 0.0f) { continue; }
-        if (area < 0.0f) { std::swap(b, c); area = -area; }
+        if (area < 0.0f) { std::swap(b, c); std::swap(pb, pc); area = -area; }
 
-        const f32 minx = std::min({a->pos.x, b->pos.x, c->pos.x});
-        const f32 maxx = std::max({a->pos.x, b->pos.x, c->pos.x});
-        const f32 miny = std::min({a->pos.y, b->pos.y, c->pos.y});
-        const f32 maxy = std::max({a->pos.y, b->pos.y, c->pos.y});
+        const f32 minx = std::min({pa.x, pb.x, pc.x});
+        const f32 maxx = std::max({pa.x, pb.x, pc.x});
+        const f32 miny = std::min({pa.y, pb.y, pc.y});
+        const f32 maxy = std::max({pa.y, pb.y, pc.y});
         const i32 x0 = std::max(cx0, static_cast<i32>(std::ceil(minx - 0.5f)));
         const i32 x1 = std::min(cx1, static_cast<i32>(std::ceil(maxx - 0.5f)) + 1);
         const i32 y0 = std::max(cy0, static_cast<i32>(std::ceil(miny - 0.5f)));
@@ -337,9 +340,9 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
 
         // top-left fill rule, so pixels on a shared edge are drawn once
         const auto top_left = [](vec2 p, vec2 q) { return (q.y == p.y && q.x > p.x) || q.y < p.y; };
-        const bool tl_ab = top_left(a->pos, b->pos);
-        const bool tl_bc = top_left(b->pos, c->pos);
-        const bool tl_ca = top_left(c->pos, a->pos);
+        const bool tl_ab = top_left(pa, pb);
+        const bool tl_bc = top_left(pb, pc);
+        const bool tl_ca = top_left(pc, pa);
         const auto edge = [](vec2 p, vec2 q, vec2 s) {
             return (q.x - p.x) * (s.y - p.y) - (q.y - p.y) * (s.x - p.x);
         };
@@ -367,9 +370,9 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
         for (i32 y = y0; y < y1; ++y) {
             for (i32 x = x0; x < x1; ++x) {
                 const vec2 p{static_cast<f32>(x) + 0.5f, static_cast<f32>(y) + 0.5f};
-                const f32 e_ab = edge(a->pos, b->pos, p);
-                const f32 e_bc = edge(b->pos, c->pos, p);
-                const f32 e_ca = edge(c->pos, a->pos, p);
+                const f32 e_ab = edge(pa, pb, p);
+                const f32 e_bc = edge(pb, pc, p);
+                const f32 e_ca = edge(pc, pa, p);
                 if (!(e_ab > 0.0f || (e_ab == 0.0f && tl_ab)) || !(e_bc > 0.0f || (e_bc == 0.0f && tl_bc)) ||
                     !(e_ca > 0.0f || (e_ca == 0.0f && tl_ca))) {
                     continue;
@@ -384,9 +387,10 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
                 const vec4 col{ca.r * wa + cb.r * wb + cc.r * wc, ca.g * wa + cb.g * wb + cc.g * wc,
                                ca.b * wa + cb.b * wb + cc.b * wc, ca.a * wa + cb.a * wb + cc.a * wc};
 
+                const vec2 ui_p = p + origin;
                 vec4 out;
                 if (rec != nullptr && backdrop) {
-                    const vec2 q   = p - rec->center;
+                    const vec2 q   = ui_p - rec->center;
                     const f32  cov = saturate(0.5f - sd_round_box(q, rec->half_size, rec->radius));
                     const f32* bg  = blurred->at(x, y);
                     f32 r = bg[0], g = bg[1], b2 = bg[2];
@@ -404,7 +408,7 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
                     const f32 n = grain * rec->extra * 0.5f;
                     out = {std::max(r + n, 0.0f) * cov, std::max(g + n, 0.0f) * cov, std::max(b2 + n, 0.0f) * cov, cov};
                 } else if (rec != nullptr && user_tex != nullptr) {
-                    const vec2 q   = p - rec->center;
+                    const vec2 q   = ui_p - rec->center;
                     const f32  cov = saturate(0.5f - sd_round_box(q, rec->half_size, rec->radius));
                     const vec2 st  = {saturate(q.x / (2.0f * rec->half_size.x) + 0.5f),
                                       saturate(q.y / (2.0f * rec->half_size.y) + 0.5f)};
@@ -420,7 +424,7 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
                     const f32  al = s.a * col.a * cov;
                     out = {s.r * col.r * al, s.g * col.g * al, s.b * col.b * al, al};
                 } else if (rec != nullptr) {
-                    out = shade_shape(*rec, p);
+                    out = shade_shape(*rec, ui_p);
                 } else {
                     f32 cov = atlas_coverage({(static_cast<f32>(a->u) * wa + static_cast<f32>(b->u) * wb + static_cast<f32>(c->u) * wc) * inv_uv,
                                               (static_cast<f32>(a->v) * wa + static_cast<f32>(b->v) * wb + static_cast<f32>(c->v) * wc) * inv_uv});
@@ -540,19 +544,22 @@ void software_renderer::render(const draw_data& data, const rect& damage)
     if (x_hi <= x_lo || y_hi <= y_lo) { return; }
     impl& im = *impl_;
 
+    const bool can_blur = data.origin.x == 0.0f && data.origin.y == 0.0f;
     const std::span<const draw_cmd> cmds = data.commands;
     std::size_t i = 0;
     while (i < cmds.size()) {
-        if (cmds[i].blur > 0.0f) {
+        if (cmds[i].blur > 0.0f && can_blur) {
             blur_copy blurred;
             if (im.backdrop_blur(data, cmds[i], blurred)) {
                 im.draw(data, cmds[i], &blurred, y_lo, y_hi, x_lo, x_hi);
+            } else {
+                im.draw(data, cmds[i], nullptr, y_lo, y_hi, x_lo, x_hi);
             }
             ++i;
             continue;
         }
         std::size_t j = i;
-        while (j < cmds.size() && cmds[j].blur <= 0.0f) { ++j; }
+        while (j < cmds.size() && !(cmds[j].blur > 0.0f && can_blur)) { ++j; }
         for (std::size_t k = i; k < j; ++k) { im.draw(data, cmds[k], nullptr, y_lo, y_hi, x_lo, x_hi); }
         i = j;
     }

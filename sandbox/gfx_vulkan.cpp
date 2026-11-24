@@ -117,18 +117,20 @@ public:
             vkGetPhysicalDeviceQueueFamilyProperties(pd, &qfc, nullptr);
             std::vector<VkQueueFamilyProperties> qfp(qfc);
             vkGetPhysicalDeviceQueueFamilyProperties(pd, &qfc, qfp.data());
+            bool matched = false;
             for (strata::u32 q = 0; q < qfc; ++q) {
                 VkBool32 present = VK_FALSE;
                 vkGetPhysicalDeviceSurfaceSupportKHR(pd, q, surface_, &present);
                 if ((qfp[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 && present == VK_TRUE) {
                     phys_         = pd;
                     queue_family_ = q;
+                    matched       = true;
                     break;
                 }
             }
-            if (phys_ != VK_NULL_HANDLE) {
+            if (matched) {
                 VkPhysicalDeviceProperties props{};
-                vkGetPhysicalDeviceProperties(pd, &props);
+                vkGetPhysicalDeviceProperties(phys_, &props);
                 if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) { break; }
             }
         }
@@ -207,7 +209,6 @@ public:
         }
         if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) { return; }
 
-        vkResetFences(device_, 1, &fences_[slot_]);
         VkCommandBuffer cmd = cmds_[slot_];
         vkResetCommandBuffer(cmd, 0);
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -216,7 +217,7 @@ public:
 
         VkImage img = images_[img_index];
         barrier(cmd, img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkClearColorValue cc{{clear.r / 255.0f, clear.g / 255.0f, clear.b / 255.0f, 1.0f}};
         VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cc, 1, &range);
@@ -242,7 +243,8 @@ public:
         }
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) { return; }
 
-        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        vkResetFences(device_, 1, &fences_[slot_]);
+        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         si.waitSemaphoreCount   = 1;
         si.pWaitSemaphores      = &img_avail_[slot_];

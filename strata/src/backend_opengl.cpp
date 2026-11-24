@@ -93,7 +93,11 @@ constexpr GLenum     kGL_TEXTURE0                   = 0x84C0;
 constexpr GLenum     kGL_ACTIVE_TEXTURE             = 0x84E0;
 constexpr GLenum     kGL_TEXTURE_BINDING_2D         = 0x8069;
 constexpr GLenum     kGL_TEXTURE_BUFFER             = 0x8C2A;
+constexpr GLenum     kGL_TEXTURE_BUFFER_BINDING     = 0x8C2A;
 constexpr GLenum     kGL_TEXTURE_BINDING_BUFFER     = 0x8C2C;
+constexpr GLenum     kGL_COLOR_WRITEMASK            = 0x0C23;
+constexpr GLenum     kGL_RASTERIZER_DISCARD         = 0x8C89;
+constexpr GLenum     kGL_PRIMITIVE_RESTART          = 0x8F9D;
 constexpr GLenum     kGL_SAMPLER_BINDING            = 0x8919;
 constexpr GLenum     kGL_ARRAY_BUFFER               = 0x8892;
 constexpr GLenum     kGL_ELEMENT_ARRAY_BUFFER       = 0x8893;
@@ -119,9 +123,11 @@ constexpr GLbitfield kGL_COLOR_BUFFER_BIT           = 0x00004000;
 
 struct gl_procs {
     void (STRATA_GLAPI* GetIntegerv)(GLenum, GLint*){};
+    void (STRATA_GLAPI* GetBooleanv)(GLenum, GLboolean*){};
     GLboolean (STRATA_GLAPI* IsEnabled)(GLenum){};
     void (STRATA_GLAPI* Enable)(GLenum){};
     void (STRATA_GLAPI* Disable)(GLenum){};
+    void (STRATA_GLAPI* ColorMask)(GLboolean, GLboolean, GLboolean, GLboolean){};
     void (STRATA_GLAPI* Viewport)(GLint, GLint, GLsizei, GLsizei){};
     void (STRATA_GLAPI* Scissor)(GLint, GLint, GLsizei, GLsizei){};
     void (STRATA_GLAPI* BlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum){};
@@ -209,9 +215,11 @@ struct gl_procs {
             ok = ok && (fn != nullptr);
         };
         bind(GetIntegerv, "glGetIntegerv");
+        bind(GetBooleanv, "glGetBooleanv");
         bind(IsEnabled, "glIsEnabled");
         bind(Enable, "glEnable");
         bind(Disable, "glDisable");
+        bind(ColorMask, "glColorMask");
         bind(Viewport, "glViewport");
         bind(Scissor, "glScissor");
         bind(BlendFuncSeparate, "glBlendFuncSeparate");
@@ -490,7 +498,7 @@ void main()
     vec2  p     = pixel + u_view.xy - s.center;
     float cov   = clamp(0.5 - sd_round_box(p, s.half_size, s.radius), 0.0, 1.0);
 
-    vec2  uv  = gl_FragCoord.xy / u_bp[0].xy * u_bp[0].zw;
+    vec2  uv  = min(gl_FragCoord.xy / u_bp[0].xy * u_bp[0].zw, u_bp[1].zw);
     vec3  bg  = textureLod(u_blur_src, uv, 0.0).rgb;
     float lum = dot(bg, vec3(0.2126, 0.7152, 0.0722));
     bg = mix(vec3(lum), bg, s.shadow_offset.x) * s.shadow_offset.y;
@@ -638,6 +646,7 @@ public:
         }
         gl_.ActiveTexture(kGL_TEXTURE0 + 1);
         gl_.GetIntegerv(kGL_TEXTURE_BINDING_BUFFER, &tex_buf_);
+        gl_.GetIntegerv(kGL_TEXTURE_BUFFER_BINDING, &tex_bo_);
         gl_.GetIntegerv(kGL_VIEWPORT, viewport_);
         gl_.GetIntegerv(kGL_SCISSOR_BOX, scissor_);
         gl_.GetIntegerv(kGL_POLYGON_MODE, polygon_mode_);
@@ -649,11 +658,14 @@ public:
         gl_.GetIntegerv(kGL_BLEND_EQUATION_ALPHA, &blend_eq_a_);
         gl_.GetIntegerv(kGL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo_);
         gl_.GetIntegerv(kGL_READ_FRAMEBUFFER_BINDING, &read_fbo_);
-        blend_   = gl_.IsEnabled(kGL_BLEND);
-        cull_    = gl_.IsEnabled(kGL_CULL_FACE);
-        depth_   = gl_.IsEnabled(kGL_DEPTH_TEST);
-        stencil_ = gl_.IsEnabled(kGL_STENCIL_TEST);
-        scissor_on_ = gl_.IsEnabled(kGL_SCISSOR_TEST);
+        gl_.GetBooleanv(kGL_COLOR_WRITEMASK, color_mask_);
+        blend_       = gl_.IsEnabled(kGL_BLEND);
+        cull_        = gl_.IsEnabled(kGL_CULL_FACE);
+        depth_       = gl_.IsEnabled(kGL_DEPTH_TEST);
+        stencil_     = gl_.IsEnabled(kGL_STENCIL_TEST);
+        scissor_on_  = gl_.IsEnabled(kGL_SCISSOR_TEST);
+        rast_discard_ = gl_.IsEnabled(kGL_RASTERIZER_DISCARD);
+        prim_restart_ = gl_.IsEnabled(kGL_PRIMITIVE_RESTART);
     }
 
     ~state_guard()
@@ -662,6 +674,7 @@ public:
         gl_.BindVertexArray(static_cast<GLuint>(vao_));
         gl_.BindBuffer(kGL_ARRAY_BUFFER, static_cast<GLuint>(vbo_));
         gl_.BindBuffer(kGL_ELEMENT_ARRAY_BUFFER, static_cast<GLuint>(ebo_));
+        gl_.BindBuffer(kGL_TEXTURE_BUFFER, static_cast<GLuint>(tex_bo_));
         for (int i = 0; i < 4; ++i) {
             gl_.ActiveTexture(kGL_TEXTURE0 + static_cast<GLenum>(i));
             gl_.BindTexture(kGL_TEXTURE_2D, static_cast<GLuint>(tex2d_[i]));
@@ -675,6 +688,7 @@ public:
         gl_.Viewport(viewport_[0], viewport_[1], viewport_[2], viewport_[3]);
         gl_.Scissor(scissor_[0], scissor_[1], scissor_[2], scissor_[3]);
         gl_.PolygonMode(kGL_FRONT_AND_BACK, static_cast<GLenum>(polygon_mode_[0]));
+        gl_.ColorMask(color_mask_[0], color_mask_[1], color_mask_[2], color_mask_[3]);
         gl_.BlendEquationSeparate(static_cast<GLenum>(blend_eq_rgb_), static_cast<GLenum>(blend_eq_a_));
         gl_.BlendFuncSeparate(static_cast<GLenum>(blend_src_rgb_), static_cast<GLenum>(blend_dst_rgb_),
                               static_cast<GLenum>(blend_src_a_), static_cast<GLenum>(blend_dst_a_));
@@ -683,6 +697,8 @@ public:
         if (depth_) { gl_.Enable(kGL_DEPTH_TEST); } else { gl_.Disable(kGL_DEPTH_TEST); }
         if (stencil_) { gl_.Enable(kGL_STENCIL_TEST); } else { gl_.Disable(kGL_STENCIL_TEST); }
         if (scissor_on_) { gl_.Enable(kGL_SCISSOR_TEST); } else { gl_.Disable(kGL_SCISSOR_TEST); }
+        if (rast_discard_) { gl_.Enable(kGL_RASTERIZER_DISCARD); } else { gl_.Disable(kGL_RASTERIZER_DISCARD); }
+        if (prim_restart_) { gl_.Enable(kGL_PRIMITIVE_RESTART); } else { gl_.Disable(kGL_PRIMITIVE_RESTART); }
     }
 
     state_guard(const state_guard&)            = delete;
@@ -698,6 +714,7 @@ private:
     GLint           tex2d_[4]{};
     GLint           samplers_[4]{};
     GLint           tex_buf_{};
+    GLint           tex_bo_{};
     GLint           viewport_[4]{};
     GLint           scissor_[4]{};
     GLint           polygon_mode_[2]{};
@@ -709,11 +726,14 @@ private:
     GLint           blend_eq_a_{};
     GLint           draw_fbo_{};
     GLint           read_fbo_{};
+    GLboolean       color_mask_[4]{1, 1, 1, 1};
     GLboolean       blend_{};
     GLboolean       cull_{};
     GLboolean       depth_{};
     GLboolean       stencil_{};
     GLboolean       scissor_on_{};
+    GLboolean       rast_discard_{};
+    GLboolean       prim_restart_{};
 };
 
 struct gl_format_info {
@@ -758,6 +778,7 @@ struct gl_renderer::impl {
     GLuint shape_bo{};
     GLuint shape_tex{};
     GLuint sampler{};
+    GLuint sampler_nomip{};
     GLuint atlas_tex{};
     u32    atlas_w{}, atlas_h{};
 
@@ -808,6 +829,7 @@ struct gl_renderer::impl {
             if (blur_fbo[k] != 0) { gl.DeleteFramebuffers(1, &blur_fbo[k]); blur_fbo[k] = 0; }
         }
         if (sampler != 0) { gl.DeleteSamplers(1, &sampler); sampler = 0; }
+        if (sampler_nomip != 0) { gl.DeleteSamplers(1, &sampler_nomip); sampler_nomip = 0; }
         if (shape_bo != 0) { gl.DeleteBuffers(1, &shape_bo); shape_bo = 0; }
         if (ibo != 0) { gl.DeleteBuffers(1, &ibo); ibo = 0; }
         if (vbo != 0) { gl.DeleteBuffers(1, &vbo); vbo = 0; }
@@ -1046,6 +1068,7 @@ bool gl_renderer::create(const font_atlas& atlas, proc_loader loader)
     gl.GenBuffers(1, &p->shape_bo);
     gl.GenTextures(1, &p->shape_tex);
     gl.GenSamplers(1, &p->sampler);
+    gl.GenSamplers(1, &p->sampler_nomip);
 
     gl.BindVertexArray(p->vao);
     gl.BindBuffer(kGL_ARRAY_BUFFER, p->vbo);
@@ -1061,6 +1084,11 @@ bool gl_renderer::create(const font_atlas& atlas, proc_loader loader)
     gl.SamplerParameteri(p->sampler, kGL_TEXTURE_MAG_FILTER, static_cast<GLint>(kGL_LINEAR));
     gl.SamplerParameteri(p->sampler, kGL_TEXTURE_WRAP_S, static_cast<GLint>(kGL_CLAMP_TO_EDGE));
     gl.SamplerParameteri(p->sampler, kGL_TEXTURE_WRAP_T, static_cast<GLint>(kGL_CLAMP_TO_EDGE));
+
+    gl.SamplerParameteri(p->sampler_nomip, kGL_TEXTURE_MIN_FILTER, static_cast<GLint>(kGL_LINEAR));
+    gl.SamplerParameteri(p->sampler_nomip, kGL_TEXTURE_MAG_FILTER, static_cast<GLint>(kGL_LINEAR));
+    gl.SamplerParameteri(p->sampler_nomip, kGL_TEXTURE_WRAP_S, static_cast<GLint>(kGL_CLAMP_TO_EDGE));
+    gl.SamplerParameteri(p->sampler_nomip, kGL_TEXTURE_WRAP_T, static_cast<GLint>(kGL_CLAMP_TO_EDGE));
 
     // initial dummy shape buffer so the texture buffer is always valid
     const shape_record dummy{};
@@ -1346,17 +1374,20 @@ void gl_renderer::render(const draw_data& data)
     gl.Disable(kGL_CULL_FACE);
     gl.Disable(kGL_DEPTH_TEST);
     gl.Disable(kGL_STENCIL_TEST);
+    gl.Disable(kGL_RASTERIZER_DISCARD);
+    gl.Disable(kGL_PRIMITIVE_RESTART);
+    gl.ColorMask(kGL_TRUE, kGL_TRUE, kGL_TRUE, kGL_TRUE);
     gl.Enable(kGL_SCISSOR_TEST);
     gl.PolygonMode(kGL_FRONT_AND_BACK, kGL_FILL);
 
     gl.ActiveTexture(kGL_TEXTURE0);
     gl.BindTexture(kGL_TEXTURE_2D, s.atlas_tex);
-    gl.BindSampler(0, s.sampler);
+    gl.BindSampler(0, s.sampler_nomip);
     gl.ActiveTexture(kGL_TEXTURE0 + 1);
     gl.BindTexture(kGL_TEXTURE_BUFFER, s.shape_tex);
     gl.BindSampler(1, 0);
     gl.BindSampler(2, s.sampler);
-    gl.BindSampler(3, s.sampler);
+    gl.BindSampler(3, s.sampler_nomip);
 
     const internal::ui_constants uc = internal::make_ui_constants(data, s.output);
     s.bind_ui_uniforms(s.prog_main, uc, data.display_size.y);
@@ -1373,7 +1404,7 @@ void gl_renderer::render(const draw_data& data)
 
     for (const draw_cmd& cmd : data.commands) {
         if (cmd.idx_count == 0 || cmd.clip.empty()) { continue; }
-        const auto fit = [](f32 v, f32 hi) { return static_cast<GLint>(std::clamp(v, 0.0f, hi)); };
+        const auto fit = [](f32 v, f32 hi) { return static_cast<GLint>(std::clamp(std::ceil(v - 0.5f), 0.0f, hi)); };
         const GLint left   = fit(cmd.clip.min.x - data.origin.x, data.display_size.x);
         const GLint top    = fit(cmd.clip.min.y - data.origin.y, data.display_size.y);
         const GLint right  = fit(cmd.clip.max.x - data.origin.x, data.display_size.x);
@@ -1398,12 +1429,14 @@ void gl_renderer::render(const draw_data& data)
         }
 
         if (want == ps_mode::image) {
-            const GLuint tex = cmd.texture <= s.textures.size() ? s.textures[cmd.texture - 1].tex : 0;
-            if (tex == 0) { continue; }
+            if (cmd.texture > s.textures.size() || s.textures[cmd.texture - 1].tex == 0) { continue; }
+            const impl::texture_slot& slot = s.textures[cmd.texture - 1];
             if (mode != ps_mode::image) { s.bind_ui_uniforms(s.prog_image, uc, data.display_size.y); }
             if (mode != ps_mode::image || bound != cmd.texture) {
                 gl.ActiveTexture(kGL_TEXTURE0 + 2);
-                gl.BindTexture(kGL_TEXTURE_2D, tex);
+                gl.BindTexture(kGL_TEXTURE_2D, slot.tex);
+                // unowned host textures may lack mipmaps; a mipmap sampler would treat them as incomplete
+                gl.BindSampler(2, slot.owned ? s.sampler : s.sampler_nomip);
             }
             bound = cmd.texture;
         } else if (want == ps_mode::backdrop) {
@@ -1416,6 +1449,8 @@ void gl_renderer::render(const draw_data& data)
                 bc.bp[1] = data.display_size.y;
                 bc.bp[2] = static_cast<float>(blur_vw) / static_cast<float>(s.blur_w);
                 bc.bp[3] = static_cast<float>(blur_vh) / static_cast<float>(s.blur_h);
+                bc.bp[6] = (static_cast<float>(blur_vw) - 0.5f) / static_cast<float>(s.blur_w);
+                bc.bp[7] = (static_cast<float>(blur_vh) - 0.5f) / static_cast<float>(s.blur_h);
                 gl.Uniform4fv(s.prog_backdrop.u_bp, 5, bc.bp);
             }
             bound = 0;

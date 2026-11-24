@@ -422,7 +422,7 @@ void draw_list::merge_commands(u32* barrier) noexcept
     const auto n = static_cast<u32>(commands_.size());
     if (n < 2) { return; }
     const u32 fence = barrier != nullptr ? *barrier : ~0u; // nothing is joined across this command index
-    u32       moved = ~0u;                                  // ... which then sits at this index
+    u32       moved = fence == 0 ? 0u : ~0u;                // ... which then sits at this index
     draw_cmd* cmds = commands_.data();
     cmd_meta* meta = cmd_meta_.data();
     index_t*  idx  = indices_.data();
@@ -593,17 +593,19 @@ void draw_list::rect_gradient_radial(const rect& r, color inner, color outer, f3
 
 void draw_list::rect_outline(const rect& r, color c, f32 rounding, f32 thickness, corners which)
 {
-    if (c.a == 0 || r.empty() || !clip_.overlaps(r)) {
+    if (c.a == 0 || thickness <= 0.0f || r.empty() || !clip_.overlaps(r)) {
         return;
     }
 
     rounding = std::clamp(rounding, 0.0f, std::min(r.width(), r.height()) * 0.5f);
     if (rounding * scale_ < 0.5f || which == corners::none) {
-        const f32 t = thickness;
+        const f32 t = std::min(thickness, std::min(r.width(), r.height()) * 0.5f);
         add_quad({r.min, {r.max.x, r.min.y + t}}, c, c, c, c);
         add_quad({{r.min.x, r.max.y - t}, r.max}, c, c, c, c);
-        add_quad({{r.min.x, r.min.y + t}, {r.min.x + t, r.max.y - t}}, c, c, c, c);
-        add_quad({{r.max.x - t, r.min.y + t}, {r.max.x, r.max.y - t}}, c, c, c, c);
+        if (r.min.y + t < r.max.y - t) {
+            add_quad({{r.min.x, r.min.y + t}, {r.min.x + t, r.max.y - t}}, c, c, c, c);
+            add_quad({{r.max.x - t, r.min.y + t}, {r.max.x, r.max.y - t}}, c, c, c, c);
+        }
         return;
     }
 

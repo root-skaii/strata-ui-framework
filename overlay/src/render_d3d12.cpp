@@ -62,7 +62,10 @@ bool ensure_targets12(IDXGISwapChain* sc)
         g.frames12.clear();
         g.frames12.resize(g.buffers12);
         for (auto& f : g.frames12) {
-            if (FAILED(g.dev12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&f.alloc)))) { return false; }
+            if (FAILED(g.dev12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&f.alloc)))) {
+                g.frames12.clear();
+                return false;
+            }
         }
     }
     g.targets12_valid = true;
@@ -141,7 +144,8 @@ void render12(IDXGISwapChain* sc, const draw_data& data, bool capture)
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = g.rtv_heap12->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += static_cast<SIZE_T>(idx) * g.rtv_size12;
     g.list12->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-    g.renderer12.render(data, g.list12.Get(), idx % g.renderer_frames12, nullptr);
+    const d3d12_target tgt{back.Get(), static_cast<u64>(rtv.ptr)};
+    g.renderer12.render(data, g.list12.Get(), idx % g.renderer_frames12, &tgt);
 
     readback12 rb;
     const bool capturing = capture && prepare_readback12(back.Get(), rb);

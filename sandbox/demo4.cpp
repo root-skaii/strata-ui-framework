@@ -124,9 +124,17 @@ void draw_subtree(context& ui, demo4_state& s, int index)
     const std::string_view id{reinterpret_cast<const char*>(&index), sizeof(index)};
     if (n.children == 0) {
         if (ui.tree_leaf(n.name, id, s.selected == index)) { s.selected = index; }
+        if (s.reveal_selected && s.selected == index) {
+            ui.ensure_item_visible();
+            s.reveal_selected = false;
+        }
         return;
     }
     if (ui.tree_node(n.name, id, tree_flags::default_open)) {
+        if (s.reveal_selected && s.selected == index) {
+            ui.ensure_item_visible();
+            s.reveal_selected = false;
+        }
         for (int i = 0; i < n.children; ++i) {
             draw_subtree(ui, s, n.first_child + i);
         }
@@ -144,7 +152,7 @@ void demo4_bigtree(context& ui, demo4_state& s)
         ui.same_line();
         if (ui.button("collapse all")) { ui.close_all_tree_nodes(); }
         ui.same_line();
-        if (ui.button("reveal selection") && s.selected >= 0) { s.culling_note = true; }
+        if (ui.button("reveal selection") && s.selected >= 0) { s.reveal_selected = true; }
         ui.separator();
 
         if (auto c = ui.child("tree", {0.0f, 0.0f}, child_flags::frame)) {
@@ -190,6 +198,7 @@ void demo4_app(context& ui, demo4_state& s)
         // no text field has the keyboard.
         if (ui.window_focused()) {
             if (ui.key_pressed(strata::key::del) && !s.sel.empty()) {
+                s.destroy_single = false;
                 ui.ask_confirm("destroy", std::format("Destroy {} object(s)?", s.sel.size()),
                                static_cast<strata::u64>(s.sel.size()));
             }
@@ -200,6 +209,7 @@ void demo4_app(context& ui, demo4_state& s)
         {   // bulk actions are disabled while nothing is selected, and still say why
             auto d = ui.disabled_if(s.sel.empty());
             if (ui.button("Destroy selected")) {
+                s.destroy_single = false;
                 ui.ask_confirm("destroy", std::format("Destroy {} object(s)?", s.sel.size()),
                                static_cast<strata::u64>(s.sel.size()));
             }
@@ -226,6 +236,7 @@ void demo4_app(context& ui, demo4_state& s)
                 if (ui.item_truncated()) { ui.tooltip(s.objects[i]); }
                 // ... which strata places, clips and hit-tests inside the row
                 if (have_icons && ui.row_accessory_button(icon_font, icons::trash)) {
+                    s.destroy_single = true;
                     ui.ask_confirm("destroy", std::format("Destroy {}?", s.objects[i]), static_cast<strata::u64>(idx));
                 }
                 bool shown = s.visible[i] != 0;
@@ -250,7 +261,8 @@ void demo4_app(context& ui, demo4_state& s)
         if (ui.button("+")) { s.pending_scale_percent = std::min(400, ui.scale_percent() + 10); }
         ui.same_line();
         if (ui.button("100 %")) { s.pending_scale_percent = 100; }
-        ui.text_dim("the whole ui grows and shrinks; the window the game owns does not change");
+        ui.text_wrapped_colored(ui.theme().text_dim,
+                                "the whole ui grows and shrinks; the window the game owns does not change");
         ui.separator();
 
         {   // the viewport marker an object picker draws over what is under the cursor
@@ -268,7 +280,15 @@ void demo4_app(context& ui, demo4_state& s)
 
     // the confirmation owns its state; the "don't ask again" tick is stored for the caller
     switch (ui.confirm("destroy", {"Destroy", "Cancel"}, {.title = "Destroy?", .remember = &s.never_ask, .danger = 1})) {
-    case 1:  s.status = std::format("destroyed {}", ui.confirm_data()); break;
+    case 1: {
+        const strata::u64 data = ui.confirm_data();
+        if (s.destroy_single && data < s.objects.size()) {
+            s.status = std::format("destroyed {}", s.objects[static_cast<std::size_t>(data)]);
+        } else {
+            s.status = std::format("destroyed {} object(s)", data);
+        }
+        break;
+    }
     case 2:  s.status = "cancelled"; break;
     case -1: s.status = "dismissed"; break;
     default: break;
@@ -288,8 +308,23 @@ void demo4_rows(context& ui, demo4_state& s)
                             input_flags::clear_button | input_flags::select_all_on_focus);
         ui.separator();
 
+        const auto contains_ci = [](std::string_view hay, std::string_view needle) {
+            if (needle.empty()) { return true; }
+            auto lower = [](unsigned char ch) { return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : static_cast<char>(ch); };
+            if (needle.size() > hay.size()) { return false; }
+            for (std::size_t k = 0; k + needle.size() <= hay.size(); ++k) {
+                bool ok = true;
+                for (std::size_t j = 0; j < needle.size(); ++j) {
+                    if (lower(static_cast<unsigned char>(hay[k + j])) != lower(static_cast<unsigned char>(needle[j]))) { ok = false; break; }
+                }
+                if (ok) { return true; }
+            }
+            return false;
+        };
+
         for (std::size_t i = 0; i < s.components.size(); ++i) {
             demo4_state::component& c = s.components[i];
+            if (!contains_ci(c.name, s.filter) && !contains_ci(c.type, s.filter)) { continue; }
             ui.push_id(&c); // the row is identified by the object it shows
 
             // the header keeps a right gutter for the switch and remove button, so its label is ellipsized before them
@@ -323,7 +358,7 @@ void demo4_rows(context& ui, demo4_state& s)
             ui.pop_right_gutter();
 
             if (auto p = ui.popup("row menu")) {
-                if (ui.selectable("copy type")) { ui.close_popup(); }
+                if (ui.selectable("copy type")) { ui.copy_text(c.type); ui.close_popup(); }
                 if (ui.selectable("remove")) { s.removed = static_cast<int>(i); ui.close_popup(); }
             }
             ui.pop_id();
@@ -355,15 +390,16 @@ void demo4_nodes(context& ui, demo4_state& s)
     constexpr auto in_pin  = [](std::uint64_t node, int i) { return node * 100 + static_cast<std::uint64_t>(i); };
     constexpr auto out_pin = [](std::uint64_t node, int i) { return node * 100 + 50 + static_cast<std::uint64_t>(i); };
 
-    if (s.graph_nodes.empty() && s.graph_links.empty()) {
+    if (!s.graph_initialized) {
+        s.graph_initialized = true;
         s.graph_nodes = {{1, "Texture", {30, 40}, 0, 1}, {2, "Noise", {30, 170}, 0, 1}, {3, "Blend", {260, 90}, 2, 1},
                          {4, "Output", {470, 100}, 1, 0}};
         s.graph_links = {{out_pin(1, 0), in_pin(3, 0)}, {out_pin(2, 0), in_pin(3, 1)}, {out_pin(3, 0), in_pin(4, 0)}};
     }
 
-    if (auto w = ui.window("node graph", {24.0f, 24.0f}, {680.0f, 440.0f}, window_flags::resizable)) {
+    if (auto w = ui.window("node graph", {24.0f, 24.0f}, {680.0f, 470.0f}, window_flags::resizable)) {
         ui.text_dim("wheel zoom, middle-drag pan, F frame, Ctrl+C/V/D copy, Ctrl+Z/Y undo, right-click menu");
-        if (s.graph.begin(ui, "graph", {0.0f, 340.0f})) {
+        if (s.graph.begin(ui, "graph", {0.0f, 320.0f})) {
             for (demo4_state::graph_node& n : s.graph_nodes) {
                 s.graph.begin_node(n.id, n.title, n.pos);
                 for (int i = 0; i < n.inputs; ++i)  { s.graph.input_pin(in_pin(n.id, i), std::format("in {}", i)); }
@@ -374,27 +410,6 @@ void demo4_nodes(context& ui, demo4_state& s)
             s.graph.end();
         }
 
-        if (node_context_request req; s.graph.context_requested(req)) {
-            s.graph_request = req;
-            ui.open_popup("graph_menu", req.screen);
-        }
-        if (ui.begin_popup("graph_menu")) {
-            const node_context_request& req = s.graph_request;
-            if (req.target == node_target::canvas && ui.selectable("add node")) {
-                s.graph_nodes.push_back({s.next_node_id++, "Node", req.canvas, 1, 1});
-                ui.close_popup();
-            } else if (req.target == node_target::node && ui.selectable("delete node")) {
-                std::erase_if(s.graph_links, [&](const node_link& l) { return l.from / 100 == req.node || l.to / 100 == req.node; });
-                std::erase_if(s.graph_nodes, [&](const demo4_state::graph_node& n) { return n.id == req.node; });
-                s.graph.clear_selection();
-                ui.close_popup();
-            } else if (req.target == node_target::link && ui.selectable("delete link")) {
-                std::erase(s.graph_links, req.link);
-                ui.close_popup();
-            }
-            ui.end_popup();
-        }
-
         // every edit is one undo step: a snapshot before, a snapshot after
         using snapshot = std::pair<std::vector<demo4_state::graph_node>, std::vector<node_link>>;
         const auto take   = [&] { return snapshot{s.graph_nodes, s.graph_links}; };
@@ -403,6 +418,33 @@ void demo4_nodes(context& ui, demo4_state& s)
             s.graph_history.push([&s, before] { s.graph_nodes = before.first; s.graph_links = before.second; s.graph.clear_selection(); },
                                  [&s, after] { s.graph_nodes = after.first; s.graph_links = after.second; s.graph.clear_selection(); }, name);
         };
+
+        if (node_context_request req; s.graph.context_requested(req)) {
+            s.graph_request = req;
+            ui.open_popup("graph_menu", req.screen);
+        }
+        if (ui.begin_popup("graph_menu")) {
+            const node_context_request& req = s.graph_request;
+            if (req.target == node_target::canvas && ui.selectable("add node")) {
+                const snapshot before = take();
+                s.graph_nodes.push_back({s.next_node_id++, "Node", req.canvas, 1, 1});
+                record(before, "add node");
+                ui.close_popup();
+            } else if (req.target == node_target::node && ui.selectable("delete node")) {
+                const snapshot before = take();
+                std::erase_if(s.graph_links, [&](const node_link& l) { return l.from / 100 == req.node || l.to / 100 == req.node; });
+                std::erase_if(s.graph_nodes, [&](const demo4_state::graph_node& n) { return n.id == req.node; });
+                s.graph.clear_selection();
+                record(before, "delete node");
+                ui.close_popup();
+            } else if (req.target == node_target::link && ui.selectable("delete link")) {
+                const snapshot before = take();
+                std::erase(s.graph_links, req.link);
+                record(before, "delete link");
+                ui.close_popup();
+            }
+            ui.end_popup();
+        }
         const auto add_copies = [&](const std::vector<demo4_state::graph_node>& src, vec2 at) {
             if (src.empty()) { return; }
             const snapshot before = take();

@@ -275,6 +275,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     const bool docked     = node != nullptr;
     const bool hidden_tab = docked && (node->active != wid || space->hidden);
     st->docked_now = docked;
+    st->hidden_now = hidden_tab;
     st->dock_owner = docked ? space->owner : id{};
     if (docked) {
         constexpr u16 strip = static_cast<u16>(window_flags::resizable) | static_cast<u16>(window_flags::drag_by_body);
@@ -323,6 +324,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
         u32 zi = z_index(*this, in_float ? st->dock_owner : wid);
         if (zi == no_z) { zi = 0; }
         m_->win_.cur_z_ = zi * 2 + (in_float ? 1u : 0u) + rank; // a window docked in a floating dock sits just above that dock
+        st->last_z      = m_->win_.cur_z_;
     }
 
     // every window's draw commands form their own run so the windows can be restacked

@@ -109,16 +109,16 @@ struct ui_constants {
     const f32 nits = std::clamp(out.paper_white_nits, 1.0f, 10000.0f);
     c.output[0] = static_cast<float>(out.space);
     c.output[1] = out.space == output_space::hdr10 ? nits / 10000.0f : nits / 80.0f;
-    c.output[2] = std::max(data.text_contrast, 0.0f);
+    c.output[2] = data.text_contrast; // negative values encode SDF spread for the glyph shader
     return c;
 }
 
-// blur targets: 8-bit for 8-bit targets, half float otherwise (scRGB exceeds 1, 8-bit PQ bands)
+// blur targets: 8-bit for non-sRGB 8-bit targets, half float otherwise (sRGB views decode to linear, scRGB exceeds 1, 8-bit PQ bands)
 [[nodiscard]] inline bool wide_format(int dxgi_format) noexcept
 {
     switch (dxgi_format) {
-    case 27: case 28: case 29:  // DXGI_FORMAT_R8G8B8A8_TYPELESS / _UNORM / _UNORM_SRGB
-    case 87: case 88: case 90: case 91: case 92: case 93: // DXGI_FORMAT_B8G8R8A8 / B8G8R8X8 (typeless, unorm, srgb)
+    case 27: case 28:           // DXGI_FORMAT_R8G8B8A8_TYPELESS / _UNORM
+    case 87: case 88: case 90: case 92: // DXGI_FORMAT_B8G8R8A8 / B8G8R8X8 (typeless, unorm)
         return false;
     default:
         return true;

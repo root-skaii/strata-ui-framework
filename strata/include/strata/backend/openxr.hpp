@@ -85,7 +85,7 @@ public:
 
     [[nodiscard]] const char* last_error() const noexcept;
 
-    [[nodiscard]] bool valid() const noexcept { return impl_ != nullptr; }
+    [[nodiscard]] bool valid() const noexcept;
 
 private:
     struct impl;

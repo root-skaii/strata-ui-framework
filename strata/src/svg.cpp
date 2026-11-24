@@ -140,7 +140,7 @@ std::vector<svg_contour> svg_parse_path(std::string_view d, f32 flatness)
     char prev_cmd = 0;
 
     auto ensure_contour = [&]() -> svg_contour& {
-        if (out.empty()) {
+        if (out.empty() || out.back().closed) {
             out.push_back({});
             out.back().points.push_back(cur);
         }
@@ -272,7 +272,6 @@ std::vector<u8> svg_rasterize_alpha(std::string_view d, vec2 viewbox, u32 width,
         for (std::size_t i = 0; i < n; ++i) {
             const vec2 a = {c.points[i].x * sx, c.points[i].y * sy};
             const vec2 b = {c.points[(i + 1) % n].x * sx, c.points[(i + 1) % n].y * sy};
-            if (i + 1 == n && !c.closed) { break; }
             if (std::abs(a.y - b.y) < 1.0e-5f) { continue; }
             if (a.y < b.y) { edges.push_back({a.x, a.y, b.x, b.y, 1}); }
             else           { edges.push_back({b.x, b.y, a.x, a.y, -1}); }
@@ -353,9 +352,78 @@ void draw_svg_path(draw_list& dl, const rect& dst, std::string_view d, vec2 view
         if (stroke_width > 0.0f || !c.closed || pts.size() < 3) {
             dl.polyline(pts, col, stroke_width > 0.0f ? stroke_width : 1.5f, c.closed);
         } else {
-            // triangle fan for closed vector glyphs
-            for (std::size_t i = 1; i + 1 < pts.size(); ++i) {
-                dl.triangle_filled(pts[0], pts[i], pts[i + 1], col);
+            // drop duplicate closing point so polygon_filled sees clean edges
+            while (pts.size() > 2 && std::abs(pts.back().x - pts.front().x) < 1.0e-3f &&
+                   std::abs(pts.back().y - pts.front().y) < 1.0e-3f) {
+                pts.pop_back();
+            }
+            if (pts.size() < 3) { continue; }
+            // convex contours fit a single polygon_filled() call without internal AA seams
+            bool convex = true;
+            f32 sign = 0.0f;
+            for (std::size_t i = 0; i < pts.size() && convex; ++i) {
+                const vec2 a = pts[i];
+                const vec2 b = pts[(i + 1) % pts.size()];
+                const vec2 e = pts[(i + 2) % pts.size()];
+                const f32 cross = (b.x - a.x) * (e.y - b.y) - (b.y - a.y) * (e.x - b.x);
+                if (std::abs(cross) > 1.0e-4f) {
+                    if (sign == 0.0f) { sign = cross; }
+                    else if (cross * sign < 0.0f) { convex = false; }
+                }
+            }
+            if (convex) {
+                if (pts.size() > 64) {
+                    std::vector<vec2> reduced;
+                    reduced.reserve(64);
+                    for (std::size_t i = 0; i < 64; ++i) {
+                        reduced.push_back(pts[(i * pts.size()) / 64]);
+                    }
+                    dl.polygon_filled(reduced, col);
+                } else {
+                    dl.polygon_filled(pts, col);
+                }
+            } else {
+                // ear-clip concave contours (handles non-convex icons like folder)
+                std::vector<vec2> rem = pts;
+                f32 area = 0.0f;
+                for (std::size_t i = 0; i < rem.size(); ++i) {
+                    const vec2& a = rem[i];
+                    const vec2& b = rem[(i + 1) % rem.size()];
+                    area += a.x * b.y - b.x * a.y;
+                }
+                const f32 orient = area >= 0.0f ? 1.0f : -1.0f;
+                auto in_tri = [](vec2 p, vec2 a, vec2 b, vec2 c) {
+                    const f32 c1 = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+                    const f32 c2 = (c.x - b.x) * (p.y - b.y) - (c.y - b.y) * (p.x - b.x);
+                    const f32 c3 = (a.x - c.x) * (p.y - c.y) - (a.y - c.y) * (p.x - c.x);
+                    const bool neg = (c1 < 0.0f) || (c2 < 0.0f) || (c3 < 0.0f);
+                    const bool pos = (c1 > 0.0f) || (c2 > 0.0f) || (c3 > 0.0f);
+                    return !(neg && pos);
+                };
+                std::size_t guard = rem.size() * rem.size();
+                while (rem.size() > 3 && guard-- > 0) {
+                    bool clipped = false;
+                    for (std::size_t i = 0; i < rem.size(); ++i) {
+                        const vec2& prev = rem[(i + rem.size() - 1) % rem.size()];
+                        const vec2& curr = rem[i];
+                        const vec2& next = rem[(i + 1) % rem.size()];
+                        const f32 cr = ((curr.x - prev.x) * (next.y - curr.y) - (curr.y - prev.y) * (next.x - curr.x)) * orient;
+                        if (cr <= 1.0e-5f) { continue; }
+                        bool contains = false;
+                        for (std::size_t j = 0; j < rem.size(); ++j) {
+                            if (j == i || j == (i + rem.size() - 1) % rem.size() || j == (i + 1) % rem.size()) { continue; }
+                            if (in_tri(rem[j], prev, curr, next)) { contains = true; break; }
+                        }
+                        if (!contains) {
+                            dl.triangle_filled(prev, curr, next, col);
+                            rem.erase(rem.begin() + static_cast<std::ptrdiff_t>(i));
+                            clipped = true;
+                            break;
+                        }
+                    }
+                    if (!clipped) { break; }
+                }
+                if (rem.size() == 3) { dl.triangle_filled(rem[0], rem[1], rem[2], col); }
             }
         }
     }

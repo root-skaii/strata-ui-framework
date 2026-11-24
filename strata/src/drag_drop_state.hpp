@@ -25,6 +25,7 @@ struct drag_drop_state {
     bool            dd_saved_overlay_{};
     u32             dd_prev_owner_{};
     layout_state    dd_saved_layout_{};
+    rect            dd_saved_item_rect_{};
 };
 
 } // namespace strata::internal

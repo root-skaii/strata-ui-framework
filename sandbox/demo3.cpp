@@ -155,13 +155,21 @@ void dnd_window(context& ui, demo3_state& s)
                 if (drop) {
                     move_from = drop.as<int>();
                     move_to   = idx + (drop.local.y < 0.5f ? 0 : 1);
-                    s.last_drop = std::format("moved \"{}\"", s.todo[static_cast<std::size_t>(move_from)]);
                 }
             }
             if (move_from >= 0 && move_from != move_to && move_from + 1 != move_to) {
+                const int dst = move_to > move_from ? move_to - 1 : move_to;
                 std::string task = s.todo[static_cast<std::size_t>(move_from)];
+                s.last_drop = std::format("moved \"{}\"", task);
                 s.todo.erase(s.todo.begin() + move_from);
-                s.todo.insert(s.todo.begin() + (move_to > move_from ? move_to - 1 : move_to), std::move(task));
+                s.todo.insert(s.todo.begin() + dst, std::move(task));
+                if (s.selected_task == move_from) {
+                    s.selected_task = dst;
+                } else if (s.selected_task > move_from && s.selected_task <= dst) {
+                    --s.selected_task;
+                } else if (s.selected_task < move_from && s.selected_task >= dst) {
+                    ++s.selected_task;
+                }
             }
             if (s.todo.empty()) { ui.text_dim("nothing left to do"); }
 
@@ -183,6 +191,7 @@ void dnd_window(context& ui, demo3_state& s)
             dl.text({bin.bounds.min.x + 12.0f, bin.bounds.min.y + 28.0f}, ui.theme().text_dim, finished, ui.current_font());
             if (got) { finish = got.as<int>(); }
             if (finish >= 0 && finish < static_cast<int>(s.todo.size())) {
+                s.last_drop = std::format("finished \"{}\"", s.todo[static_cast<std::size_t>(finish)]);
                 s.done.push_back(s.todo[static_cast<std::size_t>(finish)]);
                 s.todo.erase(s.todo.begin() + finish);
                 s.selected_task = -1;
@@ -227,7 +236,7 @@ void dnd_window(context& ui, demo3_state& s)
 
 void lists_window(context& ui, demo3_state& s)
 {
-    if (auto w = ui.window("long lists and tables", {40, 30}, {720.0f, 660.0f}, window_flags::resizable)) {
+    if (auto w = ui.window("long lists and tables", {40, 30}, {720.0f, 840.0f}, window_flags::resizable)) {
         if (auto card = ui.card("100 000 rows, only the visible ones are submitted")) {
             if (auto rows = ui.child("bigrows", {0.0f, 170.0f}, child_flags::frame)) {
                 s.list_rows_drawn = 0;
@@ -410,12 +419,12 @@ void editor_window(context& ui, demo3_state& s)
             ui.text_dim("Ctrl+F / Ctrl+H in the field, Tab / Shift+Tab indent lines");
             if (s.scene == "editor" && s.frame == 3) { ui.code_find("##code", "std", true); } // (the scree
             // nshot shows the find bar)
+            constexpr f32 min_w = 240.0f, min_h = 80.0f, max_h = 700.0f, grip_hit = 12.0f;
+            ui.combo("resize", s.resize_mode, {"width and height", "width only", "height only", "fixed size"});
             const font_id code_font = static_cast<font_id>(s.mono_font >= 0 ? s.mono_font : 0);
             const auto mono = ui.with_font(code_font);
             highlight(s.code, s.spans, code_font);
             ui.input_spans(s.spans);
-            constexpr f32 min_w = 240.0f, min_h = 80.0f, max_h = 700.0f, grip_hit = 12.0f;
-            ui.combo("resize", s.resize_mode, {"width and height", "width only", "height only", "fixed size"});
             const bool can_x = s.resize_mode == 0 || s.resize_mode == 1, can_y = s.resize_mode == 0 || s.resize_mode == 2;
             const f32 avail = ui.content_width();
             // the window may have narrowed since the last frame
@@ -429,7 +438,8 @@ void editor_window(context& ui, demo3_state& s)
             const f32  cur_w  = s.code_w > 0.0f ? s.code_w : avail;
             const vec2 corner = {er.min.x + cur_w + 4.0f, er.max.y + 4.0f}; // its bottom-right
             const vec2 mp     = ui.mouse_pos();
-            const bool over   = mp.x >= corner.x - grip_hit && mp.x <= corner.x && mp.y >= er.max.y && mp.y <= corner.y;
+            const bool over   = !ui.any_popup_open() && mp.x >= corner.x - grip_hit && mp.x <= corner.x &&
+                                mp.y >= corner.y - grip_hit && mp.y <= corner.y;
             if (over && ui.mouse_clicked() && (can_x || can_y)) {
                 s.grip_drag  = true;
                 s.grip_mouse = mp;

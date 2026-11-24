@@ -196,6 +196,7 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
     const auto wnd = static_cast<HWND>(hwnd);
 
     const auto press = [&](std::size_t button) {
+        mouse_ = {static_cast<f32>(GET_X_LPARAM(lparam)), static_cast<f32>(GET_Y_LPARAM(lparam))};
         if (!(down_[0] || down_[1] || down_[2])) {
             ::SetCapture(wnd);
         }
@@ -203,6 +204,7 @@ bool win32_platform::handle_message(void* hwnd, std::uint32_t msg, std::uintptr_
         press_seen_[button] = true;
     };
     const auto release = [&](std::size_t button) {
+        mouse_ = {static_cast<f32>(GET_X_LPARAM(lparam)), static_cast<f32>(GET_Y_LPARAM(lparam))};
         if (press_seen_[button]) {
             release_pending_[button] = true;
         } else {

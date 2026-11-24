@@ -36,8 +36,7 @@ public:
     // records UI draw commands into an already-open render pass (backdrop panels draw as flat tints).
     void render(const draw_data& data, WGPURenderPassEncoder pass);
 
-    // records UI draw commands into `encoder` targeting `target_view`. when `target_tex` is supplied (single-sample
-    // with CopySrc usage), backdrop blur passes execute before frosted panels.
+    // records UI draw commands into `encoder` targeting `target_view` (backdrop panels draw as flat tints).
     void render(const draw_data& data, WGPUCommandEncoder encoder, WGPUTextureView target_view,
                 WGPUTexture target_tex = nullptr, bool clear = false, color clear_col = {0, 0, 0, 255});
 

@@ -233,6 +233,7 @@ struct vr_overlay::impl {
     // hit the panel, without freezing the live position outright.
     std::array<vec2, max_vr_controllers> hit_uv_last_known{};
     std::array<bool, max_vr_controllers> hit_last_known_valid{};
+    std::array<bool, max_vr_controllers> prev_trigger_down{};
 
     // input system state (see actions_manifest_json above); input_ready is false whenever any setup step fails,
     // and update_controllers() then falls back to the raw device pose/legacy button state it always used to use
@@ -405,6 +406,9 @@ void vr_overlay::hide() noexcept
     if (!impl_) { return; }
     if (vr::IVROverlay* ovl = vr::VROverlay(); ovl != nullptr) {
         ovl->HideOverlay(impl_->handle);
+        for (vr::VROverlayHandle_t h : impl_->laser) {
+            if (h != vr::k_ulOverlayHandleInvalid) { ovl->HideOverlay(h); }
+        }
         impl_->visible = false;
     }
 }
@@ -509,18 +513,19 @@ void vr_overlay::update_controllers() noexcept
             beam_length = results.fDistance;
         }
 
-        // see impl::hit_uv_last_known: keep tracking the live hit position through a held trigger, but paper
-        // over a momentary off-panel miss (trigger-pull wobble) with the last position that genuinely hit.
+        // keep tracking live hits while preserving the last valid hit across press/hold/release wobble frames
         if (c.hit) {
             impl_->hit_uv_last_known[i]    = c.hit_uv;
             impl_->hit_last_known_valid[i] = true;
-        } else if (c.trigger_down && impl_->hit_last_known_valid[i]) {
+        } else if ((c.trigger_down || impl_->prev_trigger_down[i]) && impl_->hit_last_known_valid[i]) {
             c.hit    = true;
             c.hit_uv = impl_->hit_uv_last_known[i];
+        } else {
+            impl_->hit_last_known_valid[i] = false;
         }
-        if (!c.trigger_down) { impl_->hit_last_known_valid[i] = false; } // don't leak a stale point into the next press
+        impl_->prev_trigger_down[i] = c.trigger_down;
 
-        update_laser(ovl, impl_->laser[i], true, params.vSource, params.vDirection, beam_length);
+        update_laser(ovl, impl_->laser[i], impl_->visible, params.vSource, params.vDirection, beam_length);
     }
 }
 
@@ -530,6 +535,8 @@ std::span<const vr_controller> vr_overlay::controllers() const noexcept
 }
 
 const char* vr_overlay::last_error() const noexcept { return impl_ ? impl_->error : ""; }
+
+bool vr_overlay::valid() const noexcept { return impl_ && impl_->handle != vr::k_ulOverlayHandleInvalid; }
 
 input_state vr_pointer_input(std::span<const vr_controller> controllers, input_state base) noexcept
 {

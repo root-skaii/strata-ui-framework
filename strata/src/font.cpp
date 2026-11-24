@@ -996,6 +996,17 @@ bool font_atlas::bake_glyph(font_id f, char32_t cp) const
     std::vector<u8>    px;
     const scrub_on_exit scrub{px};
     src.rasterise_cp(cp, r, &px);
+    if (r.present && r.visible && src.sdf) {
+        const u32 pad = static_cast<u32>(src.sdf_pad);
+        std::vector<u8> sdf_px;
+        const scrub_on_exit scrub_sdf{sdf_px};
+        bitmap_to_sdf(px.data(), r.w, r.h, pad, static_cast<f32>(pad), sdf_px);
+        px = std::move(sdf_px);
+        r.w        = static_cast<u16>(r.w + 2 * pad);
+        r.h        = static_cast<u16>(r.h + 2 * pad);
+        r.origin_x = static_cast<decltype(r.origin_x)>(r.origin_x - static_cast<i32>(pad));
+        r.origin_y = static_cast<decltype(r.origin_y)>(r.origin_y + static_cast<i32>(pad));
+    }
 
     glyph g{};
     g.present = r.present;
@@ -1073,19 +1084,23 @@ font_atlas::font_atlas(const font_atlas& o)
     , height_{o.height_}
     , scale_{o.scale_}
     , inv_scale_{o.inv_scale_}
+    , sdf_{o.sdf_}
+    , sdf_spread_{o.sdf_spread_}
 {}
 
 font_atlas& font_atlas::operator=(const font_atlas& o)
 {
     if (this != &o) {
         discard_pixels();
-        fonts_     = o.fonts_;
-        pixels_    = o.pixels_;
-        white_uv_  = o.white_uv_;
-        width_     = o.width_;
-        height_    = o.height_;
-        scale_     = o.scale_;
-        inv_scale_ = o.inv_scale_;
+        fonts_      = o.fonts_;
+        pixels_     = o.pixels_;
+        white_uv_   = o.white_uv_;
+        width_      = o.width_;
+        height_     = o.height_;
+        scale_      = o.scale_;
+        inv_scale_  = o.inv_scale_;
+        sdf_        = o.sdf_;
+        sdf_spread_ = o.sdf_spread_;
         dyn_.reset();
     }
     return *this;
@@ -1093,7 +1108,8 @@ font_atlas& font_atlas::operator=(const font_atlas& o)
 
 namespace {
 
-constexpr u32 atlas_magic = 0x31414653; // "SFA1"
+constexpr u32 atlas_magic_v1 = 0x31414653; // "SFA1"
+constexpr u32 atlas_magic    = 0x32414653; // "SFA2" (adds SDF metadata)
 
 struct byte_writer {
     std::vector<u8>& out;
@@ -1147,6 +1163,8 @@ std::vector<u8> font_atlas::save() const
     w.pod(scale_);
     w.pod(inv_scale_);
     w.pod(white_uv_);
+    w.pod<u8>(sdf_ ? 1 : 0);
+    w.pod(sdf_spread_);
     w.pod<u64>(fonts_.size());
     for (const font_data& f : fonts_) {
         w.vec(f.ranges);
@@ -1164,7 +1182,8 @@ std::vector<u8> font_atlas::save() const
 std::optional<font_atlas> font_atlas::load(std::span<const u8> bytes)
 {
     byte_reader r{bytes};
-    if (r.pod<u32>() != atlas_magic || r.pod<u32>() != sizeof(glyph) || r.pod<u32>() != sizeof(range_entry) || r.pod<u32>() != sizeof(kern_pair)) {
+    const u32 magic = r.pod<u32>();
+    if ((magic != atlas_magic && magic != atlas_magic_v1) || r.pod<u32>() != sizeof(glyph) || r.pod<u32>() != sizeof(range_entry) || r.pod<u32>() != sizeof(kern_pair)) {
         return std::nullopt;
     }
     font_atlas a;
@@ -1173,6 +1192,10 @@ std::optional<font_atlas> font_atlas::load(std::span<const u8> bytes)
     a.scale_     = r.pod<f32>();
     a.inv_scale_ = r.pod<f32>();
     a.white_uv_  = r.pod<std::array<u16, 2>>();
+    if (magic == atlas_magic) {
+        a.sdf_        = r.pod<u8>() != 0;
+        a.sdf_spread_ = r.pod<u8>();
+    }
     const u64 count = r.pod<u64>();
     if (!r.ok || count == 0 || count > 64) { return std::nullopt; }
     a.fonts_.resize(static_cast<std::size_t>(count));

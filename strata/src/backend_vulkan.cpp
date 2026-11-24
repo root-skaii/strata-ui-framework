@@ -176,16 +176,19 @@ struct vulkan_renderer::impl {
     };
     std::vector<pending_copy> pending;
 
-    // backdrop blur resources
-    VkFormat        blur_rt_format{VK_FORMAT_R8G8B8A8_UNORM};
-    gpu_image       snap;
-    VkDescriptorSet snap_set{VK_NULL_HANDLE};
-    u32             snap_w{}, snap_h{};
-    gpu_image       blur_img[2];
-    VkFramebuffer   blur_fb[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkDescriptorSet blur_set[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    u32             blur_w{}, blur_h{};
-    bool            blur_supported{};
+    // per-frame backdrop blur resources so target resize never updates in-flight descriptor sets
+    struct blur_frame {
+        gpu_image       snap;
+        VkDescriptorSet snap_set{VK_NULL_HANDLE};
+        u32             snap_w{}, snap_h{};
+        gpu_image       blur_img[2];
+        VkFramebuffer   blur_fb[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
+        VkDescriptorSet blur_set[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
+        u32             blur_w{}, blur_h{};
+    };
+    VkFormat                blur_rt_format{VK_FORMAT_R8G8B8A8_UNORM};
+    std::vector<blur_frame> blur_frames;
+    bool                    blur_supported{};
 
     // cached VkFramebuffers for host swapchain views (retired when unused or on clear_target_cache)
     struct fb_entry {
@@ -646,48 +649,50 @@ struct vulkan_renderer::impl {
         return fb;
     }
 
-    [[nodiscard]] bool ensure_blur(u32 w, u32 h) noexcept
+    [[nodiscard]] bool ensure_blur(u32 fi, u32 w, u32 h) noexcept
     {
-        if (snap.img == VK_NULL_HANDLE || snap_w != w || snap_h != h) {
-            retire_image(snap);
-            if (!create_image(w, h, 1, color_format, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, snap)) {
+        if (fi >= blur_frames.size()) { return false; }
+        blur_frame& bf = blur_frames[fi];
+        if (bf.snap.img == VK_NULL_HANDLE || bf.snap_w != w || bf.snap_h != h) {
+            retire_image(bf.snap);
+            if (!create_image(w, h, 1, color_format, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, bf.snap)) {
                 return false;
             }
-            update_set1(snap_set, snap.view);
-            snap_w = w; snap_h = h;
+            update_set1(bf.snap_set, bf.snap.view);
+            bf.snap_w = w; bf.snap_h = h;
         }
         const u32 lw = (w + 1) / 2;
         const u32 lh = (h + 1) / 2;
-        if (blur_img[0].img == VK_NULL_HANDLE || blur_w != lw || blur_h != lh) {
+        if (bf.blur_img[0].img == VK_NULL_HANDLE || bf.blur_w != lw || bf.blur_h != lh) {
             for (int k = 0; k < 2; ++k) {
-                retire_framebuffer(blur_fb[k]);
-                retire_image(blur_img[k]);
-                if (!create_image(lw, lh, 1, blur_rt_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, blur_img[k])) {
+                retire_framebuffer(bf.blur_fb[k]);
+                retire_image(bf.blur_img[k]);
+                if (!create_image(lw, lh, 1, blur_rt_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, bf.blur_img[k])) {
                     return false;
                 }
                 VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
                 fci.renderPass      = blur_pass_rp;
                 fci.attachmentCount = 1;
-                fci.pAttachments    = &blur_img[k].view;
+                fci.pAttachments    = &bf.blur_img[k].view;
                 fci.width           = lw;
                 fci.height          = lh;
                 fci.layers          = 1;
-                const VkResult r = vkCreateFramebuffer(device, &fci, nullptr, &blur_fb[k]);
+                const VkResult r = vkCreateFramebuffer(device, &fci, nullptr, &bf.blur_fb[k]);
                 check_lost(r);
                 if (r != VK_SUCCESS) { return false; }
-                update_set1(blur_set[k], blur_img[k].view);
+                update_set1(bf.blur_set[k], bf.blur_img[k].view);
             }
-            blur_w = lw; blur_h = lh;
+            bf.blur_w = lw; bf.blur_h = lh;
         }
         return true;
     }
 
-    void run_blur_pass(VkCommandBuffer cmd, int dst, u32 vw, u32 vh, VkDescriptorSet src_set,
+    void run_blur_pass(VkCommandBuffer cmd, u32 fi, int dst, u32 vw, u32 vh, VkDescriptorSet src_set,
                        const blur_constants& c, VkPipeline pipe, const internal::blur_plan& plan) noexcept
     {
         VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rbi.renderPass        = blur_pass_rp;
-        rbi.framebuffer       = blur_fb[dst];
+        rbi.framebuffer       = blur_frames[fi].blur_fb[dst];
         rbi.renderArea.offset = {static_cast<int32_t>(plan.lx0), static_cast<int32_t>(plan.ly0)};
         rbi.renderArea.extent = {plan.lx1 - plan.lx0, plan.ly1 - plan.ly0};
         vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
@@ -705,11 +710,12 @@ struct vulkan_renderer::impl {
     }
 
     // must be called outside a render pass; leaves target.image in COLOR_ATTACHMENT_OPTIMAL
-    [[nodiscard]] bool run_blur(VkCommandBuffer cmd, const vulkan_target& target, float radius_px, const rect& panel,
+    [[nodiscard]] bool run_blur(VkCommandBuffer cmd, u32 fi, const vulkan_target& target, float radius_px, const rect& panel,
                                 u32& out_vw, u32& out_vh, rect& out_exact) noexcept
     {
-        if (!ensure_blur(target.extent.width, target.extent.height)) { return false; }
-        const internal::blur_plan plan = internal::plan_blur(radius_px, panel, snap_w, snap_h);
+        if (!ensure_blur(fi, target.extent.width, target.extent.height)) { return false; }
+        blur_frame& bf = blur_frames[fi];
+        const internal::blur_plan plan = internal::plan_blur(radius_px, panel, bf.snap_w, bf.snap_h);
         if (plan.x1 <= plan.x0 || plan.y1 <= plan.y0 || plan.lx1 <= plan.lx0 || plan.ly1 <= plan.ly0) {
             return false;
         }
@@ -717,7 +723,7 @@ struct vulkan_renderer::impl {
         cmd_image_barrier(cmd, target.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        cmd_image_barrier(cmd, snap.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        cmd_image_barrier(cmd, bf.snap.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           0, VK_ACCESS_TRANSFER_WRITE_BIT,
                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
@@ -730,27 +736,27 @@ struct vulkan_renderer::impl {
         copy.dstOffset = copy.srcOffset;
         copy.extent    = {plan.x1 - plan.x0, plan.y1 - plan.y0, 1};
         vkCmdCopyImage(cmd, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       snap.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                       bf.snap.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
         cmd_image_barrier(cmd, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-        cmd_image_barrier(cmd, snap.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        cmd_image_barrier(cmd, bf.snap.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                           VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
         const u32   ds = plan.ds;
-        const u32   vw = std::max(1u, (snap_w + ds - 1) / ds);
-        const u32   vh = std::max(1u, (snap_h + ds - 1) / ds);
-        const float tw = static_cast<float>(blur_w);
-        const float th = static_cast<float>(blur_h);
+        const u32   vw = std::max(1u, (bf.snap_w + ds - 1) / ds);
+        const u32   vh = std::max(1u, (bf.snap_h + ds - 1) / ds);
+        const float tw = static_cast<float>(bf.blur_w);
+        const float th = static_cast<float>(bf.blur_h);
 
         blur_constants c;
         c.bp0[0] = static_cast<float>(vw); c.bp0[1] = static_cast<float>(vh); c.bp0[2] = 1.0f; c.bp0[3] = 1.0f;
-        c.bp1[0] = 1.0f / static_cast<float>(snap_w); c.bp1[1] = 1.0f / static_cast<float>(snap_h);
+        c.bp1[0] = 1.0f / static_cast<float>(bf.snap_w); c.bp1[1] = 1.0f / static_cast<float>(bf.snap_h);
         c.bp1[2] = 1.0f - 0.5f * c.bp1[0]; c.bp1[3] = 1.0f - 0.5f * c.bp1[1];
         c.bp2[0] = static_cast<float>(ds) * 0.25f;
-        run_blur_pass(cmd, 0, vw, vh, snap_set, c, pipe_blur_down, plan);
+        run_blur_pass(cmd, fi, 0, vw, vh, bf.snap_set, c, pipe_blur_down, plan);
 
         c.bp0[2] = static_cast<float>(vw) / tw; c.bp0[3] = static_cast<float>(vh) / th;
         c.bp1[2] = (static_cast<float>(vw) - 0.5f) / tw; c.bp1[3] = (static_cast<float>(vh) - 0.5f) / th;
@@ -759,9 +765,9 @@ struct vulkan_renderer::impl {
         c.bp4[0] = plan.w[2]; c.bp4[1] = plan.o[2];
         for (int it = 0; it < plan.iterations; ++it) {
             c.bp1[0] = 1.0f / tw; c.bp1[1] = 0.0f;
-            run_blur_pass(cmd, 1, vw, vh, blur_set[0], c, pipe_blur_gauss, plan);
+            run_blur_pass(cmd, fi, 1, vw, vh, bf.blur_set[0], c, pipe_blur_gauss, plan);
             c.bp1[0] = 0.0f; c.bp1[1] = 1.0f / th;
-            run_blur_pass(cmd, 0, vw, vh, blur_set[1], c, pipe_blur_gauss, plan);
+            run_blur_pass(cmd, fi, 0, vw, vh, bf.blur_set[1], c, pipe_blur_gauss, plan);
         }
 
         out_vw    = vw;
@@ -803,15 +809,18 @@ struct vulkan_renderer::impl {
             grave ga{VK_NULL_HANDLE, atlas.img, atlas.view, VK_NULL_HANDLE, atlas.mem, nullptr, 0, 0};
             destroy_grave_now(ga);
             atlas = {};
-            grave gs{VK_NULL_HANDLE, snap.img, snap.view, VK_NULL_HANDLE, snap.mem, nullptr, 0, 0};
-            destroy_grave_now(gs);
-            snap = {};
-            for (int k = 0; k < 2; ++k) {
-                grave gb{VK_NULL_HANDLE, blur_img[k].img, blur_img[k].view, blur_fb[k], blur_img[k].mem, nullptr, 0, 0};
-                destroy_grave_now(gb);
-                blur_img[k] = {};
-                blur_fb[k]  = VK_NULL_HANDLE;
+            for (blur_frame& bf : blur_frames) {
+                grave gs{VK_NULL_HANDLE, bf.snap.img, bf.snap.view, VK_NULL_HANDLE, bf.snap.mem, nullptr, 0, 0};
+                destroy_grave_now(gs);
+                bf.snap = {};
+                for (int k = 0; k < 2; ++k) {
+                    grave gb{VK_NULL_HANDLE, bf.blur_img[k].img, bf.blur_img[k].view, bf.blur_fb[k], bf.blur_img[k].mem, nullptr, 0, 0};
+                    destroy_grave_now(gb);
+                    bf.blur_img[k] = {};
+                    bf.blur_fb[k]  = VK_NULL_HANDLE;
+                }
             }
+            blur_frames.clear();
         }
         if (pipe_main != VK_NULL_HANDLE)       { vkDestroyPipeline(device, pipe_main, nullptr); }
         if (pipe_image != VK_NULL_HANDLE)      { vkDestroyPipeline(device, pipe_image, nullptr); }
@@ -893,7 +902,7 @@ bool vulkan_renderer::create(const vulkan_init_info& info, const font_atlas& fon
     if (vkCreateDescriptorSetLayout(p->device, &dsl1, nullptr, &p->set1_layout) != VK_SUCCESS) { return fail(); }
 
     // descriptor pool
-    const u32 set1_count = max_textures + 3; // user textures + snap + blur[0..1]
+    const u32 set1_count = max_textures + 3 * info.frames_in_flight; // user textures + per-frame (snap + blur[0..1])
     VkDescriptorPoolSize pool_sizes[2]{};
     pool_sizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, info.frames_in_flight};
     pool_sizes[1] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, info.frames_in_flight + set1_count};
@@ -1157,9 +1166,12 @@ bool vulkan_renderer::create(const vulkan_init_info& info, const font_atlas& fon
         dsai.pSetLayouts        = layouts.data();
         if (vkAllocateDescriptorSets(p->device, &dsai, sets.data()) != VK_SUCCESS) { return fail(); }
         for (u32 i = 0; i < max_textures; ++i) { p->textures[i].set = sets[i]; }
-        p->snap_set    = sets[max_textures + 0];
-        p->blur_set[0] = sets[max_textures + 1];
-        p->blur_set[1] = sets[max_textures + 2];
+        p->blur_frames.resize(info.frames_in_flight);
+        for (u32 fi = 0; fi < info.frames_in_flight; ++fi) {
+            p->blur_frames[fi].snap_set    = sets[max_textures + 3 * fi + 0];
+            p->blur_frames[fi].blur_set[0] = sets[max_textures + 3 * fi + 1];
+            p->blur_frames[fi].blur_set[1] = sets[max_textures + 3 * fi + 2];
+        }
     }
 
     impl_ = std::move(p);
@@ -1413,7 +1425,7 @@ void vulkan_renderer::render(const draw_data& data, VkCommandBuffer cmd, u32 fra
 
     for (const draw_cmd& dc : data.commands) {
         if (dc.idx_count == 0 || dc.clip.empty()) { continue; }
-        const auto fit = [](f32 v, f32 hi) { return static_cast<int32_t>(std::clamp(v, 0.0f, hi)); };
+        const auto fit = [](f32 v, f32 hi) { return static_cast<int32_t>(std::clamp(std::ceil(v - 0.5f), 0.0f, hi)); };
         const int32_t left   = fit(dc.clip.min.x - data.origin.x, data.display_size.x);
         const int32_t top    = fit(dc.clip.min.y - data.origin.y, data.display_size.y);
         const int32_t right  = fit(dc.clip.max.x - data.origin.x, data.display_size.x);
@@ -1428,7 +1440,7 @@ void vulkan_renderer::render(const draw_data& data, VkCommandBuffer cmd, u32 fra
                 if (!panel.empty()) {
                     // end the UI render pass so transfer & blur render passes can run
                     if (pass_open) { vkCmdEndRenderPass(cmd); pass_open = false; }
-                    blur_ready = s.run_blur(cmd, target, dc.blur, panel, blur_vw, blur_vh, blur_exact);
+                    blur_ready = s.run_blur(cmd, frame_index, target, dc.blur, panel, blur_vw, blur_vh, blur_exact);
                     begin_ui_pass();
                     mode        = ps_mode::main;
                     bound       = 0;
@@ -1452,13 +1464,16 @@ void vulkan_renderer::render(const draw_data& data, VkCommandBuffer cmd, u32 fra
             bound = dc.texture;
         } else if (want == ps_mode::backdrop) {
             if (mode != ps_mode::backdrop) {
+                const impl::blur_frame& bff = s.blur_frames[frame_index];
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe_backdrop);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe_layout_ui, 1, 1, &s.blur_set[0], 0, nullptr);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe_layout_ui, 1, 1, &bff.blur_set[0], 0, nullptr);
                 blur_constants bc;
                 bc.bp0[0] = data.display_size.x;
                 bc.bp0[1] = data.display_size.y;
-                bc.bp0[2] = static_cast<float>(blur_vw) / static_cast<float>(s.blur_w);
-                bc.bp0[3] = static_cast<float>(blur_vh) / static_cast<float>(s.blur_h);
+                bc.bp0[2] = static_cast<float>(blur_vw) / static_cast<float>(bff.blur_w);
+                bc.bp0[3] = static_cast<float>(blur_vh) / static_cast<float>(bff.blur_h);
+                bc.bp1[2] = (static_cast<float>(blur_vw) - 0.5f) / static_cast<float>(bff.blur_w);
+                bc.bp1[3] = (static_cast<float>(blur_vh) - 0.5f) / static_cast<float>(bff.blur_h);
                 vkCmdPushConstants(cmd, s.pipe_layout_ui, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    sizeof(uc), sizeof(bc), &bc);
             }

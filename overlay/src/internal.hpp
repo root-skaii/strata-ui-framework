@@ -108,9 +108,12 @@ struct state {
         void*  orig{};
         bool   patched{};
     };
+    std::mutex                       gl_iat_mutex;
     std::vector<iat_patch>           gl_iat_patches;
+    std::atomic<void*>               gl_orig_swap_gdi{nullptr};
+    std::atomic<void*>               gl_orig_swap_wgl{nullptr};
     HGLRC                            gl_rc{};
-    gl_renderer                      renderer_gl;
+    std::unique_ptr<gl_renderer>     renderer_gl;
 #endif
 
     struct frame12 {

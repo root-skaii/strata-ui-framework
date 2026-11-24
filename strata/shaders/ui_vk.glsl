@@ -245,7 +245,7 @@ void main()
     vec2  p   = gl_FragCoord.xy + pc.view.xy - s.center;
     float cov = clamp(0.5 - sd_round_box(p, s.half_size, s.radius), 0.0, 1.0);
 
-    vec2  uv   = gl_FragCoord.xy / pc.bp0.xy * pc.bp0.zw;
+    vec2  uv   = min(gl_FragCoord.xy / pc.bp0.xy * pc.bp0.zw, pc.bp1.zw);
     vec3  bg   = textureLod(u_tex, uv, 0.0).rgb;
     float lum  = dot(bg, vec3(0.2126, 0.7152, 0.0722));
     bg = mix(vec3(lum), bg, s.shadow_offset.x) * s.shadow_offset.y;

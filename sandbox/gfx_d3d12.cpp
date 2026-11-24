@@ -133,6 +133,10 @@ public:
 
         const UINT bb = swap_chain_->GetCurrentBackBufferIndex();
         ID3D12Resource* target = targets_[bb].Get();
+        if (target == nullptr) {
+            (void)list_->Close();
+            return;
+        }
 
         transition(target, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 

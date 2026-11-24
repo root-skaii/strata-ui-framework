@@ -56,9 +56,9 @@ void draw_frame(IDXGISwapChain* sc)
         rtv = frame_target(sc);
         if (rtv == nullptr) { log_line("draw_frame: no render target"); return; }
     }
-    if (g.backend == state::api::d3d12) { // (a resize can change the format: hdr switched on or off in the game)
+    if (g.backend == state::api::d3d12) { // (a resize can change the format or buffer count)
         DXGI_SWAP_CHAIN_DESC d{};
-        if (SUCCEEDED(sc->GetDesc(&d)) && d.BufferDesc.Format != g.renderer_format12) {
+        if (SUCCEEDED(sc->GetDesc(&d)) && (d.BufferDesc.Format != g.renderer_format12 || d.BufferCount > g.renderer_frames12)) {
             if (!ensure_font_pixels() || !create_renderer12(d.BufferDesc.Format, d.BufferCount)) { log_line("draw_frame: no d3d12 renderer"); return; }
             g.ui->release_font_pixels();
             g.targets12_valid = false;

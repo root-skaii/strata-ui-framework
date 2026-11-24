@@ -4,6 +4,11 @@
 
 #include <strata/backend/null.hpp>
 #include <strata/backend/software.hpp>
+#include <strata/svg.hpp>
+#ifdef _WIN32
+#include <strata/platform/win32.hpp>
+#include <windows.h>
+#endif
 #if STRATA_HAS_OPENGL
 #include <strata/backend/opengl.hpp>
 static_assert(renderer_backend<gl_renderer>);
@@ -182,6 +187,176 @@ void test_gpu_backend_shells()
 #endif
 }
 
+void test_rendering_and_input_regressions()
+{
+    std::fprintf(stderr, "[regressions: origin, merge_commands, rect_outline, sdf, svg, win32 click, dnd rect]\n");
+    harness h;
+
+    // 1. software_renderer honors draw_data::origin for vertices, clip, and SDF shapes
+    {
+        software_renderer r;
+        CHECK(r.create(h.ui.font()));
+        draw_list dl;
+        dl.begin({64.0f, 64.0f}, h.ui.font());
+        dl.push_clip_absolute({{100.0f, 200.0f}, {164.0f, 264.0f}});
+        dl.rect_filled({{110.0f, 210.0f}, {150.0f, 250.0f}}, {200, 60, 40, 255}, 6.0f);
+        dl.pop_clip();
+        draw_data dd = dl.data();
+        dd.origin = {100.0f, 200.0f};
+        r.resize(64, 64);
+        r.clear({0, 0, 0, 255});
+        r.render(dd);
+        const auto center = pixel(r, 30, 30);
+        CHECK(center[0] > 180 && center[1] < 80 && center[2] < 60);
+        CHECK(pixel(r, 2, 2) == (std::array<u8, 4>{0, 0, 0, 255}));
+    }
+
+    // 2. draw_list::merge_commands preserves *barrier == 0 when n >= 2
+    {
+        draw_list dl;
+        dl.begin({200.0f, 200.0f}, h.ui.font());
+        dl.rect_filled({{0.0f, 0.0f}, {20.0f, 20.0f}}, {255, 0, 0, 255});
+        dl.break_command();
+        dl.rect_filled({{30.0f, 30.0f}, {50.0f, 50.0f}}, {0, 255, 0, 255});
+        u32 barrier = 0;
+        dl.merge_commands(&barrier);
+        CHECK(barrier == 0);
+    }
+
+    // 3. draw_list::rect_outline fast path: thickness <= 0 emits nothing; thick outline stays inside bounds
+    {
+        draw_list dl;
+        dl.begin({100.0f, 100.0f}, h.ui.font());
+        dl.rect_outline({{10.0f, 10.0f}, {40.0f, 40.0f}}, {255, 255, 255, 255}, 0.0f, 0.0f);
+        CHECK(dl.data().indices.empty());
+
+        software_renderer r;
+        CHECK(r.create(h.ui.font()));
+        dl.begin({64.0f, 64.0f}, h.ui.font());
+        dl.rect_outline({{10.0f, 10.0f}, {30.0f, 20.0f}}, {100, 100, 100, 128}, 0.0f, 25.0f);
+        r.resize(64, 64);
+        r.clear({0, 0, 0, 255});
+        r.render(dl.data());
+        CHECK(pixel(r, 20, 5) == (std::array<u8, 4>{0, 0, 0, 255}));
+        CHECK(pixel(r, 20, 25) == (std::array<u8, 4>{0, 0, 0, 255}));
+    }
+
+    // 4. SDF font_atlas preserves is_sdf / sdf_spread across copy, assign, save/load, and dynamic bake
+    {
+        static constexpr codepoint_range ascii_only[] = {{0x20, 0x7e}};
+        font_config cfg;
+        cfg.face         = "Segoe UI";
+        cfg.pixel_height = 18.0f;
+        cfg.sdf          = true;
+        cfg.sdf_spread   = 4;
+        cfg.ranges       = ascii_only;
+        auto built = font_atlas::build(cfg, 4096, 1.0f, true);
+        CHECK(built.has_value());
+        if (built) {
+            CHECK(built->is_sdf() && built->sdf_spread() == 4);
+            const font_atlas copy_ctor{*built};
+            CHECK(copy_ctor.is_sdf() && copy_ctor.sdf_spread() == 4);
+            font_atlas copy_assign;
+            copy_assign = *built;
+            CHECK(copy_assign.is_sdf() && copy_assign.sdf_spread() == 4);
+            const std::vector<u8> blob = built->save();
+            const auto loaded = font_atlas::load(blob);
+            CHECK(loaded.has_value() && loaded->is_sdf() && loaded->sdf_spread() == 4);
+            // dynamic glyph outside ASCII should be SDF-padded
+            if (built->bake_glyph(0, U'\u00E9')) {
+                const auto& g = built->find(0, U'\u00E9');
+                CHECK(g.present && g.visible);
+                CHECK((g.x1 - g.x0) >= 8.0f);
+            }
+        }
+    }
+
+    // 5. SVG parsing after Z, unclosed fill closing edge, and seamless convex draw_svg_path
+    {
+        const auto contours = svg_parse_path("M0 0 H10 V10 H0 Z L20 20");
+        CHECK(contours.size() == 2);
+        CHECK(contours[0].closed && contours[0].points.size() == 4);
+        CHECK(!contours[1].closed && contours[1].points.size() == 2);
+
+        const auto alpha = svg_rasterize_alpha("M2 2 H14 V14 H2", {16.0f, 16.0f}, 16, 16);
+        CHECK(alpha[8 * 16 + 8] == 255);
+
+        software_renderer r;
+        CHECK(r.create(h.ui.font()));
+        draw_list dl;
+        dl.begin({32.0f, 32.0f}, h.ui.font());
+        draw_svg_path(dl, {{4.0f, 4.0f}, {28.0f, 28.0f}}, svg_icons::stop, svg_icons::viewbox, {255, 255, 255, 255});
+        r.resize(32, 32);
+        r.clear({0, 0, 0, 255});
+        r.render(dl.data());
+        // diagonal center of stop icon must be solid opaque white (no translucent fan seam)
+        CHECK(pixel(r, 16, 16) == (std::array<u8, 4>{255, 255, 255, 255}));
+    }
+
+#ifdef _WIN32
+    // 6. Win32 button press/release updates mouse_pos even after WM_MOUSELEAVE
+    {
+        win32_platform plat;
+        plat.handle_message(nullptr, WM_MOUSELEAVE, 0, 0);
+        plat.handle_message(nullptr, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(123, 234));
+        const input_state in1 = plat.new_frame();
+        CHECK(in1.mouse_pos.x == 123.0f && in1.mouse_pos.y == 234.0f && in1.mouse_down[0]);
+        plat.handle_message(nullptr, WM_LBUTTONUP, 0, MAKELPARAM(125, 236));
+        const input_state in2 = plat.new_frame();
+        CHECK(in2.mouse_pos.x == 125.0f && in2.mouse_pos.y == 236.0f && !in2.mouse_down[0]);
+    }
+#endif
+
+    // 7. Drag-source preview does not clobber item_rect() for drop_target() on the dragged item
+    {
+        rect before_rect{};
+        rect after_rect{};
+        const auto build = [&] {
+            if (auto w = h.ui.window("dnd", {0, 0}, {300, 200}, plain_window)) {
+                (void)h.ui.selectable("row0", false);
+                before_rect = h.ui.item_rect();
+                if (auto d = h.ui.drag_source("k", 1)) {
+                    h.ui.text("preview");
+                }
+                after_rect = h.ui.item_rect();
+            }
+        };
+        h.frames(build, 2);
+        const vec2 start = {before_rect.min.x + 12.0f, before_rect.min.y + 8.0f};
+        h.move(start);
+        h.frames(build, 2);
+        h.down();
+        h.frame(build);
+        h.move(start + vec2{20.0f, 0.0f});
+        h.frames(build, 2);
+        CHECK(after_rect.min.x == before_rect.min.x && after_rect.min.y == before_rect.min.y &&
+              after_rect.max.x == before_rect.max.x && after_rect.max.y == before_rect.max.y);
+        h.up();
+        h.frame(build);
+    }
+
+    // 8. Single-frame jump from offscreen directly into a button press activates and clicks on release
+    {
+        rect btn_rect{};
+        int  clicks = 0;
+        const auto build = [&] {
+            if (auto w = h.ui.window("tap", {40, 40}, {240, 120}, plain_window)) {
+                if (h.ui.button("tap me")) { ++clicks; }
+                btn_rect = h.ui.item_rect();
+            }
+        };
+        h.move({-1.0e6f, -1.0e6f});
+        h.frames(build, 2);
+        const vec2 center = btn_rect.center();
+        h.move(center);
+        h.down();
+        h.frame(build);
+        h.up();
+        h.frame(build);
+        CHECK(clicks == 1);
+    }
+}
+
 } // namespace
 
 void run_backend_tests()
@@ -190,4 +365,5 @@ void run_backend_tests()
     test_software_renderer();
     test_software_ui_frame();
     test_gpu_backend_shells();
+    test_rendering_and_input_regressions();
 }

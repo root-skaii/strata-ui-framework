@@ -374,6 +374,7 @@ void context::begin_frame(const input_state& in)
     m_->win_.hovered_z_prev_      = m_->win_.hovered_z_;
     m_->win_.hovered_z_           = no_z;
     m_->win_.cur_z_               = no_z;
+    const u32 prev_window_count   = m_->win_.frame_window_count_;
     m_->win_.frame_window_count_  = 0;
     m_->style_stack_.reset_font();
     m_->rich_.rich_depth_          = 0;
@@ -502,6 +503,31 @@ void context::begin_frame(const input_state& in)
     m_->toast_.toast_hover_cur_  = false;
     m_->modal_.modal_top_prev_   = m_->modal_.modal_count_ > 0 ? m_->modal_.modal_stack_[m_->modal_.modal_count_ - 1] : id{};
     m_->modal_.modal_depth_      = 0;
+
+    // A pointer press jumping to a new position in one frame (touch/pen taps, synthetic clicks, or a press after
+    // WM_MOUSELEAVE) must hit-test the prior frame's windows at the press position rather than the stale hover.
+    if ((m_->input_.mouse_pressed_ || m_->input_.mouse_right_pressed_ || m_->input_.mouse_middle_pressed_) &&
+        (m_->input_.mouse_delta_.x != 0.0f || m_->input_.mouse_delta_.y != 0.0f)) {
+        id   hit_win    = 0;
+        u32  hit_z      = no_z;
+        bool hit_docked = false;
+        for (u32 i = 0; i < prev_window_count; ++i) {
+            const window_state* st = m_->win_.frame_windows_[i];
+            if (st == nullptr || st->passive || st->hidden_now) { continue; }
+            if (m_->modal_.modal_top_prev_ != 0 && st->key != m_->modal_.modal_top_prev_) { continue; }
+            const rect bar = rect::from_size(st->last_bounds.min, {st->last_bounds.width(), st->title_h});
+            const bool hit = st->click_through ? (st->title_h > 0.0f && bar.contains(m_->input_.mouse_))
+                                               : st->last_bounds.contains(m_->input_.mouse_);
+            if (hit && (hit_z == no_z || st->last_z > hit_z)) {
+                hit_win    = st->key;
+                hit_z      = st->last_z;
+                hit_docked = st->docked_now;
+            }
+        }
+        m_->win_.hovered_window_prev_ = hit_win;
+        m_->win_.hovered_z_prev_      = hit_z;
+        m_->hovered_docked_prev_      = hit_docked;
+    }
 
     m_->ids_.begin_frame(); // id stack, duplicate-id tracking, this frame's collision report
 

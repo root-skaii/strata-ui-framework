@@ -64,6 +64,7 @@ struct demo2_state {
     bool  log_seeded     = false;
     int   log_counter    = 0;
     bool  auto_log       = false;
+    float auto_log_accum = 0.0f;
     strata::toast_handle t_actions  = 0;   // a toast with buttons, and a progress toast that is fed every frame
     strata::toast_handle t_progress = 0;
     float                t_progress_v = 0.0f;

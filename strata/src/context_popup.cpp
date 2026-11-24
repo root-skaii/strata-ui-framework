@@ -198,9 +198,10 @@ bool context::begin_drag_source()
     m_->cursor_ = cursor_kind::arrow;
 
     // the drag preview: an overlay panel following the pointer, sized by last frame's content
-    m_->dnd_.dd_saved_overlay_ = m_->in_overlay_;
-    m_->dnd_.dd_saved_layout_  = m_->layout_;
-    m_->dnd_.dd_prev_owner_    = m_->run_owner_;
+    m_->dnd_.dd_saved_overlay_   = m_->in_overlay_;
+    m_->dnd_.dd_saved_layout_    = m_->layout_;
+    m_->dnd_.dd_saved_item_rect_ = m_->last_item_rect_;
+    m_->dnd_.dd_prev_owner_      = m_->run_owner_;
     switch_run(*this, m_->popup_.overlay_run());
     m_->in_overlay_ = true;
     m_->dl_.push_clip_absolute({{0.0f, 0.0f}, m_->display_});
@@ -248,7 +249,8 @@ void context::end_drag_source()
     const f32 content_h = m_->layout_.first ? 0.0f : m_->layout_.bottom - m_->layout_.origin.y;
     m_->dnd_.dd_size_ = {content_w + 16.0f, content_h + 12.0f};
 
-    m_->layout_ = m_->dnd_.dd_saved_layout_;
+    m_->layout_         = m_->dnd_.dd_saved_layout_;
+    m_->last_item_rect_ = m_->dnd_.dd_saved_item_rect_;
     m_->dl_.pop_clip();
     m_->dl_.pop_clip();
     if (m_->dnd_.dd_hidden_) { m_->dl_.pop_alpha(); }

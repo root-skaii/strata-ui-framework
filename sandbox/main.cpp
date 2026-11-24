@@ -92,7 +92,7 @@ constexpr const wchar_t* usage_text =
     L"                           ignore vsync and would otherwise run at thousands of fps)\n"
     L"  --width N --height N     client size (default 1280x720)\n"
     L"  --frames N               exit after N frames (smoke test)\n"
-    L"  --stress N               buttons in the stress window (default 200)\n"
+    L"  --stress N               buttons in the stress window (default 60)\n"
     L"  --theme N|NAME           a built-in theme by index or name (midnight, light, ocean, rose, dracula, nord, ...)\n"
     L"  --theme-file FILE        a theme file applied on top\n"
     L"  --scale F                ui scale (default: the monitor's dpi scale)\n"
@@ -336,7 +336,7 @@ void frame_limiter::wait_until(double target) const noexcept
 }
 
 struct demo_state {
-    bool        show_stress = true;
+    bool        show_stress = false;
     bool        dim_text    = false;
     bool        flag_a      = true;
     bool        flag_b      = false;
@@ -820,7 +820,8 @@ void feature_windows(strata::context& ui, demo_state& s)
             leaf("Audio");
         }
         ui.spacing();
-        ui.text_dim("dock spaces: left / right / bottom edge docks, the main area and the floating \"Tools\" dock");
+        ui.text_wrapped_colored(ui.theme().text_dim,
+                                "dock spaces: left / right / bottom edge docks, the main area and the floating \"Tools\" dock");
     }
 
     if (auto w = ui.window("editor", {60, 70}, {440, 440}, flags)) {
@@ -925,7 +926,7 @@ void feature_windows(strata::context& ui, demo_state& s)
     }
 }
 
-void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::draw_data last)
+void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::draw_data last, float dt)
 {
     using namespace strata;
     const bool have_mono    = s.font_mono >= 0;
@@ -944,7 +945,7 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
     s.x.d4.font_mono  = s.font_mono;
     s.x.d4.deterministic = s.x.deterministic;
     s.x.image_tex = s.image_tex;
-    demo2_update(ui, s.x, 0.0f);
+    demo2_update(ui, s.x, dt);
     if (s.x.art) { demo2_art(ui, s.x); }
 
     // dockable windows dock into three edge docks (left / right / bottom, below the menu bar; sized only while
@@ -1122,7 +1123,7 @@ void build_ui(strata::context& ui, demo_state& s, const gfx_host& host, strata::
         (void)ui.button("normal");
     }
 
-    if (auto w = ui.window("inspector", {390, 400}, {400, 0}, window_flags::resizable)) {
+    if (auto w = ui.window("inspector", {390, 492}, {400, 0}, window_flags::resizable)) {
         inspector(ui, s);
     }
 
@@ -1510,8 +1511,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     wc.lpszClassName = L"strata_sandbox";
     ::RegisterClassExW(&wc);
 
+    const auto adjust_for_dpi = [](RECT& r, HWND wnd) {
+        const UINT dpi = wnd != nullptr ? ::GetDpiForWindow(wnd) : ::GetDpiForSystem();
+        if (!::AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi)) {
+            ::AdjustWindowRectEx(&r, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        }
+    };
+
     RECT rc{0, 0, opt.width, opt.height};
-    ::AdjustWindowRectEx(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    adjust_for_dpi(rc, nullptr);
     HWND hwnd = ::CreateWindowExW(0, wc.lpszClassName, L"strata sandbox", WS_OVERLAPPEDWINDOW,
                                   CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
                                   nullptr, nullptr, instance, nullptr);
@@ -1542,7 +1550,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     }
     {   // --width / --height are logical: the window is scaled
         RECT want{0, 0, static_cast<LONG>(std::lround(opt.width * ui.scale())), static_cast<LONG>(std::lround(opt.height * ui.scale()))};
-        ::AdjustWindowRectEx(&want, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        adjust_for_dpi(want, hwnd);
         ::SetWindowPos(hwnd, nullptr, 0, 0, want.right - want.left, want.bottom - want.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
@@ -1665,7 +1673,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
                         ::GetClientRect(hwnd, &cr);
                         RECT nr{0, 0, static_cast<LONG>(std::lround(cr.right / old_scale * ui.scale())),
                                 static_cast<LONG>(std::lround(cr.bottom / old_scale * ui.scale()))};
-                        ::AdjustWindowRectEx(&nr, WS_OVERLAPPEDWINDOW, FALSE, 0);
+                        adjust_for_dpi(nr, hwnd);
                         ::SetWindowPos(hwnd, nullptr, 0, 0, nr.right - nr.left, nr.bottom - nr.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
                     }
                 } else {
@@ -1689,21 +1697,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 
         const double ui_start = seconds_now();
         strata::input_state input = self.platform.new_frame();
+        const auto reset_deterministic = [](strata::input_state& in) {
+            const strata::vec2 display = in.display_size;
+            in = strata::input_state{};
+            in.display_size = display;
+            in.delta_time   = 1.0f / 60.0f;
+        };
         if (shot_mode && !replaying) { // nothing from the real world may leak into a screenshot
-            input.delta_time = 1.0f / 60.0f;
+            reset_deterministic(input);
             demo2_script(state.x, shot_counter, sim);
             input.mouse_pos  = sim.pos;
             input.mouse_down = {sim.down[0], sim.down[1], sim.down[2]};
-            input.key_count  = 0;
-            input.typed_len  = 0;
-            input.wheel      = 0.0f;
-            input.caret_blink_time  = strata::input_state{}.caret_blink_time; // (not the user's system settings)
-            input.double_click_time = strata::input_state{}.double_click_time;
         }
-        if (replaying && !player.next(input)) { replay_over = true; }
+        if (replaying && !player.next(input)) {
+            replay_over = true;
+            if (shot_mode) { reset_deterministic(input); }
+        }
         if (recording) { recorder.record(input); }
         ui.begin_frame(std::move(input));
-        build_ui(ui, state, *host, last_data);
+        build_ui(ui, state, *host, last_data, static_cast<float>(dt));
         if (opt.metrics) { // strata inspecting itself; last, so it sees every command
             ui.debug_draw_list_window(state.show_cmds);
             ui.debug_metrics_window(state.show_metrics);

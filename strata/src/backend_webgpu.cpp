@@ -246,20 +246,27 @@ struct wgpu_renderer::impl {
     WGPURenderPipeline   pipe_main{};
     WGPURenderPipeline   pipe_image{};
 
-    WGPUBuffer           ubo{};
-    WGPUBuffer           vbuf{};
-    std::size_t          vcap{};
-    WGPUBuffer           ibuf{};
-    std::size_t          icap{};
-    WGPUBuffer           sbuf{};
-    std::size_t          scap{};
+    // ring of per-pass buffers so multiple render() calls before one submit do not overwrite each other
+    static constexpr u32 kPassRing = 8;
+    struct pass_slot {
+        WGPUBuffer    ubo{};
+        WGPUBuffer    vbuf{};
+        std::size_t   vcap{};
+        WGPUBuffer    ibuf{};
+        std::size_t   icap{};
+        WGPUBuffer    sbuf{};
+        std::size_t   scap{};
+        WGPUBindGroup bg_frame{};
+        bool          bg_dirty{true};
+    };
+    std::array<pass_slot, kPassRing> passes{};
+    u32                              pass_cursor{};
+    std::vector<WGPUBuffer>          retired_buffers;
 
     WGPUTexture          atlas_tex{};
     WGPUTextureView      atlas_view{};
     u32                  atlas_w{};
     u32                  atlas_h{};
-    WGPUBindGroup        bg_frame{};
-    bool                 bg_frame_dirty{true};
 
     struct gpu_tex {
         WGPUTexture     tex{};
@@ -272,32 +279,50 @@ struct wgpu_renderer::impl {
     };
     std::vector<gpu_tex> textures;
 
-    void release_bg_frame() noexcept
+    void invalidate_all_bgs() noexcept
     {
-        if (bg_frame != nullptr) { wgpuBindGroupRelease(bg_frame); bg_frame = nullptr; }
-        bg_frame_dirty = true;
+        for (auto& ps : passes) {
+            if (ps.bg_frame != nullptr) { wgpuBindGroupRelease(ps.bg_frame); ps.bg_frame = nullptr; }
+            ps.bg_dirty = true;
+        }
+    }
+
+    void flush_retired() noexcept
+    {
+        for (WGPUBuffer b : retired_buffers) {
+            wgpuBufferDestroy(b);
+            wgpuBufferRelease(b);
+        }
+        retired_buffers.clear();
     }
 
     void release_atlas() noexcept
     {
-        release_bg_frame();
+        invalidate_all_bgs();
         if (atlas_view != nullptr) { wgpuTextureViewRelease(atlas_view); atlas_view = nullptr; }
         if (atlas_tex != nullptr)  { wgpuTextureDestroy(atlas_tex); wgpuTextureRelease(atlas_tex); atlas_tex = nullptr; }
         atlas_w = atlas_h = 0;
     }
 
-    void ensure_buffer(WGPUBuffer& buf, std::size_t& cap, std::size_t need, WGPUBufferUsage usage)
+    void ensure_buffer(pass_slot& ps, WGPUBuffer& buf, std::size_t& cap, std::size_t need, WGPUBufferUsage usage)
     {
         need = std::max<std::size_t>(need, 64);
         if (buf != nullptr && cap >= need) { return; }
-        if (buf != nullptr) { wgpuBufferDestroy(buf); wgpuBufferRelease(buf); buf = nullptr; }
+        if (buf != nullptr) {
+            // defer destruction until a later pass cycle so earlier commands in this encoder remain valid
+            retired_buffers.push_back(buf);
+            buf = nullptr;
+        }
         cap = std::max(need, cap * 2);
         cap = (cap + 15u) & ~std::size_t{15u};
         WGPUBufferDescriptor bd{};
         bd.size  = cap;
         bd.usage = usage | WGPUBufferUsage_CopyDst;
         buf = wgpuDeviceCreateBuffer(device, &bd);
-        if (&buf == &sbuf) { release_bg_frame(); }
+        if (&buf == &ps.sbuf) {
+            if (ps.bg_frame != nullptr) { wgpuBindGroupRelease(ps.bg_frame); ps.bg_frame = nullptr; }
+            ps.bg_dirty = true;
+        }
     }
 
     bool upload_atlas(const font_atlas& atlas)
@@ -327,26 +352,26 @@ struct wgpu_renderer::impl {
         lay.rowsPerImage = h;
         WGPUExtent3D ext{w, h, 1};
         wgpuQueueWriteTexture(queue, &dst, atlas.pixels().data(), atlas.pixels().size(), &lay, &ext);
-        bg_frame_dirty = true;
+        invalidate_all_bgs();
         return true;
     }
 
-    void rebuild_frame_bg()
+    void rebuild_frame_bg(pass_slot& ps)
     {
-        if (!bg_frame_dirty && bg_frame != nullptr) { return; }
-        release_bg_frame();
-        if (ubo == nullptr || sbuf == nullptr || atlas_view == nullptr || sampler == nullptr) { return; }
+        if (!ps.bg_dirty && ps.bg_frame != nullptr) { return; }
+        if (ps.bg_frame != nullptr) { wgpuBindGroupRelease(ps.bg_frame); ps.bg_frame = nullptr; }
+        if (ps.ubo == nullptr || ps.sbuf == nullptr || atlas_view == nullptr || sampler == nullptr) { return; }
         std::array<WGPUBindGroupEntry, 4> e{};
-        e[0].binding = 0; e[0].buffer = ubo;  e[0].size = sizeof(xform_ubo);
-        e[1].binding = 1; e[1].buffer = sbuf; e[1].size = scap;
+        e[0].binding = 0; e[0].buffer = ps.ubo;  e[0].size = sizeof(xform_ubo);
+        e[1].binding = 1; e[1].buffer = ps.sbuf; e[1].size = ps.scap;
         e[2].binding = 2; e[2].textureView = atlas_view;
         e[3].binding = 3; e[3].sampler = sampler;
         WGPUBindGroupDescriptor bgd{};
         bgd.layout     = bgl_frame;
         bgd.entryCount = static_cast<u32>(e.size());
         bgd.entries    = e.data();
-        bg_frame = wgpuDeviceCreateBindGroup(device, &bgd);
-        bg_frame_dirty = false;
+        ps.bg_frame = wgpuDeviceCreateBindGroup(device, &bgd);
+        ps.bg_dirty = false;
     }
 
     void destroy_all() noexcept
@@ -359,10 +384,14 @@ struct wgpu_renderer::impl {
         }
         textures.clear();
         release_atlas();
-        if (vbuf != nullptr)       { wgpuBufferDestroy(vbuf); wgpuBufferRelease(vbuf); vbuf = nullptr; }
-        if (ibuf != nullptr)       { wgpuBufferDestroy(ibuf); wgpuBufferRelease(ibuf); ibuf = nullptr; }
-        if (sbuf != nullptr)       { wgpuBufferDestroy(sbuf); wgpuBufferRelease(sbuf); sbuf = nullptr; }
-        if (ubo != nullptr)        { wgpuBufferDestroy(ubo);  wgpuBufferRelease(ubo);  ubo = nullptr; }
+        flush_retired();
+        for (auto& ps : passes) {
+            if (ps.bg_frame != nullptr) { wgpuBindGroupRelease(ps.bg_frame); ps.bg_frame = nullptr; }
+            if (ps.vbuf != nullptr)     { wgpuBufferDestroy(ps.vbuf); wgpuBufferRelease(ps.vbuf); ps.vbuf = nullptr; }
+            if (ps.ibuf != nullptr)     { wgpuBufferDestroy(ps.ibuf); wgpuBufferRelease(ps.ibuf); ps.ibuf = nullptr; }
+            if (ps.sbuf != nullptr)     { wgpuBufferDestroy(ps.sbuf); wgpuBufferRelease(ps.sbuf); ps.sbuf = nullptr; }
+            if (ps.ubo != nullptr)      { wgpuBufferDestroy(ps.ubo);  wgpuBufferRelease(ps.ubo);  ps.ubo = nullptr; }
+        }
         if (pipe_main != nullptr)  { wgpuRenderPipelineRelease(pipe_main);  pipe_main = nullptr; }
         if (pipe_image != nullptr) { wgpuRenderPipelineRelease(pipe_image); pipe_image = nullptr; }
         if (pl_main != nullptr)    { wgpuPipelineLayoutRelease(pl_main);    pl_main = nullptr; }
@@ -478,14 +507,20 @@ bool wgpu_renderer::create(const wgpu_init_info& info, const font_atlas& atlas)
     WGPUBufferDescriptor ubd{};
     ubd.size  = sizeof(xform_ubo);
     ubd.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-    p->ubo = wgpuDeviceCreateBuffer(p->device, &ubd);
-    p->ensure_buffer(p->sbuf, p->scap, sizeof(shape_record) * 16, WGPUBufferUsage_Storage);
+    for (auto& ps : p->passes) {
+        ps.ubo = wgpuDeviceCreateBuffer(p->device, &ubd);
+        p->ensure_buffer(ps, ps.sbuf, ps.scap, sizeof(shape_record) * 16, WGPUBufferUsage_Storage);
+        if (!ps.ubo || !ps.sbuf) {
+            p->destroy_all();
+            return false;
+        }
+    }
 
-    if (!p->pipe_main || !p->pipe_image || !p->ubo || !p->upload_atlas(atlas)) {
+    if (!p->pipe_main || !p->pipe_image || !p->upload_atlas(atlas)) {
         p->destroy_all();
         return false;
     }
-    p->rebuild_frame_bg();
+    p->rebuild_frame_bg(p->passes[0]);
     impl_ = std::move(p);
     return true;
 }
@@ -505,27 +540,32 @@ void wgpu_renderer::render(const draw_data& data, WGPURenderPassEncoder pass)
         return;
     }
     impl& im = *impl_;
+    if (im.pass_cursor == 0 && !im.retired_buffers.empty()) {
+        im.flush_retired();
+    }
+    impl::pass_slot& ps = im.passes[im.pass_cursor];
+    im.pass_cursor      = (im.pass_cursor + 1u) % impl::kPassRing;
 
     const std::size_t vbytes = data.vertices.size() * sizeof(vertex);
     const std::size_t ibytes = (data.indices.size() * sizeof(u16) + 3u) & ~std::size_t{3u};
     const std::size_t sbytes = std::max<std::size_t>(data.shapes.size(), 1u) * sizeof(shape_record);
-    im.ensure_buffer(im.vbuf, im.vcap, vbytes, WGPUBufferUsage_Vertex);
-    im.ensure_buffer(im.ibuf, im.icap, ibytes, WGPUBufferUsage_Index);
-    im.ensure_buffer(im.sbuf, im.scap, sbytes, WGPUBufferUsage_Storage);
-    im.rebuild_frame_bg();
+    im.ensure_buffer(ps, ps.vbuf, ps.vcap, vbytes, WGPUBufferUsage_Vertex);
+    im.ensure_buffer(ps, ps.ibuf, ps.icap, ibytes, WGPUBufferUsage_Index);
+    im.ensure_buffer(ps, ps.sbuf, ps.scap, sbytes, WGPUBufferUsage_Storage);
+    im.rebuild_frame_bg(ps);
 
-    wgpuQueueWriteBuffer(im.queue, im.vbuf, 0, data.vertices.data(), vbytes);
+    wgpuQueueWriteBuffer(im.queue, ps.vbuf, 0, data.vertices.data(), vbytes);
     const std::size_t raw_ibytes = data.indices.size() * sizeof(u16);
     if ((raw_ibytes & 3u) == 0u) {
-        wgpuQueueWriteBuffer(im.queue, im.ibuf, 0, data.indices.data(), raw_ibytes);
+        wgpuQueueWriteBuffer(im.queue, ps.ibuf, 0, data.indices.data(), raw_ibytes);
     } else {
         const std::size_t aligned = raw_ibytes & ~std::size_t{3u};
-        if (aligned > 0) { wgpuQueueWriteBuffer(im.queue, im.ibuf, 0, data.indices.data(), aligned); }
+        if (aligned > 0) { wgpuQueueWriteBuffer(im.queue, ps.ibuf, 0, data.indices.data(), aligned); }
         const u16 tail[2] = {data.indices.back(), 0};
-        wgpuQueueWriteBuffer(im.queue, im.ibuf, aligned, tail, sizeof(tail));
+        wgpuQueueWriteBuffer(im.queue, ps.ibuf, aligned, tail, sizeof(tail));
     }
     if (!data.shapes.empty()) {
-        wgpuQueueWriteBuffer(im.queue, im.sbuf, 0, data.shapes.data(), data.shapes.size() * sizeof(shape_record));
+        wgpuQueueWriteBuffer(im.queue, ps.sbuf, 0, data.shapes.data(), data.shapes.size() * sizeof(shape_record));
     }
 
     xform_ubo u{};
@@ -539,21 +579,21 @@ void wgpu_renderer::render(const draw_data& data, WGPURenderPassEncoder pass)
     u.output[2]    = data.text_contrast;
     u.view[0]      = data.origin.x;
     u.view[1]      = data.origin.y;
-    wgpuQueueWriteBuffer(im.queue, im.ubo, 0, &u, sizeof u);
+    wgpuQueueWriteBuffer(im.queue, ps.ubo, 0, &u, sizeof u);
 
     const u32 dw = static_cast<u32>(std::max(data.display_size.x, 1.0f));
     const u32 dh = static_cast<u32>(std::max(data.display_size.y, 1.0f));
     wgpuRenderPassEncoderSetViewport(pass, 0.0f, 0.0f, static_cast<f32>(dw), static_cast<f32>(dh), 0.0f, 1.0f);
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, im.vbuf, 0, vbytes);
-    wgpuRenderPassEncoderSetIndexBuffer(pass, im.ibuf, WGPUIndexFormat_Uint16, 0, ibytes);
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, ps.vbuf, 0, vbytes);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, ps.ibuf, WGPUIndexFormat_Uint16, 0, ibytes);
 
     WGPURenderPipeline cur_pipe = nullptr;
     for (const draw_cmd& cmd : data.commands) {
         if (cmd.idx_count == 0) { continue; }
-        const i32 x0 = std::clamp(static_cast<i32>(std::floor(cmd.clip.min.x)), 0, static_cast<i32>(dw));
-        const i32 y0 = std::clamp(static_cast<i32>(std::floor(cmd.clip.min.y)), 0, static_cast<i32>(dh));
-        const i32 x1 = std::clamp(static_cast<i32>(std::ceil(cmd.clip.max.x)), 0, static_cast<i32>(dw));
-        const i32 y1 = std::clamp(static_cast<i32>(std::ceil(cmd.clip.max.y)), 0, static_cast<i32>(dh));
+        const i32 x0 = std::clamp(static_cast<i32>(std::ceil(cmd.clip.min.x - data.origin.x - 0.5f)), 0, static_cast<i32>(dw));
+        const i32 y0 = std::clamp(static_cast<i32>(std::ceil(cmd.clip.min.y - data.origin.y - 0.5f)), 0, static_cast<i32>(dh));
+        const i32 x1 = std::clamp(static_cast<i32>(std::ceil(cmd.clip.max.x - data.origin.x - 0.5f)), 0, static_cast<i32>(dw));
+        const i32 y1 = std::clamp(static_cast<i32>(std::ceil(cmd.clip.max.y - data.origin.y - 0.5f)), 0, static_cast<i32>(dh));
         if (x1 <= x0 || y1 <= y0) { continue; }
 
         wgpuRenderPassEncoderSetScissorRect(pass, static_cast<u32>(x0), static_cast<u32>(y0),
@@ -561,14 +601,14 @@ void wgpu_renderer::render(const draw_data& data, WGPURenderPassEncoder pass)
         if (cmd.texture != 0 && cmd.texture <= im.textures.size() && im.textures[cmd.texture - 1].in_use) {
             if (cur_pipe != im.pipe_image) {
                 wgpuRenderPassEncoderSetPipeline(pass, im.pipe_image);
-                wgpuRenderPassEncoderSetBindGroup(pass, 0, im.bg_frame, 0, nullptr);
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, ps.bg_frame, 0, nullptr);
                 cur_pipe = im.pipe_image;
             }
             wgpuRenderPassEncoderSetBindGroup(pass, 1, im.textures[cmd.texture - 1].bg, 0, nullptr);
         } else {
             if (cur_pipe != im.pipe_main) {
                 wgpuRenderPassEncoderSetPipeline(pass, im.pipe_main);
-                wgpuRenderPassEncoderSetBindGroup(pass, 0, im.bg_frame, 0, nullptr);
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, ps.bg_frame, 0, nullptr);
                 cur_pipe = im.pipe_main;
             }
         }

@@ -47,6 +47,8 @@ struct window_state {
     bool menubar{};        // the main menu bar (no padding, above the other windows)
     bool detached_now{};   // routed to a secondary OS viewport this frame (multi_viewport)
     rect last_bounds{};    // logical frame rect from the current frame
+    u32  last_z{0xffffffffu}; // stacking rank from the current frame
+    bool hidden_now{};     // hidden tab in a dock node this frame
     u32  modal_level{};    // 1 + index in the modal stack, 0 = not a modal
     u8   title_len{};
     std::array<char, 48> title{}; // visible part of the title, for dock tabs

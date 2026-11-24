@@ -183,6 +183,7 @@ struct d3d11_renderer::impl {
     ComPtr<ID3D11ShaderResourceView> snap_srv;
     UINT                             snap_w{}, snap_h{};
     DXGI_FORMAT                      snap_format{};
+    DXGI_FORMAT                      snap_view_format{};
     ComPtr<ID3D11Texture2D>          blur_tex[2];
     ComPtr<ID3D11RenderTargetView>   blur_rtv[2];
     ComPtr<ID3D11ShaderResourceView> blur_srv[2];
@@ -218,8 +219,19 @@ struct d3d11_renderer::impl {
         if (rd.SampleDesc.Count != 1 || rd.ArraySize != 1) {
             return false;
         }
-        if (snap_tex == nullptr || snap_w != rd.Width || snap_h != rd.Height || snap_format != rd.Format) {
+        auto typeless_for_view = [](DXGI_FORMAT res_fmt, DXGI_FORMAT srv_fmt) noexcept -> DXGI_FORMAT {
+            if (res_fmt == srv_fmt) { return res_fmt; }
+            switch (res_fmt) {
+            case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_TYPELESS;
+            case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8A8_TYPELESS;
+            case DXGI_FORMAT_B8G8R8X8_UNORM: case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8X8_TYPELESS;
+            default: return res_fmt;
+            }
+        };
+        const DXGI_FORMAT tex_fmt = typeless_for_view(rd.Format, view_format);
+        if (snap_tex == nullptr || snap_w != rd.Width || snap_h != rd.Height || snap_format != tex_fmt || snap_view_format != view_format) {
             D3D11_TEXTURE2D_DESC d = rd;
+            d.Format         = tex_fmt;
             d.MipLevels      = 1;
             d.Usage          = D3D11_USAGE_DEFAULT;
             d.BindFlags      = D3D11_BIND_SHADER_RESOURCE;
@@ -236,11 +248,11 @@ struct d3d11_renderer::impl {
             }
             snap_tex = std::move(tex);
             snap_srv = std::move(srv);
-            snap_w = rd.Width; snap_h = rd.Height; snap_format = rd.Format;
+            snap_w = rd.Width; snap_h = rd.Height; snap_format = tex_fmt; snap_view_format = view_format;
         }
         const UINT lw = (rd.Width + 1) / 2;
         const UINT lh = (rd.Height + 1) / 2;
-        const DXGI_FORMAT bf = internal::wide_format(rd.Format) ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+        const DXGI_FORMAT bf = internal::wide_format(view_format) ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
         if (blur_tex[0] == nullptr || blur_w != lw || blur_h != lh || blur_format != bf) {
             D3D11_TEXTURE2D_DESC d{};
             d.Width            = lw;
@@ -869,7 +881,7 @@ void d3d11_renderer::render(const draw_data& data)
             continue;
         }
         // (clips are in the ui's pixels: shifted into the target, and kept inside it)
-        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(v, 0.0f, hi)); };
+        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(std::ceil(v - 0.5f), 0.0f, hi)); };
         const D3D11_RECT scissor{fit(cmd.clip.min.x - data.origin.x, data.display_size.x),
                                  fit(cmd.clip.min.y - data.origin.y, data.display_size.y),
                                  fit(cmd.clip.max.x - data.origin.x, data.display_size.x),
@@ -922,6 +934,8 @@ void d3d11_renderer::render(const draw_data& data)
                 c.bp0[0] = data.display_size.x; c.bp0[1] = data.display_size.y;
                 c.bp0[2] = static_cast<float>(blur_vw) / static_cast<float>(s.blur_w);
                 c.bp0[3] = static_cast<float>(blur_vh) / static_cast<float>(s.blur_h);
+                c.bp1[2] = (static_cast<float>(blur_vw) - 0.5f) / static_cast<float>(s.blur_w);
+                c.bp1[3] = (static_cast<float>(blur_vh) - 0.5f) / static_cast<float>(s.blur_h);
                 s.set_blur_constants(c);
                 ctx->PSSetConstantBuffers(1, 1, s.cb_blur.GetAddressOf());
             }

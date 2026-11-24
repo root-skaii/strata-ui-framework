@@ -375,7 +375,11 @@ ID3D11Texture2D* xr_session::acquire_target()
 
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wi.timeout = XR_INFINITE_DURATION;
-    if (XR_FAILED(xrWaitSwapchainImage(impl_->swapchain, &wi))) { return nullptr; }
+    if (XR_FAILED(xrWaitSwapchainImage(impl_->swapchain, &wi))) {
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        xrReleaseSwapchainImage(impl_->swapchain, &ri);
+        return nullptr;
+    }
 
     return impl_->swapchain_images[index].texture;
 }
@@ -418,15 +422,13 @@ std::span<const xr_controller> xr_session::controllers() const noexcept
 
 const char* xr_session::last_error() const noexcept { return impl_ ? impl_->error : ""; }
 
-// panel-local basis: pose.orientation's local +x is "right" across the panel, +y is "up", and following openxr's
-// -z-is-forward convention (same as the aim pose below), local -z is the side the panel is visible from.
-// NOTE: this facing convention (which side of the quad the compositor actually draws) is reasoned from the spec,
-// not verified against a headset yet -- if the panel renders back-to-front or the ray hit-test feels mirrored,
-// flip the sign on `normal` below.
+bool xr_session::valid() const noexcept { return impl_ && impl_->instance != XR_NULL_HANDLE; }
+
+// panel-local basis (OpenXR 10.6.2): local +x is right, +y is up, and +z is the visible front face normal.
 input_state xr_pointer_input(std::span<const xr_controller> controllers, const xr_panel& panel,
                              input_state base) noexcept
 {
-    const xr_vec3 normal = rotate(panel.pose.orientation, xr_vec3{0.0f, 0.0f, -1.0f});
+    const xr_vec3 normal = rotate(panel.pose.orientation, xr_vec3{0.0f, 0.0f, 1.0f});
     const xr_vec3 right  = rotate(panel.pose.orientation, xr_vec3{1.0f, 0.0f, 0.0f});
     const xr_vec3 up     = rotate(panel.pose.orientation, xr_vec3{0.0f, 1.0f, 0.0f});
 

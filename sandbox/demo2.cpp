@@ -169,7 +169,7 @@ void demo2_inputs(context& ui, demo2_state& s)
                     const char m = t[i];
                     if (m != '*' && m != '_' && m != '`') { continue; }
                     const std::size_t close = t.find(m, i + 1);
-                    if (close == std::string_view::npos || close >= end) { break; }
+                    if (close == std::string_view::npos || close >= end) { continue; }
                     text_span sp{static_cast<u32>(i), static_cast<u32>(close + 1), 0, color{0, 0, 0, 0}, text_flags::none};
                     if (m == '*') { sp.style = text_flags::bold; sp.col = ui.theme().text; }
                     if (m == '_') { sp.style = text_flags::italic; sp.col = color{255, 180, 84, 255}; }
@@ -293,7 +293,8 @@ void demo2_scripts(context& ui, demo2_state& s)
     (void)ui.input_text("hebrew / arabic", s.rtl_line);
     (void)ui.input_multiline("mixed directions", s.mixed_text, {0.0f, 100.0f});
     ui.spacing();
-    ui.text_dim("not supported: shaping of Indic and Southeast Asian scripts (Devanagari, Thai, Tamil ...)");
+    ui.text_wrapped_colored(ui.theme().text_dim,
+                            "not supported: shaping of Indic and Southeast Asian scripts (Devanagari, Thai, Tamil ...)");
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -682,6 +683,7 @@ void demo2_menus(context& ui, demo2_state& s)
         if (ui.button("close")) { ui.close_modal(); }
     }
     if (ui.dialog("Reset settings?", "All settings return to their defaults.", {"Reset", "Keep"}) == 1) {
+        s.name_edit    = "untitled";
         s.modal_volume = 0.5f;
         s.modal_flag   = true;
         ui.toast("Settings reset", toast_kind::info);
@@ -746,7 +748,7 @@ void do_action(context& ui, demo2_state& s, std::string_view name)
     else if (name == "load_config")     { s.config_request = 2; }
     else if (name == "mute")            { s.muted = !s.muted; settings_changed(ui, s); }
     else if (name == "greet")           { ui.toast("Hello", s.user_name, toast_kind::info, 2.5f); }
-    else if (name == "toggle_sidebar")  { s.sidebar = !s.sidebar; }
+    else if (name == "toggle_sidebar")  { s.sidebar = !s.sidebar; ui.toast("Sidebar", s.sidebar ? "shown" : "hidden", toast_kind::info, 1.5f); }
     else if (name == "quick_open")      { ui.toast("Quick open", "the multi-key chord fired", toast_kind::success, 2.0f); }
     else if (name == "run_script")      { ui.toast("Run", "the script started", toast_kind::success, 2.0f); }
     else if (name == "format_document") { ui.toast("Format", "the document was formatted", toast_kind::info, 2.0f); }
@@ -853,11 +855,13 @@ void demo2_more(context& ui, demo2_state& s)
 void demo2_update(context& ui, demo2_state& s, float dt)
 {
     ++s.frame;
-    (void)dt;
+    const f32 step = dt > 0.0f ? dt : (1.0f / 60.0f);
     s.d3.scene         = s.scene;
     s.d3.deterministic = s.deterministic;
     demo3_update(ui, s.d3);
-    config_actions(ui, s);
+    if (s.show_config || s.scene == "config" || s.scene == "palette") {
+        config_actions(ui, s);
+    }
     if (s.scene == "config" && s.frame == 1) { // a customised binding: the reset button and the conflict mark show up
         (void)s.binds.bind("greet", key_chord{strata::key::f6, false, false, false});
         s.ctx_editor = true;
@@ -878,11 +882,16 @@ void demo2_update(context& ui, demo2_state& s, float dt)
         s.log.addf(log_level::info, "toast button pressed: {}", a == 0 ? "Undo" : "Details");
     }
     if (ui.toast_alive(s.t_progress)) { // (a toast that is being closed by hand simply stops being fed)
-        s.t_progress_v = std::min(s.t_progress_v + 0.006f, 1.0f);
+        s.t_progress_v = std::min(s.t_progress_v + 0.36f * step, 1.0f);
         ui.toast_progress(s.t_progress, s.t_progress_v, std::format("update-1.4.2.zip  {}%", static_cast<int>(s.t_progress_v * 100.0f)));
     }
-    if (s.auto_log && s.log_seeded && s.frame % 20 == 0) {
-        s.log.addf(log_level::info, "tick {}", ++s.log_counter);
+    if (s.auto_log && s.log_seeded) {
+        s.auto_log_accum += step;
+        constexpr f32 log_interval = 1.0f / 3.0f;
+        if (s.auto_log_accum >= log_interval) {
+            s.auto_log_accum -= log_interval;
+            s.log.addf(log_level::info, "tick {}", ++s.log_counter);
+        }
     }
 
     // scenes: things that would need a click
@@ -917,7 +926,7 @@ void demo2_script(const demo2_state& s, int frame, demo2_sim& sim)
         if (frame == 7)  { sim.down[0] = true; }
         if (frame == 8)  { sim.down[0] = false; }
         if (frame == 14) { sim.pos = {70.0f, 100.0f}; }
-        if (frame == 20) { sim.pos = {175.0f, 128.0f}; }
+        if (frame == 20) { sim.pos = {175.0f, 158.0f}; }
     } else if (s.scene == "context") { // right-click the box
         if (frame == 5) { sim.pos = s.context_target; }
         if (frame == 8) { sim.down[1] = true; }
@@ -936,6 +945,6 @@ void demo2_script(const demo2_state& s, int frame, demo2_sim& sim)
         if (frame == 5)  { sim.pos = {290.0f, 592.0f}; }
         if (frame == 7)  { sim.down[0] = true; }
         if (frame == 8)  { sim.down[0] = false; }
-        if (frame == 14) { sim.pos = {200.0f, 682.0f}; }
+        if (frame == 14) { sim.pos = {200.0f, 710.0f}; }
     }
 }

@@ -247,7 +247,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             click(77, 96);    // Info
             click(64, 279);   // the checkbox
             click(300, 333);  // the slider
-            if (frames() < shown) { std::fprintf(stderr, "FAIL: the overlay stopped drawing while clicking\n"); ++failures; }
+            if (frames() <= shown) { std::fprintf(stderr, "FAIL: the overlay stopped drawing while clicking\n"); ++failures; }
 
             ::SendMessageW(hwnd, WM_KEYDOWN, VK_F1, 0); // hide
             run_frames(5);

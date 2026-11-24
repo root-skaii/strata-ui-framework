@@ -181,22 +181,30 @@ struct d3d12_renderer::impl {
     u32                               static_cooldown{}; // renders left before in-flight frames finish reading static_buf
     bool                              static_in_copy_dest{};
 
-    // backdrop blur. heap slots after the textures: the frame snapshot, then the two blur targets
+    // backdrop blur. per-frame heap slots after the textures: snapshot + two blur targets per frame in flight
     static constexpr u32 snap_slot = 1 + d3d12_renderer::max_textures;
+    static constexpr u32 snap_slot_for(u32 fi) noexcept { return snap_slot + 3 * fi; }
+    static constexpr u32 rtv_slot_for(u32 fi, u32 k) noexcept { return 2 * fi + k; }
+    struct blur_frame {
+        ComPtr<ID3D12Resource> snap;
+        ComPtr<ID3D12Resource> blur_tex[2];
+        UINT                   snap_w{}, snap_h{}, blur_w{}, blur_h{};
+        DXGI_FORMAT            snap_format{};
+        DXGI_FORMAT            snap_srv_format{};
+        DXGI_FORMAT            blur_format{};
+    };
     ComPtr<ID3D12RootSignature>       root_blur;
     ComPtr<ID3D12PipelineState>       pso_backdrop;
     ComPtr<ID3D12PipelineState>       pso_blur_down;
     ComPtr<ID3D12PipelineState>       pso_blur_gauss;
     ComPtr<ID3D12DescriptorHeap>      rtv_heap;
-    ComPtr<ID3D12Resource>            snap;
-    ComPtr<ID3D12Resource>            blur_tex[2];
-    UINT                              snap_w{}, snap_h{}, blur_w{}, blur_h{};
-    DXGI_FORMAT                       snap_format{};
-    DXGI_FORMAT                       blur_format{};
+    std::vector<blur_frame>           blur_frames;
     DXGI_FORMAT                       blur_rt_format{DXGI_FORMAT_R8G8B8A8_UNORM}; // the blur's own targets: see wide_format
     output_desc                       output{};
     UINT                              rtv_size{};
     u32                               frames_in_flight{};
+    u32                               last_frame_index{~0u};
+    const void*                       last_vtx_ptr{};
     bool                              blur_supported{};
     // resources replaced while the gpu may read them, released frames_in_flight + 1 renders later (the host waits on a
     // slot's fence before reuse). staging buffers are zeroed first so uploads do not linger in freed memory
@@ -247,42 +255,72 @@ struct d3d12_renderer::impl {
         return h;
     }
 
-    [[nodiscard]] bool ensure_blur(const D3D12_RESOURCE_DESC& td) noexcept
+    [[nodiscard]] bool ensure_blur(u32 fi, const D3D12_RESOURCE_DESC& td) noexcept
     {
-        if (td.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || td.SampleDesc.Count != 1 || td.DepthOrArraySize != 1) {
+        if (td.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || td.SampleDesc.Count != 1 || td.DepthOrArraySize != 1 || fi >= blur_frames.size()) {
             return false;
         }
+        blur_frame& bf_state = blur_frames[fi];
+        const bool srgb_view = output.space == output_space::srgb_view;
+        DXGI_FORMAT tex_fmt  = td.Format;
+        DXGI_FORMAT srv_fmt  = td.Format;
+        switch (td.Format) {
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+            srv_fmt = srgb_view ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+            break;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            srv_fmt = srgb_view ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM;
+            break;
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+            srv_fmt = srgb_view ? DXGI_FORMAT_B8G8R8X8_UNORM_SRGB : DXGI_FORMAT_B8G8R8X8_UNORM;
+            break;
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+            if (srgb_view) { tex_fmt = DXGI_FORMAT_R8G8B8A8_TYPELESS; srv_fmt = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; }
+            break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+            if (srgb_view) { tex_fmt = DXGI_FORMAT_B8G8R8A8_TYPELESS; srv_fmt = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; }
+            break;
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+            if (srgb_view) { tex_fmt = DXGI_FORMAT_B8G8R8X8_TYPELESS; srv_fmt = DXGI_FORMAT_B8G8R8X8_UNORM_SRGB; }
+            break;
+        default: break;
+        }
+
         const auto default_heap = heap_props(D3D12_HEAP_TYPE_DEFAULT);
         D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
         sv.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
         sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         sv.Texture2D.MipLevels     = 1;
 
-        if (snap == nullptr || snap_w != td.Width || snap_h != td.Height || snap_format != td.Format) {
-            retire(snap);
+        const u32 slot_base = snap_slot_for(fi);
+        if (bf_state.snap == nullptr || bf_state.snap_w != td.Width || bf_state.snap_h != td.Height ||
+            bf_state.snap_format != tex_fmt || bf_state.snap_srv_format != srv_fmt) {
+            retire(bf_state.snap);
             D3D12_RESOURCE_DESC d = td;
             d.Alignment = 0;
             d.MipLevels = 1;
+            d.Format    = tex_fmt;
             d.Flags     = D3D12_RESOURCE_FLAG_NONE;
             if (FAILED(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &d,
-                                                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&snap)))) {
+                                                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&bf_state.snap)))) {
                 return false;
             }
-            sv.Format = td.Format;
+            sv.Format = srv_fmt;
             D3D12_CPU_DESCRIPTOR_HANDLE h = srv_heap->GetCPUDescriptorHandleForHeapStart();
-            h.ptr += static_cast<SIZE_T>(snap_slot) * srv_size;
-            device->CreateShaderResourceView(snap.Get(), &sv, h);
-            snap_w = static_cast<UINT>(td.Width);
-            snap_h = td.Height;
-            snap_format = td.Format;
+            h.ptr += static_cast<SIZE_T>(slot_base) * srv_size;
+            device->CreateShaderResourceView(bf_state.snap.Get(), &sv, h);
+            bf_state.snap_w          = static_cast<UINT>(td.Width);
+            bf_state.snap_h          = td.Height;
+            bf_state.snap_format     = tex_fmt;
+            bf_state.snap_srv_format = srv_fmt;
         }
 
         const UINT lw = (static_cast<UINT>(td.Width) + 1) / 2;
         const UINT lh = (td.Height + 1) / 2;
         const DXGI_FORMAT bf = blur_rt_format; // (fixed at create(): the blur pipelines are built for it)
-        if (blur_tex[0] == nullptr || blur_w != lw || blur_h != lh || blur_format != bf) {
-            retire(blur_tex[0]);
-            retire(blur_tex[1]);
+        if (bf_state.blur_tex[0] == nullptr || bf_state.blur_w != lw || bf_state.blur_h != lh || bf_state.blur_format != bf) {
+            retire(bf_state.blur_tex[0]);
+            retire(bf_state.blur_tex[1]);
             D3D12_RESOURCE_DESC d{};
             d.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
             d.Width            = lw;
@@ -294,21 +332,21 @@ struct d3d12_renderer::impl {
             d.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             for (u32 k = 0; k < 2; ++k) {
                 if (FAILED(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &d,
-                                                           D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&blur_tex[k])))) {
-                    blur_tex[0].Reset();
+                                                           D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&bf_state.blur_tex[k])))) {
+                    bf_state.blur_tex[0].Reset();
                     return false;
                 }
                 D3D12_CPU_DESCRIPTOR_HANDLE sh = srv_heap->GetCPUDescriptorHandleForHeapStart();
-                sh.ptr += static_cast<SIZE_T>(snap_slot + 1 + k) * srv_size;
+                sh.ptr += static_cast<SIZE_T>(slot_base + 1 + k) * srv_size;
                 sv.Format = bf;
-                device->CreateShaderResourceView(blur_tex[k].Get(), &sv, sh);
+                device->CreateShaderResourceView(bf_state.blur_tex[k].Get(), &sv, sh);
                 D3D12_CPU_DESCRIPTOR_HANDLE rh = rtv_heap->GetCPUDescriptorHandleForHeapStart();
-                rh.ptr += static_cast<SIZE_T>(k) * rtv_size;
-                device->CreateRenderTargetView(blur_tex[k].Get(), nullptr, rh);
+                rh.ptr += static_cast<SIZE_T>(rtv_slot_for(fi, k)) * rtv_size;
+                device->CreateRenderTargetView(bf_state.blur_tex[k].Get(), nullptr, rh);
             }
-            blur_w      = lw;
-            blur_h      = lh;
-            blur_format = bf;
+            bf_state.blur_w      = lw;
+            bf_state.blur_h      = lh;
+            bf_state.blur_format = bf;
         }
         return true;
     }
@@ -322,13 +360,14 @@ struct d3d12_renderer::impl {
     };
     static_assert(sizeof(blur_constants) == blur_constant_count * 4);
 
-    // one full-screen triangle into blur_tex[dst], scissored to the plan's low-res region
-    void blur_pass(ID3D12GraphicsCommandList* list, u32 dst, UINT vw, UINT vh, D3D12_GPU_DESCRIPTOR_HANDLE src,
+    // one full-screen triangle into blur_frames[fi].blur_tex[dst], scissored to the plan's low-res region
+    void blur_pass(ID3D12GraphicsCommandList* list, u32 fi, u32 dst, UINT vw, UINT vh, D3D12_GPU_DESCRIPTOR_HANDLE src,
                    const blur_constants& c, ID3D12PipelineState* state, const internal::blur_plan& plan) noexcept
     {
-        barrier(list, blur_tex[dst].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        blur_frame& bf = blur_frames[fi];
+        barrier(list, bf.blur_tex[dst].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
         D3D12_CPU_DESCRIPTOR_HANDLE rh = rtv_heap->GetCPUDescriptorHandleForHeapStart();
-        rh.ptr += static_cast<SIZE_T>(dst) * rtv_size;
+        rh.ptr += static_cast<SIZE_T>(rtv_slot_for(fi, dst)) * rtv_size;
         list->OMSetRenderTargets(1, &rh, FALSE, nullptr);
         const D3D12_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(vw), static_cast<float>(vh), 0.0f, 1.0f};
         const D3D12_RECT     sc{static_cast<LONG>(plan.lx0), static_cast<LONG>(plan.ly0), static_cast<LONG>(plan.lx1), static_cast<LONG>(plan.ly1)};
@@ -338,19 +377,20 @@ struct d3d12_renderer::impl {
         list->SetGraphicsRoot32BitConstants(0, blur_constant_count, &c, 0);
         list->SetGraphicsRootDescriptorTable(1, src);
         list->DrawInstanced(3, 1, 0, 0);
-        barrier(list, blur_tex[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        barrier(list, bf.blur_tex[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
     // copies the target around `panel` (physical), boxes it down and blurs it; on success blur_tex[0] holds the result
     // in its top-left (vw, vh), exact inside `out_exact`
-    [[nodiscard]] bool run_blur(ID3D12GraphicsCommandList* list, const d3d12_target& t, float radius_px, const rect& panel,
+    [[nodiscard]] bool run_blur(ID3D12GraphicsCommandList* list, u32 fi, const d3d12_target& t, float radius_px, const rect& panel,
                                 UINT& out_vw, UINT& out_vh, rect& out_exact) noexcept
     {
         const D3D12_RESOURCE_DESC td = t.resource->GetDesc();
-        if (!ensure_blur(td)) {
+        if (!ensure_blur(fi, td)) {
             return false;
         }
-        const internal::blur_plan plan = internal::plan_blur(radius_px, panel, snap_w, snap_h);
+        blur_frame& bf = blur_frames[fi];
+        const internal::blur_plan plan = internal::plan_blur(radius_px, panel, bf.snap_w, bf.snap_h);
         if (plan.x1 <= plan.x0 || plan.y1 <= plan.y0 || plan.lx1 <= plan.lx0 || plan.ly1 <= plan.ly0) {
             return false;
         }
@@ -358,10 +398,10 @@ struct d3d12_renderer::impl {
         D3D12_RESOURCE_BARRIER pre[2]{};
         pre[0].Type = pre[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         pre[0].Transition = {t.resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
-        pre[1].Transition = {snap.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST};
+        pre[1].Transition = {bf.snap.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST};
         list->ResourceBarrier(2, pre);
         D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource        = snap.Get();
+        dst.pResource        = bf.snap.Get();
         dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         D3D12_TEXTURE_COPY_LOCATION src{};
         src.pResource        = t.resource;
@@ -371,24 +411,25 @@ struct d3d12_renderer::impl {
         D3D12_RESOURCE_BARRIER post[2]{};
         post[0].Type = post[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         post[0].Transition = {t.resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
-        post[1].Transition = {snap.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+        post[1].Transition = {bf.snap.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
         list->ResourceBarrier(2, post);
 
         const UINT  ds = plan.ds;
-        const UINT  vw = std::max(1u, (snap_w + ds - 1) / ds);
-        const UINT  vh = std::max(1u, (snap_h + ds - 1) / ds);
-        const float tw = static_cast<float>(blur_w);
-        const float th = static_cast<float>(blur_h);
+        const UINT  vw = std::max(1u, (bf.snap_w + ds - 1) / ds);
+        const UINT  vh = std::max(1u, (bf.snap_h + ds - 1) / ds);
+        const float tw = static_cast<float>(bf.blur_w);
+        const float th = static_cast<float>(bf.blur_h);
+        const u32 slot_base = snap_slot_for(fi);
 
         list->SetGraphicsRootSignature(root_blur.Get());
         list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         blur_constants c;
         c.bp0[0] = static_cast<float>(vw); c.bp0[1] = static_cast<float>(vh); c.bp0[2] = 1.0f; c.bp0[3] = 1.0f;
-        c.bp1[0] = 1.0f / static_cast<float>(snap_w); c.bp1[1] = 1.0f / static_cast<float>(snap_h);
+        c.bp1[0] = 1.0f / static_cast<float>(bf.snap_w); c.bp1[1] = 1.0f / static_cast<float>(bf.snap_h);
         c.bp1[2] = 1.0f - 0.5f * c.bp1[0]; c.bp1[3] = 1.0f - 0.5f * c.bp1[1];
         c.bp2[0] = static_cast<float>(ds) * 0.25f;
-        blur_pass(list, 0, vw, vh, gpu_slot(snap_slot), c, pso_blur_down.Get(), plan);
+        blur_pass(list, fi, 0, vw, vh, gpu_slot(slot_base), c, pso_blur_down.Get(), plan);
 
         c.bp0[2] = static_cast<float>(vw) / tw; c.bp0[3] = static_cast<float>(vh) / th;
         c.bp1[2] = (static_cast<float>(vw) - 0.5f) / tw; c.bp1[3] = (static_cast<float>(vh) - 0.5f) / th;
@@ -397,9 +438,9 @@ struct d3d12_renderer::impl {
         c.bp4[0] = plan.w[2]; c.bp4[1] = plan.o[2];
         for (int it = 0; it < plan.iterations; ++it) {
             c.bp1[0] = 1.0f / tw; c.bp1[1] = 0.0f;
-            blur_pass(list, 1, vw, vh, gpu_slot(snap_slot + 1), c, pso_blur_gauss.Get(), plan);
+            blur_pass(list, fi, 1, vw, vh, gpu_slot(slot_base + 1), c, pso_blur_gauss.Get(), plan);
             c.bp1[0] = 0.0f; c.bp1[1] = 1.0f / th;
-            blur_pass(list, 0, vw, vh, gpu_slot(snap_slot + 2), c, pso_blur_gauss.Get(), plan);
+            blur_pass(list, fi, 0, vw, vh, gpu_slot(slot_base + 2), c, pso_blur_gauss.Get(), plan);
         }
 
         D3D12_CPU_DESCRIPTOR_HANDLE host{};
@@ -784,12 +825,13 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
 
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
     hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.NumDescriptors = 1 + max_textures + 3; // atlas, textures, then the blur snapshot and its two targets
+    hd.NumDescriptors = 1 + max_textures + 3 * info.frames_in_flight; // atlas, textures, per-frame blur snapshot + 2 targets
     hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(info.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&p->srv_heap)))) {
         return false;
     }
     p->frames_in_flight = info.frames_in_flight;
+    p->blur_frames.resize(info.frames_in_flight);
 
     // backdrop blur (optional: without it backdrop panels draw as flat tints)
     {
@@ -812,7 +854,7 @@ bool d3d12_renderer::create(const d3d12_init_info& info, const font_atlas& font)
 
         D3D12_DESCRIPTOR_HEAP_DESC rd{};
         rd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rd.NumDescriptors = 2;
+        rd.NumDescriptors = 2 * info.frames_in_flight;
         p->rtv_size = info.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC fp{};
@@ -1066,9 +1108,17 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         return;
     }
     impl& s = *impl_;
-    s.tick_graveyard();
     if (frame_index >= s.frames.size()) {
         return;
+    }
+    // tick once per GPU frame, not once per render() call (detached overlays and multi-viewport call render() multiple times per frame)
+    const bool new_frame = s.last_frame_index == ~0u ||
+                           (s.frames_in_flight > 1 ? frame_index != s.last_frame_index
+                                                   : (data.vertices.data() != s.last_vtx_ptr && data.origin.x == 0.0f && data.origin.y == 0.0f));
+    if (new_frame) {
+        s.tick_graveyard();
+        s.last_frame_index = frame_index;
+        s.last_vtx_ptr     = data.vertices.data();
     }
     s.record_pending(list); // staged texture copies, ahead of the draws that read them
     frame_buffers& fb = s.frames[frame_index];
@@ -1122,7 +1172,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
             bound_ib_off           = s.static_ib_offset;
             bound_sh_off           = s.static_shapes_offset;
         } else {
-            if (s.static_cooldown > 0) { --s.static_cooldown; }
+            if (new_frame && s.static_cooldown > 0) { --s.static_cooldown; }
             gpu_base     = fb.buf->GetGPUVirtualAddress();
             bound_ib_off = fb.ib_offset;
             bound_sh_off = fb.shapes_offset;
@@ -1173,7 +1223,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
         if (cmd.idx_count == 0 || cmd.clip.empty()) {
             continue;
         }
-        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(v, 0.0f, hi)); };
+        const auto fit = [](f32 v, f32 hi) { return static_cast<LONG>(std::clamp(std::ceil(v - 0.5f), 0.0f, hi)); };
         const D3D12_RECT scissor{fit(cmd.clip.min.x - data.origin.x, data.display_size.x),
                                  fit(cmd.clip.min.y - data.origin.y, data.display_size.y),
                                  fit(cmd.clip.max.x - data.origin.x, data.display_size.x),
@@ -1187,7 +1237,7 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
             const rect panel = internal::backdrop_bounds(data, cmd);
             if (blur_dirty || cmd.blur != blur_radius || !internal::rect_inside(panel, blur_exact)) {
                 blur_dirty = true;
-                blur_ready = !panel.empty() && s.run_blur(list, *target, cmd.blur, panel, blur_vw, blur_vh, blur_exact);
+                blur_ready = !panel.empty() && s.run_blur(list, frame_index, *target, cmd.blur, panel, blur_vw, blur_vh, blur_exact);
                 if (blur_ready) {
                     blur_dirty  = false;
                     blur_radius = cmd.blur;
@@ -1211,13 +1261,16 @@ void d3d12_renderer::render(const draw_data& data, ID3D12GraphicsCommandList* li
             bound = cmd.texture;
         } else if (want == ps_mode::backdrop) {
             if (mode != ps_mode::backdrop) {
+                const impl::blur_frame& bff = s.blur_frames[frame_index];
                 list->SetPipelineState(s.pso_backdrop.Get());
                 impl::blur_constants c;
                 c.bp0[0] = data.display_size.x; c.bp0[1] = data.display_size.y;
-                c.bp0[2] = static_cast<float>(blur_vw) / static_cast<float>(s.blur_w);
-                c.bp0[3] = static_cast<float>(blur_vh) / static_cast<float>(s.blur_h);
+                c.bp0[2] = static_cast<float>(blur_vw) / static_cast<float>(bff.blur_w);
+                c.bp0[3] = static_cast<float>(blur_vh) / static_cast<float>(bff.blur_h);
+                c.bp1[2] = (static_cast<float>(blur_vw) - 0.5f) / static_cast<float>(bff.blur_w);
+                c.bp1[3] = (static_cast<float>(blur_vh) - 0.5f) / static_cast<float>(bff.blur_h);
                 list->SetGraphicsRoot32BitConstants(5, blur_constant_count, &c, 0);
-                list->SetGraphicsRootDescriptorTable(4, s.gpu_slot(impl::snap_slot + 1)); // blur_tex[0]
+                list->SetGraphicsRootDescriptorTable(4, s.gpu_slot(impl::snap_slot_for(frame_index) + 1)); // blur_tex[0]
             }
             bound = 0;
         } else if (mode != ps_mode::main) {

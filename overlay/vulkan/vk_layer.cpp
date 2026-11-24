@@ -93,16 +93,20 @@ std::mutex g_mtx;
 std::unordered_map<void*, std::unique_ptr<inst_data>> g_insts;
 std::unordered_map<void*, std::unique_ptr<dev_data>>  g_devs;
 std::unordered_map<VkSurfaceKHR, HWND>                g_surfaces;
-std::unordered_map<VkSwapchainKHR, std::unique_ptr<swap_data>> g_swaps;
-std::unordered_map<HWND, swap_data*>                  g_hwnd_map;
+std::unordered_map<VkSwapchainKHR, std::shared_ptr<swap_data>> g_swaps;
+std::unordered_map<HWND, std::shared_ptr<swap_data>>  g_hwnd_map;
 
 LRESULT CALLBACK layer_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-    swap_data* sw = nullptr;
+    std::shared_ptr<swap_data> sw;
+    WNDPROC orig = nullptr;
     {
         std::lock_guard lk{g_mtx};
         auto it = g_hwnd_map.find(hwnd);
-        if (it != g_hwnd_map.end()) { sw = it->second; }
+        if (it != g_hwnd_map.end()) {
+            sw   = it->second;
+            orig = sw->orig_proc;
+        }
     }
     if (sw == nullptr) { return ::DefWindowProcW(hwnd, msg, wp, lp); }
 
@@ -115,16 +119,19 @@ LRESULT CALLBACK layer_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         (void)sw->platform.handle_message(hwnd, msg, wp, static_cast<std::intptr_t>(lp));
         if (strata::win32_platform::swallows(msg)) { return 0; }
     }
-    return ::CallWindowProcW(sw->orig_proc, hwnd, msg, wp, lp);
+    return orig != nullptr ? ::CallWindowProcW(orig, hwnd, msg, wp, lp) : ::DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 void destroy_swap_resources(swap_data& sw)
 {
     if (sw.hwnd != nullptr && sw.orig_proc != nullptr && ::IsWindow(sw.hwnd)) {
-        if (reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(sw.hwnd, GWLP_WNDPROC)) == &layer_wnd_proc) {
-            ::SetWindowLongPtrW(sw.hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(sw.orig_proc));
+        auto it = g_hwnd_map.find(sw.hwnd);
+        if (it != g_hwnd_map.end() && it->second.get() == &sw) {
+            if (reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(sw.hwnd, GWLP_WNDPROC)) == &layer_wnd_proc) {
+                ::SetWindowLongPtrW(sw.hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(sw.orig_proc));
+            }
+            g_hwnd_map.erase(it);
         }
-        g_hwnd_map.erase(sw.hwnd);
         sw.orig_proc = nullptr;
     }
     if (sw.dev == nullptr) { return; }
@@ -278,7 +285,28 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_create_device(VkPhysicalDevice phys, const V
     dd->wait_fences          = reinterpret_cast<PFN_vkWaitForFences>(gdpa(*pDevice, "vkWaitForFences"));
     dd->reset_fences         = reinterpret_cast<PFN_vkResetFences>(gdpa(*pDevice, "vkResetFences"));
     if (pCreateInfo->queueCreateInfoCount > 0 && pCreateInfo->pQueueCreateInfos != nullptr) {
-        dd->graphics_family = pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex;
+        PFN_vkGetPhysicalDeviceQueueFamilyProperties get_qfp = nullptr;
+        {
+            std::lock_guard lk{g_mtx};
+            auto iit = g_insts.find(dispatch_key(phys));
+            if (iit != g_insts.end()) { get_qfp = iit->second->get_qfp; }
+        }
+        std::vector<VkQueueFamilyProperties> qfps;
+        if (get_qfp != nullptr) {
+            strata::u32 qcount = 0;
+            get_qfp(phys, &qcount, nullptr);
+            qfps.resize(qcount);
+            if (qcount > 0) { get_qfp(phys, &qcount, qfps.data()); }
+        }
+        strata::u32 picked = pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex;
+        for (strata::u32 i = 0; i < pCreateInfo->queueCreateInfoCount; ++i) {
+            const strata::u32 fam = pCreateInfo->pQueueCreateInfos[i].queueFamilyIndex;
+            if (fam < qfps.size() && (qfps[fam].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+                picked = fam;
+                break;
+            }
+        }
+        dd->graphics_family = picked;
         if (dd->get_device_queue != nullptr) {
             dd->get_device_queue(*pDevice, dd->graphics_family, 0, &dd->graphics_queue);
         }
@@ -326,15 +354,17 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_create_swapchain(VkDevice device, const VkSw
         }
     }
     if (dd == nullptr || dd->create_swapchain == nullptr) { return VK_ERROR_INITIALIZATION_FAILED; }
-    const VkResult res = dd->create_swapchain(device, pCreateInfo, pAllocator, pSwapchain);
+    VkSwapchainCreateInfoKHR ci = *pCreateInfo;
+    ci.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    const VkResult res = dd->create_swapchain(device, &ci, pAllocator, pSwapchain);
     if (res != VK_SUCCESS) { return res; }
 
-    auto sw = std::make_unique<swap_data>();
+    auto sw = std::make_shared<swap_data>();
     sw->dev       = dd;
     sw->swapchain = *pSwapchain;
     sw->hwnd      = hwnd;
-    sw->format    = pCreateInfo->imageFormat;
-    sw->extent    = pCreateInfo->imageExtent;
+    sw->format    = ci.imageFormat;
+    sw->extent    = ci.imageExtent;
 
     strata::u32 img_count = 0;
     dd->get_swapchain_images(device, *pSwapchain, &img_count, nullptr);
@@ -382,14 +412,33 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_create_swapchain(VkDevice device, const VkSw
         info.color_format     = sw->format;
         if (sw->renderer.create(info, sw->ui->font())) {
             sw->ui->release_font_pixels();
+            strata::output_desc od;
+            if (sw->format == VK_FORMAT_B8G8R8A8_SRGB || sw->format == VK_FORMAT_R8G8B8A8_SRGB ||
+                sw->format == VK_FORMAT_A8B8G8R8_SRGB_PACK32) {
+                od.space = strata::output_space::srgb_view;
+            } else if (ci.imageColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+                od.space = strata::output_space::hdr10;
+            } else if (sw->format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+                       ci.imageColorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+                od.space = strata::output_space::scrgb;
+            }
+            sw->renderer.set_output(od);
         }
     }
 
     std::lock_guard lk{g_mtx};
-    if (hwnd != nullptr && ::IsWindow(hwnd) && g_hwnd_map.find(hwnd) == g_hwnd_map.end()) {
+    if (hwnd != nullptr && ::IsWindow(hwnd)) {
         sw->platform.attach(hwnd);
-        sw->orig_proc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&layer_wnd_proc)));
-        g_hwnd_map[hwnd] = sw.get();
+        auto it = g_hwnd_map.find(hwnd);
+        if (it == g_hwnd_map.end()) {
+            sw->orig_proc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&layer_wnd_proc)));
+        } else {
+            // swapchain resize creates the new swapchain before destroying oldSwapchain: transfer subclass ownership
+            sw->orig_proc = it->second->orig_proc;
+            sw->visible.store(it->second->visible.load());
+            it->second->orig_proc = nullptr;
+        }
+        g_hwnd_map[hwnd] = sw;
     }
     g_swaps[*pSwapchain] = std::move(sw);
     return VK_SUCCESS;
@@ -414,7 +463,7 @@ VKAPI_ATTR void VKAPI_CALL hook_destroy_swapchain(VkDevice device, VkSwapchainKH
 VKAPI_ATTR VkResult VKAPI_CALL hook_queue_present(VkQueue queue, const VkPresentInfoKHR* pPresentInfo)
 {
     dev_data*  dd = nullptr;
-    swap_data* sw = nullptr;
+    std::shared_ptr<swap_data> sw;
     strata::u32 img_idx = 0;
     {
         std::lock_guard lk{g_mtx};
@@ -423,14 +472,15 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_queue_present(VkQueue queue, const VkPresent
         if (pPresentInfo != nullptr && pPresentInfo->swapchainCount > 0) {
             auto sit = g_swaps.find(pPresentInfo->pSwapchains[0]);
             if (sit != g_swaps.end()) {
-                sw      = sit->second.get();
+                sw      = sit->second;
                 img_idx = pPresentInfo->pImageIndices[0];
             }
         }
     }
     if (dd == nullptr || dd->queue_present == nullptr) { return VK_ERROR_DEVICE_LOST; }
 
-    if (sw == nullptr || !sw->visible.load() || !sw->renderer.valid() || sw->ui == nullptr || img_idx >= sw->images.size()) {
+    if (sw == nullptr || !sw->visible.load() || !sw->renderer.valid() || sw->ui == nullptr ||
+        dd->graphics_queue == VK_NULL_HANDLE || img_idx >= sw->images.size()) {
         return dd->queue_present(queue, pPresentInfo);
     }
 
@@ -462,7 +512,7 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_queue_present(VkQueue queue, const VkPresent
 
     barrier_img(*dd, cmd, sw->images[img_idx], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 0, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 
     strata::vulkan_target target;
     target.image  = sw->images[img_idx];
@@ -484,12 +534,12 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_queue_present(VkQueue queue, const VkPresent
     si.commandBufferCount   = 1;
     si.pCommandBuffers      = &cmd;
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores    = &sw->done_sems[s];
-    dd->queue_submit(queue, 1, &si, sw->fences[s]);
+    si.pSignalSemaphores    = &sw->done_sems[img_idx];
+    dd->queue_submit(dd->graphics_queue, 1, &si, sw->fences[s]);
 
     VkPresentInfoKHR pi = *pPresentInfo;
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores    = &sw->done_sems[s];
+    pi.pWaitSemaphores    = &sw->done_sems[img_idx];
     return dd->queue_present(queue, &pi);
 }
 

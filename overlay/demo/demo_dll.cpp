@@ -51,16 +51,32 @@ constexpr strata::u32 vr_panel_width  = 800;
 constexpr strata::u32 vr_panel_height = 500;
 bool                            g_vr_tried = false;
 bool                            g_vr_ready = false; // g_vr_ui/g_vr_renderer/g_vr_texture/g_vr_rtv are all live iff this is true
+ID3D11Device*                   g_vr_device = nullptr;
 vr_overlay                      g_vr;
 std::optional<context>          g_vr_ui;
 d3d11_renderer                  g_vr_renderer;
 ComPtr<ID3D11Texture2D>         g_vr_texture;
 ComPtr<ID3D11RenderTargetView>  g_vr_rtv;
 
+void cleanup_vr_overlay() noexcept
+{
+    g_vr_renderer.destroy();
+    g_vr_rtv.Reset();
+    g_vr_texture.Reset();
+    g_vr_ui.reset();
+    g_vr.destroy();
+    g_vr_device = nullptr;
+    g_vr_ready  = false;
+    g_vr_tried  = false;
+}
+
 void update_vr_overlay()
 {
     auto* device = static_cast<ID3D11Device*>(overlay::device11());
     if (device == nullptr) { return; } // d3d12 game, or not attached yet
+    if (g_vr_ready && g_vr_device != device) {
+        cleanup_vr_overlay();
+    }
 
     if (!g_vr_ready) {
         if (g_vr_tried || detect_vr() != vr_kind::openvr) { return; } // tried and failed, or steamvr isn't up
@@ -73,9 +89,6 @@ void update_vr_overlay()
             g_log.addf(log_level::warn, "openvr overlay: {}", g_vr.last_error());
             return;
         }
-        // TrackingUniverseStanding's origin is the room's chaperone origin, not the user -- place the panel
-        // relative to the hmd's current pose instead (see vr_pose_in_front_of_hmd); leaves the placeholder if
-        // the hmd isn't tracked yet.
         if (const auto p = vr_pose_in_front_of_hmd(0.5f)) {
             panel.pose = *p;
             g_vr.set_panel(panel);
@@ -100,6 +113,8 @@ void update_vr_overlay()
             FAILED(device->CreateTexture2D(&td, nullptr, &g_vr_texture)) ||
             FAILED(device->CreateRenderTargetView(g_vr_texture.Get(), nullptr, &g_vr_rtv))) {
             g_log.add(log_level::warn, "openvr overlay: failed to set up its own font/texture, staying off");
+            g_vr_rtv.Reset();
+            g_vr_texture.Reset();
             g_vr.destroy();
             return;
         }
@@ -107,11 +122,14 @@ void update_vr_overlay()
         if (!g_vr_renderer.create(device, ctx.Get(), g_vr_ui->font())) {
             g_log.add(log_level::warn, "openvr overlay: d3d11_renderer::create failed, staying off");
             g_vr_ui.reset();
+            g_vr_rtv.Reset();
+            g_vr_texture.Reset();
             g_vr.destroy();
             return;
         }
         g_vr.show();
-        g_vr_ready = true;
+        g_vr_device = device;
+        g_vr_ready  = true;
         g_log.addf(log_level::info, "openvr overlay created ({}x{})", vr_panel_width, vr_panel_height);
     }
 
@@ -131,11 +149,17 @@ void update_vr_overlay()
 
     ComPtr<ID3D11DeviceContext> ctx;
     device->GetImmediateContext(&ctx);
+    std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> old_rtv{};
+    ID3D11DepthStencilView* old_dsv = nullptr;
+    ctx->OMGetRenderTargets(static_cast<UINT>(old_rtv.size()), old_rtv.data(), &old_dsv);
     ID3D11RenderTargetView* rtv   = g_vr_rtv.Get();
     const float              clear[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // alpha 0: transparent outside the window itself
     ctx->OMSetRenderTargets(1, &rtv, nullptr);
     ctx->ClearRenderTargetView(rtv, clear);
     g_vr_renderer.render(g_vr_ui->render_data());
+    ctx->OMSetRenderTargets(static_cast<UINT>(old_rtv.size()), old_rtv.data(), old_dsv);
+    for (ID3D11RenderTargetView* r : old_rtv) { if (r != nullptr) { r->Release(); } }
+    if (old_dsv != nullptr) { old_dsv->Release(); }
     g_vr.submit_texture(g_vr_texture.Get());
 }
 #endif // STRATA_HAS_OPENVR
@@ -192,6 +216,12 @@ void overlay_ui(context& ui)
 struct demo_menu final : overlay::module {
     [[nodiscard]] std::string_view name() const noexcept override { return "demo menu"; }
     void on_frame(context& ui) override { overlay_ui(ui); }
+    void on_detach() override
+    {
+#if STRATA_HAS_OPENVR
+        cleanup_vr_overlay();
+#endif
+    }
 };
 
 overlay::host g_host;

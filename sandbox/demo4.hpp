@@ -30,7 +30,7 @@ struct demo4_state {
     };
     std::vector<tree_node_data> nodes;   // node 0 is a sentinel root; its children are the top level
     int                         selected = -1;
-    bool                        culling_note = true;
+    bool                        reveal_selected = false;
 
     // --scene rows: an inspector-like list of components
     bool show_rows = false;
@@ -54,6 +54,7 @@ struct demo4_state {
     std::vector<char>        visible;    // one flag per object (vector<bool> has no usable reference)
     bool                     never_ask = false;
     std::string              status = "-";
+    bool                     destroy_single = false;
     int                      ui_scale_percent = 100;
     int                      pending_scale_percent = 0; // > 0: main applies it between frames
 
@@ -73,6 +74,7 @@ struct demo4_state {
     strata::undo_stack             graph_history;
     std::vector<graph_node>        graph_clip;
     std::uint64_t                  next_node_id = 10;
+    bool                           graph_initialized = false;
     bool                           show_inspector = false;
 
     demo4_state();

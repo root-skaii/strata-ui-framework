@@ -223,7 +223,7 @@ float4 ps_backdrop(ps_input i) : SV_Target
     float2 p   = i.pos.xy + view.xy - s.center;
     float  cov = saturate(0.5f - sd_round_box(p, s.half_size, s.radius));
 
-    float2 uv   = i.pos.xy / bp0.xy * bp0.zw;
+    float2 uv   = min(i.pos.xy / bp0.xy * bp0.zw, bp1.zw);
     float3 bg   = blur_src.SampleLevel(sampler0, uv, 0.0f).rgb;
     float  lum  = dot(bg, float3(0.2126f, 0.7152f, 0.0722f));
     bg = lerp(float3(lum, lum, lum), bg, s.shadow_offset.x) * s.shadow_offset.y; // saturation, brightness
