@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 
@@ -21,6 +22,17 @@ static void draw_tooltip_at(context& ui, vec2 anchor, std::string_view text);
 static void chart_impl(context& ui, std::string_view label, std::span<const plot_series> series, const plot_options& o);
 
 namespace {
+
+// bit-level checks stay reliable even if a consumer compiles with -ffinite-math-only
+[[nodiscard]] bool is_nan_f32(f32 v) noexcept
+{
+    return (std::bit_cast<u32>(v) & 0x7fffffffu) > 0x7f800000u;
+}
+
+[[nodiscard]] bool is_finite_f32(f32 v) noexcept
+{
+    return (std::bit_cast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
 
 
 [[nodiscard]] color series_color(std::size_t i, color given, const style& st) noexcept
@@ -116,23 +128,23 @@ static void plot_impl(context& ui, std::string_view label, std::span<const plot_
         return s.values[(static_cast<std::size_t>(offset) + i) % s.values.size()];
     };
 
-    if (std::isnan(lo) || std::isnan(hi)) {
+    if (is_nan_f32(lo) || is_nan_f32(hi)) {
         f32 mn = std::numeric_limits<f32>::max();
         f32 mx = std::numeric_limits<f32>::lowest();
         for (const plot_series& s : series) {
             for (std::size_t i = 0; i < n; ++i) {
                 const f32 v = sample(s, i);
-                if (std::isfinite(v)) { mn = std::min(mn, v); mx = std::max(mx, v); }
+                if (is_finite_f32(v)) { mn = std::min(mn, v); mx = std::max(mx, v); }
             }
         }
         if (mn > mx) { mn = 0.0f; mx = 1.0f; }
         if (kind == plot_kind::histogram) { mn = std::min(mn, 0.0f); }
         if (mx - mn < 1.0e-6f) { mx = mn + 1.0f; }
         const f32 pad = (mx - mn) * 0.05f;
-        if (std::isnan(lo)) { lo = kind == plot_kind::histogram && mn == 0.0f ? 0.0f : mn - pad; }
-        if (std::isnan(hi)) { hi = mx + pad; }
+        if (is_nan_f32(lo)) { lo = kind == plot_kind::histogram && mn == 0.0f ? 0.0f : mn - pad; }
+        if (is_nan_f32(hi)) { hi = mx + pad; }
     }
-    if (hi - lo < 1.0e-6f) { hi = lo + 1.0f; }
+    if (!is_finite_f32(lo) || !is_finite_f32(hi) || hi - lo < 1.0e-6f) { lo = 0.0f; hi = 1.0f; }
 
     const f32 h = size.y > 0.0f ? size.y : (compact ? 20.0f : 80.0f);
     if (size.x > 0.0f) { m.layout_.next_width = size.x; }
@@ -334,10 +346,10 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
 
     // the x range: the data (or the given one), or what the user zoomed to
     const f32 data_lo = o.x.lo, data_hi = o.x.hi;
-    const f32 xd0 = std::isnan(data_lo) ? o.x_start : data_lo;
-    f32       xd1 = std::isnan(data_hi) ? o.x_start + static_cast<f32>(n > 1 ? n - 1 : 1) * x_step : data_hi;
-    if (hist && std::isnan(data_hi)) { xd1 = o.x_start + static_cast<f32>(std::max<std::size_t>(n, 1)) * x_step; } // bars have width
-    if (xd1 - xd0 < 1.0e-9f) { xd1 = xd0 + 1.0f; }
+    const f32 xd0 = is_nan_f32(data_lo) ? o.x_start : data_lo;
+    f32       xd1 = is_nan_f32(data_hi) ? o.x_start + static_cast<f32>(n > 1 ? n - 1 : 1) * x_step : data_hi;
+    if (hist && is_nan_f32(data_hi)) { xd1 = o.x_start + static_cast<f32>(std::max<std::size_t>(n, 1)) * x_step; } // bars have width
+    if (!is_finite_f32(xd0) || !is_finite_f32(xd1) || xd1 - xd0 < 1.0e-9f) { xd1 = (is_finite_f32(xd0) ? xd0 : 0.0f) + 1.0f; }
 
     // interaction with last frame's picture of the chart
     if (o.zoom_pan && view.inner.width() > 1.0f && view.sx_hi > view.sx_lo) {
@@ -400,23 +412,26 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
     if (view.y_set) {
         yv0 = view.y_lo;
         yv1 = view.y_hi;
-    } else if (std::isnan(yv0) || std::isnan(yv1)) {
+    } else if (is_nan_f32(yv0) || is_nan_f32(yv1)) {
         f32 mn = std::numeric_limits<f32>::max();
         f32 mx = std::numeric_limits<f32>::lowest();
         for (const plot_series& sr : series) {
             for (std::size_t i = i0; i <= i1 && n > 0; ++i) {
                 const f32 v = sample(sr, i);
-                if (std::isfinite(v)) { mn = std::min(mn, v); mx = std::max(mx, v); }
+                if (is_finite_f32(v)) { mn = std::min(mn, v); mx = std::max(mx, v); }
             }
         }
         if (mn > mx) { mn = 0.0f; mx = 1.0f; }
         if (hist) { mn = std::min(mn, 0.0f); }
         if (mx - mn < 1.0e-6f) { mx = mn + 1.0f; }
         const f32 pad = (mx - mn) * 0.06f;
-        if (std::isnan(yv0)) { yv0 = hist && mn == 0.0f ? 0.0f : mn - pad; }
-        if (std::isnan(yv1)) { yv1 = mx + pad; }
+        if (is_nan_f32(yv0)) { yv0 = hist && mn == 0.0f ? 0.0f : mn - pad; }
+        if (is_nan_f32(yv1)) { yv1 = mx + pad; }
     }
-    if (yv1 - yv0 < 1.0e-9f) { yv1 = yv0 + 1.0f; }
+    if (!is_finite_f32(yv0) || !is_finite_f32(yv1) || yv1 - yv0 < 1.0e-9f) {
+        yv0 = is_finite_f32(yv0) ? yv0 : 0.0f;
+        yv1 = yv0 + 1.0f;
+    }
 
     const bool  legend = series.size() > 1;
     const bool  header = !o.y.title.empty() || !o.y.unit.empty() || legend;
@@ -451,29 +466,45 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
         const color grid = color{255, 255, 255, 18};
         const color axis = color{255, 255, 255, 70};
         const f32 ystep = nice_step(yv1 - yv0, std::max(inner.height() / 27.0f, 1.0f));
-        for (long long k = static_cast<long long>(std::ceil(yv0 / ystep)); static_cast<f32>(k) * ystep <= yv1 + ystep * 1.0e-3f && k < 200000; ++k) {
-            const f32 v = static_cast<f32>(k) * ystep;
-            const f32 y = std::round(y_of(v));
-            st.dl_.rect_filled({{inner.min.x, y}, {inner.max.x, y + 1.0f}}, grid);
-            st.dl_.rect_filled({{inner.min.x - 3.0f, y}, {inner.min.x, y + 1.0f}}, axis);
-            const std::string t = tick_text(v, ystep, o.y.unit);
-            st.dl_.text({inner.min.x - 6.0f - st.font_.measure(f, t).x, y - lh * 0.5f}, st.style_.text_dim, t, f);
+        if (is_finite_f32(ystep) && ystep > 0.0f) {
+            const f64 start = std::ceil(static_cast<f64>(yv0) / static_cast<f64>(ystep));
+            if (std::abs(start) < 1.0e15) {
+                const long long k0 = static_cast<long long>(start);
+                for (int it = 0; it < 256; ++it) {
+                    const f64 vd = static_cast<f64>(k0 + it) * static_cast<f64>(ystep);
+                    if (vd > static_cast<f64>(yv1) + static_cast<f64>(ystep) * 1.0e-3) { break; }
+                    const f32 v = static_cast<f32>(vd);
+                    const f32 y = std::round(y_of(v));
+                    st.dl_.rect_filled({{inner.min.x, y}, {inner.max.x, y + 1.0f}}, grid);
+                    st.dl_.rect_filled({{inner.min.x - 3.0f, y}, {inner.min.x, y + 1.0f}}, axis);
+                    const std::string t = tick_text(v, ystep, o.y.unit);
+                    st.dl_.text({inner.min.x - 6.0f - st.font_.measure(f, t).x, y - lh * 0.5f}, st.style_.text_dim, t, f);
+                }
+            }
         }
         f32 widest = 0.0f;
         for (const f32 v : {xv0, xv1}) { widest = std::max(widest, st.font_.measure(f, tick_text(v, (xv1 - xv0) / 5.0f, o.x.unit)).x); }
         const f32 xstep = nice_step(xv1 - xv0, std::max(inner.width() / (widest + 28.0f), 1.0f));
-        f32 last_right = -1.0e9f;
-        for (long long k = static_cast<long long>(std::ceil(xv0 / xstep)); static_cast<f32>(k) * xstep <= xv1 + xstep * 1.0e-3f && k < 200000; ++k) {
-            const f32 v = static_cast<f32>(k) * xstep;
-            const f32 x = std::round(x_of(v));
-            st.dl_.rect_filled({{x, inner.min.y}, {x + 1.0f, inner.max.y}}, color{255, 255, 255, 12});
-            st.dl_.rect_filled({{x, inner.max.y}, {x + 1.0f, inner.max.y + 3.0f}}, axis);
-            const std::string t = tick_text(v, xstep, o.x.unit);
-            const f32 tw = st.font_.measure(f, t).x;
-            const f32 tx = x - tw * 0.5f;
-            if (tx > last_right + 6.0f && tx >= box.min.x + 2.0f && tx + tw <= box.max.x - 2.0f) {
-                st.dl_.text({tx, inner.max.y + 5.0f}, st.style_.text_dim, t, f);
-                last_right = tx + tw;
+        if (is_finite_f32(xstep) && xstep > 0.0f) {
+            const f64 start = std::ceil(static_cast<f64>(xv0) / static_cast<f64>(xstep));
+            f32 last_right = -1.0e9f;
+            if (std::abs(start) < 1.0e15) {
+                const long long k0 = static_cast<long long>(start);
+                for (int it = 0; it < 256; ++it) {
+                    const f64 vd = static_cast<f64>(k0 + it) * static_cast<f64>(xstep);
+                    if (vd > static_cast<f64>(xv1) + static_cast<f64>(xstep) * 1.0e-3) { break; }
+                    const f32 v = static_cast<f32>(vd);
+                    const f32 x = std::round(x_of(v));
+                    st.dl_.rect_filled({{x, inner.min.y}, {x + 1.0f, inner.max.y}}, color{255, 255, 255, 12});
+                    st.dl_.rect_filled({{x, inner.max.y}, {x + 1.0f, inner.max.y + 3.0f}}, axis);
+                    const std::string t = tick_text(v, xstep, o.x.unit);
+                    const f32 tw = st.font_.measure(f, t).x;
+                    const f32 tx = x - tw * 0.5f;
+                    if (tx > last_right + 6.0f && tx >= box.min.x + 2.0f && tx + tw <= box.max.x - 2.0f) {
+                        st.dl_.text({tx, inner.max.y + 5.0f}, st.style_.text_dim, t, f);
+                        last_right = tx + tw;
+                    }
+                }
             }
         }
         st.dl_.rect_filled({{inner.min.x, inner.min.y}, {inner.min.x + 1.0f, inner.max.y}}, axis);

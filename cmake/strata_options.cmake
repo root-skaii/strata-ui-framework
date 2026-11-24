@@ -144,6 +144,11 @@ if(MSVC)
 
     if(STRATA_FAST_MATH)
         target_compile_options(strata_options INTERFACE /fp:fast)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            # /fp:fast enables -ffinite-math-only in clang-cl, which folds std::isnan/isinf/isfinite
+            # to constants and breaks plot_auto (NaN sentinel) and float validation
+            target_compile_options(strata_options INTERFACE /clang:-fno-finite-math-only)
+        endif()
     endif()
     if(STRATA_AVX2)
         target_compile_options(strata_options INTERFACE /arch:AVX2)
@@ -161,7 +166,7 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         $<$<NOT:$<CONFIG:Debug>>:-ffunction-sections -fdata-sections>
     )
     if(STRATA_FAST_MATH)
-        target_compile_options(strata_options INTERFACE -ffast-math)
+        target_compile_options(strata_options INTERFACE -ffast-math -fno-finite-math-only)
     endif()
     if(STRATA_AVX2)
         target_compile_options(strata_options INTERFACE -mavx2)

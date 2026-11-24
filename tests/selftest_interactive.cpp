@@ -1,0 +1,453 @@
+// end-to-end interactive UI tests: real click, drag, wheel, modifier, keyboard, and rendering checks across
+// charts (including sandbox demo charts & extreme/NaN ranges), core controls, windows, menus, tables, tabs, and popups.
+
+#include "selftest_common.hpp"
+
+#include <strata/backend/null.hpp>
+#include <strata/backend/software.hpp>
+
+#include <cmath>
+#include <limits>
+
+namespace {
+
+void check_finite_and_valid(const draw_data& d, null_renderer& nr)
+{
+    nr.render(d);
+    CHECK(nr.last().well_formed);
+    bool finite = true;
+    for (const vertex& v : d.vertices) {
+        if (!std::isfinite(v.pos.x) || !std::isfinite(v.pos.y)) { finite = false; break; }
+    }
+    CHECK(finite);
+}
+
+// clicks the exact sandbox "charts (axes, zoom, area)" flow, exercises every gesture, and tests extreme/NaN data
+void test_interactive_charts_and_extremes()
+{
+    std::fprintf(stderr, "[interactive: charts click-open, zoom/pan/hover, extreme & NaN ranges]\n");
+    harness h;
+    h.in.display_size = {1280.0f, 800.0f};
+    null_renderer nr;
+    CHECK(nr.create(h.ui.font()));
+
+    std::array<f32, 240> cpu{};
+    std::array<f32, 240> gpu{};
+    std::array<f32, 32>  frames{};
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        const f32 t = static_cast<f32>(i) * 0.5f;
+        cpu[i] = 42.0f + 24.0f * std::sin(t * 0.21f) + 9.0f * std::sin(t * 1.3f);
+        gpu[i] = 58.0f + 20.0f * std::sin(t * 0.13f + 1.0f) + 6.0f * std::sin(t * 2.1f);
+    }
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        frames[i] = 6.0f + 9.0f * std::abs(std::sin(static_cast<f32>(i) * 0.47f)) + static_cast<f32>(i % 5);
+    }
+
+    bool show_charts = false;
+    rect toggle_r{}, load_r{}, ft_r{}, area_r{};
+    vec2 load_range{};
+    bool load_zoomed = false;
+
+    const auto build = [&] {
+        if (auto w = h.ui.window("launcher", {20, 20}, {260, 0}, window_flags::resizable)) {
+            h.ui.checkbox("charts (axes, zoom, area)", show_charts);
+            toggle_r = h.ui.item_rect();
+        }
+        if (show_charts) {
+            if (auto w = h.ui.window("charts", {300, 40}, {620, 0}, window_flags::resizable)) {
+                plot_options load;
+                load.size     = {0.0f, 220.0f};
+                load.x        = {"time", "s"};
+                load.y        = {"load", "%", 0.0f, 100.0f};
+                load.x_step   = 0.5f;
+                load.fill     = true;
+                load.zoom_pan = true;
+                const std::array<plot_series, 2> series = {{{"cpu", cpu, color{0, 0, 0, 0}}, {"gpu", gpu, color{0, 0, 0, 0}}}};
+                h.ui.plot("load over time", series, load);
+                load_r      = h.ui.item_rect();
+                load_range  = h.ui.plot_x_range("load over time");
+                load_zoomed = h.ui.plot_zoomed("load over time");
+
+                plot_options ft;
+                ft.kind     = plot_kind::histogram;
+                ft.size     = {0.0f, 150.0f};
+                ft.x        = {"frame", ""};
+                ft.y        = {"frame time", "ms"}; // plot_auto (NaN) y range
+                ft.zoom_pan = true;
+                const std::array<plot_series, 1> bars = {{{"ms", frames, color{0, 0, 0, 0}}}};
+                h.ui.plot("frame times", bars, ft);
+                ft_r = h.ui.item_rect();
+
+                plot_options area;
+                area.size       = {0.0f, 120.0f};
+                area.x          = {"", "s"};
+                area.y          = {"gpu", "%"}; // plot_auto (NaN) y range
+                area.x_step     = 0.5f;
+                area.fill       = true;
+                area.fill_alpha = 0.3f;
+                const std::array<plot_series, 1> one = {{{"gpu", gpu, color::from_hex(0xf0568fffu)}}};
+                h.ui.plot("gpu area", one, area);
+                area_r = h.ui.item_rect();
+            }
+        }
+    };
+
+    h.frames(build, 2);
+    CHECK(!show_charts);
+
+    // click the checkbox to open charts (previously froze under clang-cl /fp:fast)
+    h.click(toggle_r.center(), build);
+    h.frames(build, 3);
+    CHECK(show_charts);
+    CHECK(load_r.height() > 150.0f && ft_r.height() > 100.0f && area_r.height() > 80.0f);
+    CHECK(near_eq(load_range.x, 0.0f, 0.1f) && near_eq(load_range.y, 119.5f, 0.1f));
+    check_finite_and_valid(h.ui.render_data(), nr);
+
+    // hover sweep across all three charts (triggers crosshair + tooltips)
+    for (const rect& r : {load_r, ft_r, area_r}) {
+        for (int k = 1; k <= 4; ++k) {
+            const f32 frac = static_cast<f32>(k) / 5.0f;
+            h.move({r.min.x + r.width() * frac, r.center().y});
+            h.frames(build, 2);
+        }
+    }
+    check_finite_and_valid(h.ui.render_data(), nr);
+
+    // wheel zoom in, Ctrl+wheel Y zoom, drag pan, double-click reset
+    const vec2 load_mid = load_r.center();
+    h.scroll(load_mid, 5.0f, build);
+    CHECK(load_zoomed);
+    const f32 span_after_zoom = load_range.y - load_range.x;
+    CHECK(span_after_zoom < 100.0f);
+
+    h.move(load_mid);
+    h.frames(build, 2);
+    h.modifiers(true, false, false);
+    h.wheel(4.0f);
+    h.frame(build);
+    h.modifiers(false, false, false);
+    h.frames(build, 2);
+    CHECK(near_eq(load_range.y - load_range.x, span_after_zoom, 0.2f));
+
+    const f32 x0_before_pan = load_range.x;
+    h.move(load_mid);
+    h.frames(build, 2);
+    h.down();
+    h.frame(build);
+    h.move({load_mid.x - 80.0f, load_mid.y + 30.0f});
+    h.frames(build, 3);
+    h.up();
+    h.frames(build, 2);
+    CHECK(load_range.x > x0_before_pan + 1.0f);
+
+    // double-click resets view (within 0.35 s: advance 1 frame between clicks)
+    h.move(load_mid);
+    h.frame(build);
+    h.down(); h.frame(build); h.up(); h.frame(build);
+    h.down(); h.frame(build); h.up(); h.frame(build);
+    h.frames(build, 2);
+    CHECK(!load_zoomed);
+
+    // extreme & pathological data: NaNs, Infs, huge offsets, tiny spans, extreme zoom must never hang or emit NaN vertices
+    const f32 qnan = std::numeric_limits<f32>::quiet_NaN();
+    const f32 inf  = std::numeric_limits<f32>::infinity();
+    const std::array<f32, 8> bad_vals{qnan, inf, -inf, qnan, 1.0f, -1.0f, qnan, inf};
+    const std::array<f32, 8> all_nan{qnan, qnan, qnan, qnan, qnan, qnan, qnan, qnan};
+    const std::array<f32, 8> huge_neg{-1.0e7f, -1.0e7f + 0.5f, -1.0e7f + 1.0f, -1.0e7f + 0.2f,
+                                      -1.0e7f + 0.8f, -1.0e7f + 0.3f, -1.0e7f + 0.9f, -1.0e7f + 0.1f};
+    const std::array<plot_series, 1> s_bad{{{"bad", bad_vals, color{0, 0, 0, 0}}}};
+    const std::array<plot_series, 1> s_nan{{{"nan", all_nan, color{0, 0, 0, 0}}}};
+    const std::array<plot_series, 1> s_huge{{{"huge", huge_neg, color{0, 0, 0, 0}}}};
+
+    plot_options ext_opt;
+    ext_opt.size     = {0.0f, 120.0f};
+    ext_opt.zoom_pan = true;
+    ext_opt.ticks    = true;
+    rect huge_r{};
+    const auto build_ext = [&] {
+        if (auto w = h.ui.window("extremes", {20, 20}, {500, 0}, plain_window)) {
+            h.ui.plot("bad", s_bad, ext_opt);
+            h.ui.plot("all_nan", s_nan, ext_opt);
+            plot_options ho = ext_opt;
+            ho.x_start = -1.0e7f;
+            ho.x_step  = 0.25f;
+            h.ui.plot("huge_neg", s_huge, ho);
+            huge_r = h.ui.item_rect();
+            h.ui.plot_lines("nan_lines", all_nan, {0.0f, 50.0f});
+        }
+    };
+    h.frames(build_ext, 3);
+    h.scroll(huge_r.center(), 100.0f, build_ext);
+    h.scroll(huge_r.center(), -100.0f, build_ext);
+    check_finite_and_valid(h.ui.render_data(), nr);
+    CHECK(h.ui.stats().limits_hit == 0);
+}
+
+// exercises clicking, dragging, scrolling, and typing across core input & picker widgets
+void test_interactive_controls_click_drag()
+{
+    std::fprintf(stderr, "[interactive: buttons, toggles, sliders, drags, combos, color, text]\n");
+    harness h;
+    h.in.display_size = {1280.0f, 900.0f};
+    null_renderer nr;
+    CHECK(nr.create(h.ui.font()));
+
+    int         btn_clicks = 0;
+    bool        flag_cb    = false;
+    bool        flag_tog   = false;
+    f32         slider_v   = 0.25f;
+    f32         drag_v     = 10.0f;
+    int         num_i      = 5;
+    int         combo_idx  = 0;
+    std::string text_buf   = "hi";
+    color       col{80, 140, 220, 255};
+    rect        r_btn{}, r_cb{}, r_tog{}, r_slider{}, r_drag{}, r_num{}, r_combo{}, r_text{}, r_color{};
+
+    const auto build = [&] {
+        if (auto w = h.ui.window("controls", {20, 20}, {420, 0}, window_flags::resizable)) {
+            if (h.ui.button("action")) { ++btn_clicks; }
+            r_btn = h.ui.item_rect();
+            h.ui.checkbox("check", flag_cb);
+            r_cb = h.ui.item_rect();
+            h.ui.toggle("toggle", flag_tog);
+            r_tog = h.ui.item_rect();
+            h.ui.slider("gain", slider_v, 0.0f, 1.0f);
+            r_slider = h.ui.item_rect();
+            h.ui.drag_float("offset", drag_v, 0.5f, -100.0f, 100.0f);
+            r_drag = h.ui.item_rect();
+            h.ui.input_int("count", num_i, 1);
+            r_num = h.ui.item_rect();
+            h.ui.combo("quality", combo_idx, {"low", "medium", "high"});
+            r_combo = h.ui.item_rect();
+            h.ui.input_text("name", text_buf, "hint");
+            r_text = h.ui.item_rect();
+            h.ui.color_edit("tint", col);
+            r_color = h.ui.item_rect();
+        }
+    };
+
+    h.frames(build, 3);
+    // button, checkbox, toggle clicks
+    h.click(r_btn.center(), build);
+    CHECK(btn_clicks == 1);
+    h.click(r_cb.center(), build);
+    CHECK(flag_cb);
+    h.click(r_tog.center(), build);
+    CHECK(flag_tog);
+
+    // slider click + drag right
+    const vec2 sl_start{r_slider.min.x + r_slider.width() * 0.25f, r_slider.center().y};
+    const vec2 sl_end{r_slider.min.x + r_slider.width() * 0.85f, r_slider.center().y};
+    h.move(sl_start); h.frames(build, 2);
+    h.down(); h.frame(build);
+    h.move(sl_end); h.frames(build, 3);
+    h.up(); h.frames(build, 2);
+    CHECK(slider_v > 0.7f);
+
+    // drag_float sideways drag
+    const f32 drag_before = drag_v;
+    h.move(r_drag.center()); h.frames(build, 2);
+    h.down(); h.frame(build);
+    h.move({r_drag.center().x + 60.0f, r_drag.center().y}); h.frames(build, 3);
+    h.up(); h.frames(build, 2);
+    CHECK(drag_v > drag_before + 5.0f);
+
+    // input_int + button click (right side of control)
+    const int num_before = num_i;
+    h.click({r_num.max.x - 10.0f, r_num.center().y}, build);
+    CHECK(num_i == num_before + 1);
+
+    // combo open + select second item (capture box before popup opens)
+    const rect combo_box = r_combo;
+    h.click(combo_box.center(), build);
+    h.frames(build, 2);
+    CHECK(h.ui.any_popup_open());
+    h.click({combo_box.center().x, combo_box.max.y + 42.0f}, build);
+    h.frames(build, 2);
+    CHECK(combo_idx != 0);
+
+    // text input click, type, undo
+    h.click(r_text.center(), build);
+    h.type("!");
+    h.frames(build, 2);
+    CHECK(text_buf == "hi!");
+    h.press(strata::key::z, true);
+    h.frames(build, 2);
+    CHECK(text_buf == "hi");
+
+    // color_edit popup open + Esc close
+    h.click(r_color.center(), build);
+    h.frames(build, 2);
+    CHECK(h.ui.any_popup_open());
+    h.press(strata::key::escape);
+    h.frames(build, 2);
+    CHECK(!h.ui.any_popup_open());
+
+    check_finite_and_valid(h.ui.render_data(), nr);
+}
+
+// exercises window move/resize, menus, context menu, modals, tabs, trees, tables, drag-drop, and software rasterisation
+void test_interactive_workspace_session()
+{
+    std::fprintf(stderr, "[interactive: windows, menus, modals, tabs, tables, drag-drop, software render]\n");
+    harness h;
+    h.in.display_size = {1280.0f, 800.0f};
+    null_renderer nr;
+    software_renderer sr;
+    CHECK(nr.create(h.ui.font()));
+    CHECK(sr.create(h.ui.font()));
+    sr.resize(1280, 800);
+
+    std::vector<std::string> tabs{"Main", "Logs", "Notes"};
+    int  active_tab = 0;
+    int  menu_hits  = 0;
+    int  ctx_hits   = 0;
+    int  modal_res  = 0;
+    int  sort_col   = 0;
+    bool sort_asc   = true;
+    int  moved_from = -1, moved_to = -1;
+    std::array<std::string, 3> items{"Alpha", "Beta", "Gamma"};
+    selection_state sel;
+    rect r_win{}, r_tab_bar{}, r_ctx_zone{}, r_modal_btn{}, r_drag_src{}, r_drag_dst{}, r_row0{}, r_row2{}, r_hdr0{};
+
+    const auto build = [&] {
+        if (auto bar = h.ui.main_menu_bar()) {
+            if (auto m = h.ui.menu("&File")) {
+                if (h.ui.menu_item("&Save", "Ctrl+S")) { ++menu_hits; }
+            }
+        }
+        if (h.ui.accelerator("Ctrl+S")) { ++menu_hits; }
+
+        if (auto w = h.ui.window("workspace", {40, 50}, {680, 560}, window_flags::resizable)) {
+            r_win = h.ui.window_rect("workspace");
+
+            std::vector<tab_desc> descs;
+            for (const auto& t : tabs) { descs.emplace_back(std::string_view{t}); }
+            const auto ev = h.ui.tab_bar("docs", descs.data(), descs.size(), active_tab,
+                                         tab_bar_flags::closable | tab_bar_flags::add_button);
+            r_tab_bar = h.ui.item_rect();
+            if (ev.add) { tabs.push_back("New"); active_tab = static_cast<int>(tabs.size()) - 1; }
+            apply_tab_events(ev, tabs, active_tab);
+
+            if (h.ui.button("open dialog")) { h.ui.open_modal("Confirm?"); }
+            r_modal_btn = h.ui.item_rect();
+
+            const auto zone = h.ui.custom_item("ctx_zone", {200.0f, 32.0f});
+            r_ctx_zone = zone.bounds;
+            if (auto cm = h.ui.context_menu("ctx_menu", r_ctx_zone)) {
+                if (h.ui.menu_item("Inspect")) { ++ctx_hits; }
+            }
+
+            // sortable table with multi-selection
+            if (h.ui.begin_table("items", 2, table_default, 140.0f)) {
+                h.ui.table_setup_column("Name");
+                h.ui.table_setup_column("Index", 80.0f);
+                const int clicked_col = h.ui.table_headers_row(sort_col, sort_asc);
+                if (clicked_col >= 0) {
+                    if (clicked_col == sort_col) { sort_asc = !sort_asc; }
+                    else { sort_col = clicked_col; sort_asc = true; }
+                }
+                r_hdr0 = h.ui.item_rect();
+                for (int i = 0; i < 3; ++i) {
+                    if (!h.ui.table_next_row()) { continue; }
+                    h.ui.table_next_column();
+                    if (h.ui.selectable(items[i], sel.contains(i))) { h.ui.selection_click(sel, i); }
+                    if (i == 0) { r_row0 = h.ui.item_rect(); }
+                    if (i == 2) { r_row2 = h.ui.item_rect(); }
+                    h.ui.table_next_column();
+                    h.ui.textf("#{}", i);
+                }
+                h.ui.end_table();
+            }
+
+            // drag-and-drop pair
+            (void)h.ui.selectable("Drag Source");
+            r_drag_src = h.ui.item_rect();
+            if (auto d = h.ui.drag_source("card", 0)) { h.ui.text("card 0"); }
+            (void)h.ui.selectable("Drop Target");
+            r_drag_dst = h.ui.item_rect();
+            if (const drop_result drop = h.ui.drop_target("card")) {
+                moved_from = drop.as<int>();
+                moved_to   = 1;
+            }
+        }
+        if (const int r = h.ui.dialog("Confirm?", "Proceed with action?", {"Yes", "No"}); r != 0) {
+            modal_res = r;
+        }
+    };
+
+    h.frames(build, 3);
+    const vec2 start_pos = r_win.min;
+
+    // 1. keyboard accelerator works with menu closed
+    h.press(strata::key::s, true);
+    h.frames(build, 2);
+    CHECK(menu_hits == 1);
+
+    // 2. drag window by its title bar
+    const vec2 title_pt{r_win.min.x + 120.0f, r_win.min.y + 14.0f};
+    h.move(title_pt); h.frames(build, 2);
+    h.down(); h.frame(build);
+    h.move({title_pt.x + 50.0f, title_pt.y + 25.0f}); h.frames(build, 3);
+    h.up(); h.frames(build, 2);
+    CHECK(r_win.min.x > start_pos.x + 30.0f && r_win.min.y > start_pos.y + 15.0f);
+
+    // 3. click add-tab button at right end of tab bar
+    const std::size_t tabs_before = tabs.size();
+    h.click({r_tab_bar.max.x - 10.0f, r_tab_bar.center().y}, build);
+    CHECK(tabs.size() == tabs_before + 1);
+
+    // 4. click row 0, Shift+click row 2 -> selects all 3 rows
+    h.click(r_row0.center(), build);
+    CHECK(sel.size() == 1);
+    h.modifiers(false, true, false);
+    h.click(r_row2.center(), build);
+    h.modifiers(false, false, false);
+    CHECK(sel.size() == 3);
+
+    // 5. right-click context menu and pick item
+    h.right_click(r_ctx_zone.center(), build);
+    h.frames(build, 2);
+    CHECK(h.ui.menu_open());
+    h.click({r_ctx_zone.center().x + 20.0f, r_ctx_zone.center().y + 16.0f}, build);
+    h.frames(build, 2);
+    CHECK(ctx_hits == 1);
+
+    // 6. drag and drop from source to target
+    h.move(r_drag_src.center()); h.frames(build, 2);
+    h.down(); h.frame(build);
+    h.move({r_drag_src.center().x + 12.0f, r_drag_src.center().y + 4.0f}); h.frames(build, 2);
+    h.move(r_drag_dst.center()); h.frames(build, 2);
+    h.up(); h.frames(build, 2);
+    CHECK(moved_from == 0 && moved_to == 1);
+
+    // 7. open modal dialog and dismiss with Esc
+    h.click(r_modal_btn.center(), build);
+    h.frames(build, 2);
+    CHECK(h.ui.modal_open());
+    h.press(strata::key::escape);
+    h.frames(build, 2);
+    CHECK(modal_res == -1 && !h.ui.modal_open());
+
+    // validate draw data and rasterise on CPU software renderer
+    const draw_data dd = h.ui.render_data();
+    check_finite_and_valid(dd, nr);
+    sr.clear({18, 18, 22, 255});
+    sr.render(dd);
+    std::size_t lit = 0;
+    const auto px = sr.pixels();
+    for (std::size_t i = 0; i < px.size(); i += 4) {
+        lit += (px[i] != 18 || px[i + 1] != 18 || px[i + 2] != 22) ? 1u : 0u;
+    }
+    CHECK(lit > 50000u);
+    CHECK(h.ui.stats().limits_hit == 0);
+}
+
+} // namespace
+
+void run_interactive_tests()
+{
+    test_interactive_charts_and_extremes();
+    test_interactive_controls_click_drag();
+    test_interactive_workspace_session();
+}

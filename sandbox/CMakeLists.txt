@@ -19,6 +19,7 @@ add_executable(strata_sandbox WIN32
     ../tests/selftest_backends.cpp
     ../tests/selftest_common.hpp
     ../tests/selftest_dock.cpp
+    ../tests/selftest_interactive.cpp
     ../tests/selftest_misc.cpp
     ../tests/selftest_new.cpp
     ../tests/selftest_robust.cpp
