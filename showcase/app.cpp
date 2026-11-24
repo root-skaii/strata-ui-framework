@@ -116,6 +116,8 @@ void showcase_app::apply_theme(context& ui, int index)
     if (names.empty()) { return; }
     theme_idx_ = std::clamp(index, 0, static_cast<int>(names.size()) - 1);
     (void)themes::by_name(names[static_cast<std::size_t>(theme_idx_)], ui.theme());
+    // Snappy hover/focus transitions so rapid pointer movement across dense trees never leaves lingering trails.
+    ui.theme().anim_speed = 24.0f;
 }
 
 demo_module* showcase_app::find_module(std::string_view id) const noexcept
@@ -290,10 +292,15 @@ void showcase_app::draw_menu_bar(context& ui, f32& out_bar_h)
             }
         }
 
-        // Inline Blender-style workspace quick-switcher pills right in the top bar
-        ui.same_line(280.0f);
+        // Inline workspace quick-switcher pills with a crisp divider separating them from the menus
+        ui.same_line();
+        {
+            const auto sep = ui.custom_item("##ws_div", {22.0f, 18.0f});
+            const f32  mx  = sep.bounds.center().x;
+            ui.draw().line({mx, sep.bounds.min.y + 2.0f}, {mx, sep.bounds.max.y - 2.0f}, ui.theme().border, 1.0f);
+        }
         for (std::size_t i = 0; i < k_workspaces.size(); ++i) {
-            if (i > 0) { ui.same_line(); }
+            ui.same_line();
             const bool active = (active_workspace_ == k_workspaces[i]);
             if (active) {
                 const auto accent_pill = ui.style_overrides({
@@ -309,9 +316,11 @@ void showcase_app::draw_menu_bar(context& ui, f32& out_bar_h)
             }
         }
 
-        // Right-aligned live status pills
-        ui.same_line_right(295.0f);
+        // Right-aligned live status pills with comfortable gap between backend badge and metrics
+        ui.same_line_right(335.0f);
         ui.badge(env_.backend_name, toast_kind::info);
+        ui.same_line();
+        (void)ui.custom_item("##stat_gap", {10.0f, 1.0f});
         ui.same_line();
         ui.textf("{:.0f} fps  |  {} draws  |  {:.2f} ms", env_.fps, ui.stats().draw_calls, env_.ui_ms);
 
