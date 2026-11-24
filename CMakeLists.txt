@@ -29,6 +29,10 @@ endif()
 
 add_subdirectory(strata)
 
+if((WIN32 AND STRATA_BUILD_SANDBOX) OR (EMSCRIPTEN AND STRATA_BUILD_WEB_DEMO))
+    add_subdirectory(showcase)
+endif()
+
 if(WIN32 AND STRATA_BUILD_SANDBOX)
     add_subdirectory(sandbox)
 endif()

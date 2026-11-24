@@ -36,7 +36,7 @@ if(NOT EXISTS "${STRATA_WEB_FONT}")
 endif()
 
 add_executable(strata_web_demo main.cpp)
-target_link_libraries(strata_web_demo PRIVATE strata::strata $<BUILD_INTERFACE:strata_options>)
+target_link_libraries(strata_web_demo PRIVATE strata::strata strata_showcase $<BUILD_INTERFACE:strata_options>)
 set_target_properties(strata_web_demo PROPERTIES
     OUTPUT_NAME "index"
     SUFFIX ".html"

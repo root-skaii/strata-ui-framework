@@ -6,7 +6,7 @@ A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C+
 
 [**Features**](#why-strata) · [**Screenshots**](#screenshots) · [**Backends**](#backends--platforms) · [**Quickstart**](#quickstart) · [**Build**](#build--test) · [**Docs**](#documentation)
 
-![Docked windows with a tree, nested tables, images and rich text](docs/screenshots/features.png)
+![Strata Studio docked workspace with scene explorer, live telemetry charts, heatmap, sequencer, curve editor, and property inspector](docs/screenshots/studio.png)
 
 ## Why strata?
 
@@ -19,14 +19,13 @@ A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C+
 
 ## Screenshots
 
-All captured from the sandbox (`strata_sandbox --scene NAME --shot FILE`).
+Captured from the shared modular showcase (`strata_sandbox --scene NAME --shot FILE` — identical UI runs live in the browser via WebGPU in [`web/`](web/)).
 
 | | |
 |---|---|
-| ![Docking](docs/screenshots/docking.png)<br>**Docking** - drag windows into edge docks, tabs, splits, or tear-off viewports | ![Acrylic](docs/screenshots/acrylic.png)<br>**Acrylic** - gradients, antialiased curves, frosted glass (`glass` theme) |
-| ![Charts](docs/screenshots/charts.png)<br>**Charts** - ticks, units, log scale, scatter/stacked/heatmap, clickable legend, zoom/pan | ![Code editor](docs/screenshots/editor.png)<br>**Code editor** - highlighting, line numbers, `Ctrl+/`, find/replace, input masks |
-| ![Command palette](docs/screenshots/palette.png)<br>**Command palette** - rebindable keys, multi-key chords, fuzzy search | ![Pickers](docs/screenshots/pickers.png)<br>**Drag & drop, date/time pickers** |
-| ![Menus](docs/screenshots/menus.png)<br>**Menus** - mnemonics, accelerators, icons, nested submenus | ![App scene](docs/screenshots/app.png)<br>**App-shaped UI** - row accessories, filtered combo, custom drawing |
+| ![Telemetry & Data](docs/screenshots/telemetry.png)<br>**Telemetry & Data** - interactive multi-series charts, budget reference lines, histograms, 2D heatmaps, and 100k-row virtualized tables | ![Authoring & Shaders](docs/screenshots/authoring.png)<br>**Authoring & Shaders** - syntax-highlighted code editor (`Ctrl+/`, find/replace), PBR node graph, timeline sequencer, and Bezier curve editor |
+| ![Visuals & Frosted Glass](docs/screenshots/visuals.png)<br>**Visuals & Frosted Glass** - analytic SDF gradients, antialiased vector paths, live acrylic backdrop blur (`glass` theme), SVG icons, and rich UTF-8/RTL text | ![Workflow & Pickers](docs/screenshots/productivity.png)<br>**Workflow & Pickers** - Kanban drag & drop, color token drop targets, date/time pickers, closable/reorderable tabs, and rebindable shortcuts |
+| ![Command Palette](docs/screenshots/palette.png)<br>**Command Palette** - `Ctrl+Shift+P` fuzzy action search with multi-key chords over the docked studio workspace | ![Component Gallery](docs/screenshots/gallery.png)<br>**Component Gallery** - searchable, categorized module browser; new feature modules drop into `showcase/modules/` and appear on desktop and WebGPU automatically |
 
 ## Backends & platforms
 
@@ -104,8 +103,9 @@ Key CMake options (`-D<OPT>=ON|OFF`):
 
 ```text
 strata/     static library (strata::strata) + optional app host (strata::app)
-sandbox/    desktop showcase & test application (D3D11, D3D12, OpenGL, Vulkan, software, VR)
-web/        browser WebGPU + WASM interactive sandbox (with CPU software fallback)
+showcase/   shared modular showcase library (strata_showcase: 12 feature panels, desktop + web)
+sandbox/    desktop showcase host & test harness (D3D11, D3D12, OpenGL, Vulkan, software, VR)
+web/        browser WebGPU + WASM live showcase (shares strata_showcase, with CPU software fallback)
 overlay/    in-game overlays (DXGI D3D11/12, OpenGL IAT, Vulkan explicit layer, injector)
 bindings/   official language bindings (Rust workspace: strata-sys + strata)
 packaging/  vcpkg overlay port

@@ -2,12 +2,6 @@
 #   strata_sandbox.exe [--dx11 | --dx12 | --gl | --vk | --software] [--novsync] [--frames N]
 
 add_executable(strata_sandbox WIN32
-    demo2.cpp
-    demo2.hpp
-    demo3.cpp
-    demo3.hpp
-    demo4.cpp
-    demo4.hpp
     gfx_host.hpp
     gfx_software.cpp
     imgio.cpp
@@ -38,6 +32,7 @@ target_include_directories(strata_sandbox PRIVATE
 target_link_libraries(strata_sandbox PRIVATE
     $<BUILD_INTERFACE:strata_options>
     strata::strata
+    strata_showcase
     user32.lib
     shell32.lib
 )
@@ -127,31 +122,18 @@ if(STRATA_BUILD_TESTS)
         endforeach()
     endfunction()
 
-    strata_shot(default)
-    strata_shot(features    --scene features)
-    strata_shot(visuals     --scene visuals)
-    strata_shot(visuals15   --scene visuals --scale 1.5)
-    strata_shot(inputs      --scene inputs --height 1100)
-    strata_shot(multiselect --scene multiselect --height 1100)
-    strata_shot(charts      --scene charts --height 800)
-    strata_shot(textures    --scene textures --height 800)
-    strata_shot(scripts     --scene scripts)
-    strata_shot(textlog     --scene textlog)
-    strata_shot(menus       --scene menus)
-    strata_shot(context     --scene context)
-    strata_shot(modal       --scene modal --shot-frames 60)
-    strata_shot(toasts      --scene toasts)
-    strata_shot(config      --scene config --height 1000)
-    strata_shot(palette     --scene palette --height 1000 --shot-frames 60)
-    strata_shot(tabs        --scene tabs --height 900)
-    strata_shot(dnd         --scene dnd --height 900)
-    strata_shot(lists       --scene lists --height 900)
-    strata_shot(editor      --scene editor --height 900)
-    strata_shot(icons       --scene icons --width 1240 --height 1000)
-    strata_shot(bigtree     --scene bigtree --width 1020 --height 900)
-    strata_shot(rows        --scene rows --width 880 --height 620)
-    strata_shot(app         --scene app --width 900 --height 640)
-    strata_shot(nodes       --scene nodes --width 760 --height 520)
-    strata_shot(dracula     --theme dracula)
-    strata_shot(glass       --theme glass --scene visuals)
+    strata_shot(studio       --scene studio --width 1360 --height 820)
+    strata_shot(telemetry    --scene telemetry --width 1360 --height 820)
+    strata_shot(authoring    --scene authoring --width 1360 --height 820)
+    strata_shot(visuals      --scene visuals --theme glass --width 1360 --height 820)
+    strata_shot(visuals15    --scene visuals --theme glass --scale 1.5 --width 1280 --height 760)
+    strata_shot(productivity --scene productivity --width 1360 --height 820)
+    strata_shot(gallery      --scene gallery --width 1360 --height 820)
+    strata_shot(palette      --scene palette --width 1360 --height 820 --shot-frames 30)
+    strata_shot(dracula      --scene studio --theme dracula --width 1360 --height 820)
+    strata_shot(light        --scene studio --theme light --width 1360 --height 820)
+    strata_shot(data         --scene data --width 1280 --height 760)
+    strata_shot(nodes        --scene nodes --width 1280 --height 760)
+    strata_shot(typography   --scene typography --width 1280 --height 760)
+    strata_shot(overlays     --scene overlays --width 1280 --height 760)
 endif()
