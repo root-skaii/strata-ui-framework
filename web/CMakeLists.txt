@@ -44,12 +44,12 @@ set_target_properties(strata_web_demo PROPERTIES
 )
 
 target_link_options(strata_web_demo PRIVATE
-    --shell-file "${CMAKE_CURRENT_SOURCE_DIR}/shell.html"
+    "SHELL:--shell-file \"${CMAKE_CURRENT_SOURCE_DIR}/shell.html\""
     -sALLOW_MEMORY_GROWTH=1
     -sINITIAL_MEMORY=33554432
     -sENVIRONMENT=web
-    --embed-file "${STRATA_WEB_FONT}@/font.ttf"
+    "SHELL:--embed-file \"${STRATA_WEB_FONT}@/font.ttf\""
 )
 if(EXISTS "${STRATA_WEB_MONO_FONT}")
-    target_link_options(strata_web_demo PRIVATE --embed-file "${STRATA_WEB_MONO_FONT}@/mono.ttf")
+    target_link_options(strata_web_demo PRIVATE "SHELL:--embed-file \"${STRATA_WEB_MONO_FONT}@/mono.ttf\"")
 endif()

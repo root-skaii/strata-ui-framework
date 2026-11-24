@@ -37,7 +37,12 @@ struct node_link {
     u64 from{};
     u64 to{};
 
-    [[nodiscard]] friend constexpr bool operator==(const node_link&, const node_link&) noexcept = default;
+    // Non-defaulted so MSVC 14.52 STL + Clang 22 does not dispatch std::find/erase on this 16-byte struct to
+    // _Find_vectorized/_Remove_vectorized (which static_asserts on sizes > 8).
+    [[nodiscard]] friend constexpr bool operator==(const node_link& a, const node_link& b) noexcept
+    {
+        return a.from == b.from && a.to == b.to;
+    }
 };
 
 // a node a drag moved: positions in canvas coordinates, for an undo step
