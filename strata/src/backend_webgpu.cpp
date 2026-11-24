@@ -635,7 +635,7 @@ texture_id wgpu_renderer::create_texture(const texture_desc& desc, std::span<con
     WGPUTextureDescriptor td{};
     td.dimension     = WGPUTextureDimension_2D;
     td.size          = {gt.cpu.width(0), gt.cpu.height(0), 1};
-    td.mipLevelCount = gt.cpu.mip_count();
+    td.mipLevelCount = gt.cpu.level_count();
     td.sampleCount   = 1;
     td.format        = to_wgpu_format(gt.cpu.layout());
     td.usage         = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
@@ -647,7 +647,7 @@ texture_id wgpu_renderer::create_texture(const texture_desc& desc, std::span<con
     gt.in_use    = true;
 
     const u32 bpp = texture_layout_bytes(gt.cpu.layout());
-    for (u32 m = 0; m < gt.cpu.mip_count(); ++m) {
+    for (u32 m = 0; m < gt.cpu.level_count(); ++m) {
         const auto mpx = gt.cpu.pixels(m);
         WGPUTexelCopyTextureInfo dst{};
         dst.texture  = gt.tex;
@@ -688,16 +688,16 @@ bool wgpu_renderer::update_texture(texture_id id, u32 x, u32 y, u32 width, u32 h
     if (!gt.cpu.update(x, y, width, height, pixels, dirty)) { return false; }
     const u32 bpp = texture_layout_bytes(gt.cpu.layout());
     for (const auto& r : dirty) {
-        const auto mpx = gt.cpu.pixels(r.mip);
+        const auto mpx = gt.cpu.pixels(r.level);
         WGPUTexelCopyTextureInfo dst{};
         dst.texture  = gt.tex;
-        dst.mipLevel = r.mip;
+        dst.mipLevel = r.level;
         dst.origin   = {r.x, r.y, 0};
         dst.aspect   = WGPUTextureAspect_All;
         WGPUTexelCopyBufferLayout lay{};
-        lay.offset       = (static_cast<u64>(r.y) * gt.cpu.width(r.mip) + r.x) * bpp;
-        lay.bytesPerRow  = gt.cpu.width(r.mip) * bpp;
-        lay.rowsPerImage = gt.cpu.height(r.mip);
+        lay.offset       = (static_cast<u64>(r.y) * gt.cpu.width(r.level) + r.x) * bpp;
+        lay.bytesPerRow  = gt.cpu.width(r.level) * bpp;
+        lay.rowsPerImage = gt.cpu.height(r.level);
         WGPUExtent3D ext{r.w, r.h, 1};
         wgpuQueueWriteTexture(impl_->queue, &dst, mpx.data(), mpx.size(), &lay, &ext);
     }

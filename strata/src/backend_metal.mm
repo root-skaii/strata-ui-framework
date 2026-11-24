@@ -378,8 +378,8 @@ texture_id metal_renderer::create_texture(const texture_desc& desc, std::span<co
     MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:to_mtl_format(gt.cpu.layout())
                                                                                   width:gt.cpu.width(0)
                                                                                  height:gt.cpu.height(0)
-                                                                              mipmapped:(gt.cpu.mip_count() > 1)];
-    td.mipmapLevelCount = gt.cpu.mip_count();
+                                                                              mipmapped:(gt.cpu.level_count() > 1)];
+    td.mipmapLevelCount = gt.cpu.level_count();
     td.usage            = MTLTextureUsageShaderRead;
     gt.tex = [impl_->device newTextureWithDescriptor:td];
     if (gt.tex == nil) { return 0; }
@@ -387,7 +387,7 @@ texture_id metal_renderer::create_texture(const texture_desc& desc, std::span<co
     gt.updatable = desc.updatable;
     gt.in_use    = true;
     const u32 bpp = texture_layout_bytes(gt.cpu.layout());
-    for (u32 m = 0; m < gt.cpu.mip_count(); ++m) {
+    for (u32 m = 0; m < gt.cpu.level_count(); ++m) {
         [gt.tex replaceRegion:MTLRegionMake2D(0, 0, gt.cpu.width(m), gt.cpu.height(m))
                   mipmapLevel:m
                     withBytes:gt.cpu.pixels(m).data()
@@ -409,11 +409,11 @@ bool metal_renderer::update_texture(texture_id id, u32 x, u32 y, u32 width, u32 
     if (!gt.cpu.update(x, y, width, height, pixels, dirty)) { return false; }
     const u32 bpp = texture_layout_bytes(gt.cpu.layout());
     for (const auto& r : dirty) {
-        const u8* src = gt.cpu.pixels(r.mip).data() + (static_cast<std::size_t>(r.y) * gt.cpu.width(r.mip) + r.x) * bpp;
+        const u8* src = gt.cpu.pixels(r.level).data() + (static_cast<std::size_t>(r.y) * gt.cpu.width(r.level) + r.x) * bpp;
         [gt.tex replaceRegion:MTLRegionMake2D(r.x, r.y, r.w, r.h)
-                  mipmapLevel:r.mip
+                  mipmapLevel:r.level
                     withBytes:src
-                  bytesPerRow:gt.cpu.width(r.mip) * bpp];
+                  bytesPerRow:gt.cpu.width(r.level) * bpp];
     }
     return true;
 }

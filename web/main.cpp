@@ -23,6 +23,39 @@
 #include <utility>
 #include <vector>
 
+EM_JS(void, js_set_cursor, (int idx), {
+    const map = ["default", "text", "pointer", "not-allowed", "ew-resize", "ns-resize", "nwse-resize", "nesw-resize"];
+    const c = document.getElementById("canvas");
+    if (c) c.style.cursor = map[idx] || "default";
+});
+
+EM_JS(void, js_focus_canvas, (), {
+    const c = document.getElementById("canvas");
+    if (c) c.focus();
+});
+
+EM_JS(int, js_has_webgpu, (), {
+    return (typeof navigator !== "undefined" && !!navigator.gpu) ? 1 : 0;
+});
+
+EM_JS(void, js_ensure_2d_canvas, (), {
+    const c = document.getElementById("canvas");
+    if (c && !c.getContext("2d")) {
+        const fresh = c.cloneNode(false);
+        fresh.addEventListener("contextmenu", e => e.preventDefault());
+        c.parentNode.replaceChild(fresh, c);
+    }
+});
+
+EM_JS(void, js_present_2d, (const unsigned char* ptr, int w, int h), {
+    const c = document.getElementById("canvas");
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    const slice = new Uint8ClampedArray(HEAPU8.buffer, ptr, w * h * 4);
+    ctx.putImageData(new ImageData(slice, w, h), 0, 0);
+});
+
 namespace {
 
 using namespace strata;
@@ -211,11 +244,7 @@ void apply_css_cursor(cursor_kind c)
     case cursor_kind::resize_nesw: idx = 7; break;
     default:                       idx = 0; break;
     }
-    EM_ASM({
-        const map = ['default','text','pointer','not-allowed','ew-resize','ns-resize','nwse-resize','nesw-resize'];
-        const c = document.getElementById('canvas');
-        if (c) c.style.cursor = map[$0] || 'default';
-    }, idx);
+    js_set_cursor(idx);
 }
 
 // ---- DOM event callbacks -------------------------------------------------------------------------------------------
@@ -234,7 +263,7 @@ EM_BOOL on_mouse_down(int, const EmscriptenMouseEvent* e, void*)
     g.in.mouse_pos = {static_cast<f32>(e->targetX) * g.in.dpr, static_cast<f32>(e->targetY) * g.in.dpr};
     const int idx  = e->button == 0 ? 0 : (e->button == 2 ? 1 : (e->button == 1 ? 2 : -1));
     if (idx >= 0) { g.in.mouse_down[static_cast<std::size_t>(idx)] = true; }
-    EM_ASM({ document.getElementById('canvas').focus(); });
+    js_focus_canvas();
     return EM_TRUE;
 }
 
@@ -498,15 +527,7 @@ void present_software_to_canvas()
     if (w == 0 || h == 0) { return; }
     g.sw_rgba.resize(static_cast<std::size_t>(w) * h * 4);
     if (!g.sw_ren.copy_straight(g.sw_rgba)) { return; }
-    EM_ASM({
-        const c = document.getElementById('canvas');
-        if (!c) return;
-        const ctx = c.getContext('2d');
-        if (!ctx) return;
-        const ptr = $0, w = $1, h = $2;
-        const slice = new Uint8ClampedArray(HEAPU8.buffer, ptr, w * h * 4);
-        ctx.putImageData(new ImageData(slice, w, h), 0, 0);
-    }, g.sw_rgba.data(), static_cast<int>(w), static_cast<int>(h));
+    js_present_2d(g.sw_rgba.data(), static_cast<int>(w), static_cast<int>(h));
 }
 
 void frame_tick()
@@ -582,14 +603,7 @@ void start_loop(bool webgpu_ok)
     if (!webgpu_ok) {
         // If a failed WebGPU surface creation already bound a 'webgpu' context to #canvas, replace the element
         // so getContext('2d') succeeds cleanly.
-        EM_ASM({
-            const c = document.getElementById('canvas');
-            if (c && !c.getContext('2d')) {
-                const fresh = c.cloneNode(false);
-                fresh.addEventListener('contextmenu', e => e.preventDefault());
-                c.parentNode.replaceChild(fresh, c);
-            }
-        });
+        js_ensure_2d_canvas();
         sync_canvas_size();
         (void)g.sw_ren.create(g.ui->font());
         g.sw_ren.resize(g.in.phys_w, g.in.phys_h);
@@ -712,7 +726,7 @@ int main()
     g.ui = std::make_unique<context>(std::move(*created));
     g.log.add(log_level::info, "strata browser sandbox initialized");
 
-    const int has_gpu = EM_ASM_INT({ return typeof navigator !== 'undefined' && !!navigator.gpu ? 1 : 0; });
+    const int has_gpu = js_has_webgpu();
     if (!has_gpu) {
         start_loop(false);
         return 0;

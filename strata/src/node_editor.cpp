@@ -486,7 +486,8 @@ void node_editor::end()
                 const pin_rec& to = s.pins[static_cast<u32>(over_pin)];
                 const bool ok = to.input != from.input && to.node != from.node && to.type == from.type;
                 const node_link made = from.input ? node_link{to.id, from.id} : node_link{from.id, to.id};
-                if (ok && std::find(s.submitted_links.begin(), s.submitted_links.end(), made) == s.submitted_links.end()) {
+                if (ok && std::none_of(s.submitted_links.begin(), s.submitted_links.end(),
+                                       [&](const node_link& l) { return l == made; })) {
                     s.created = made;
                 }
             }
