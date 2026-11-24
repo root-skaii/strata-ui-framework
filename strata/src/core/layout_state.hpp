@@ -24,6 +24,10 @@ struct layout_state {
     f32  gutter{};       // taken off `width` by push_right_gutter (same_line_right adds it back)
     bool same_line{};
     bool first{true};
+    bool flex_wrap{};
+    f32  flex_gap_x{};
+    f32  flex_gap_y{};
+    f32  flex_right{};
 };
 
 } // namespace strata::internal

@@ -447,7 +447,10 @@ void main()
         return;
     }
     float coverage = textureLod(u_atlas, v_uv, 0.0).r;
-    if (u_output.z > 0.0) {
+    if (u_output.z < 0.0) {
+        float w  = max(fwidth(coverage), 0.02);
+        coverage = smoothstep(0.5 - w, 0.5 + w, coverage);
+    } else if (u_output.z > 0.0) {
         float k  = u_output.z * dot(v_col.rgb, vec3(0.2126, 0.7152, 0.0722));
         coverage = coverage * (1.0 + k) / (1.0 + k * coverage);
     }

@@ -1,0 +1,16 @@
+{
+  "file_format_version": "1.1.2",
+  "layer": {
+    "name": "VK_LAYER_strata_overlay",
+    "type": "GLOBAL",
+    "library_path": "./strata_vk_layer.dll",
+    "api_version": "1.3.0",
+    "implementation_version": "1",
+    "description": "strata immediate-mode UI Vulkan overlay layer",
+    "functions": {
+      "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion",
+      "vkGetInstanceProcAddr": "strata_vk_get_instance_proc_addr",
+      "vkGetDeviceProcAddr": "strata_vk_get_device_proc_addr"
+    }
+  }
+}

@@ -13,8 +13,11 @@ using namespace internal;
 draw_data context::render_data() const noexcept
 {
     draw_data d = m_->dl_.data();
+    if (m_->multi_viewport_ && m_->main_cmd_count_ < d.commands.size()) {
+        d.commands = d.commands.first(m_->main_cmd_count_);
+    }
     d.content_hash = m_->geometry_hash_; // lets the renderers skip an upload of geometry they already hold
-    d.text_contrast = m_->style_.text_contrast;
+    d.text_contrast = m_->font_.is_sdf() ? -static_cast<f32>(std::max<u8>(m_->font_.sdf_spread(), 1u)) : m_->style_.text_contrast;
     d.overlay_first = static_cast<u32>(d.commands.size());
     if (m_->menu_.detach_overlay_) {
         d.overlay_first = std::min(m_->menu_.overlay_first_, d.overlay_first);
@@ -32,6 +35,41 @@ draw_data context::render_data() const noexcept
         if (hi.x > lo.x && hi.y > lo.y) { d.overlay_bounds = {lo, hi}; }
     }
     return d;
+}
+
+void context::set_multi_viewport(bool on) noexcept { m_->multi_viewport_ = on; }
+bool context::multi_viewport() const noexcept { return m_->multi_viewport_; }
+std::span<const viewport_desc> context::viewports() const noexcept { return m_->viewports_; }
+
+draw_data context::viewport_render_data(id window_id) const noexcept
+{
+    for (const viewport_desc& vp : m_->viewports_) {
+        if (vp.window_id != window_id) { continue; }
+        draw_data d = m_->dl_.data();
+        if (vp.cmd_first >= d.commands.size()) { return {}; }
+        const u32 avail = static_cast<u32>(d.commands.size() - vp.cmd_first);
+        d.commands      = d.commands.subspan(vp.cmd_first, std::min(vp.cmd_count, avail));
+        d.origin        = vp.bounds.min * m_->scale_;
+        d.display_size  = {std::max(vp.bounds.width() * m_->scale_, 1.0f),
+                           std::max(vp.bounds.height() * m_->scale_, 1.0f)};
+        d.text_contrast = m_->font_.is_sdf() ? -static_cast<f32>(std::max<u8>(m_->font_.sdf_spread(), 1u)) : m_->style_.text_contrast;
+        d.overlay_first = static_cast<u32>(d.commands.size());
+        return d;
+    }
+    return {};
+}
+
+void context::set_viewport_bounds(id window_id, vec2 pos, vec2 size) noexcept
+{
+    for (window_state& w : m_->win_.windows_) {
+        if (w.key == window_id) {
+            w.pos      = pos;
+            w.pos_set  = true;
+            if (size.x > 0.0f) { w.width = size.x; w.size_set = true; }
+            if (size.y > 0.0f) { w.height = size.y; w.size_set = true; }
+            return;
+        }
+    }
 }
 
 void context::set_popup_bounds(const rect& bounds) noexcept

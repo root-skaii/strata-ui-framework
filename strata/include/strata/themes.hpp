@@ -307,4 +307,22 @@ theme_result from_string(std::string_view text, style& s);
 void          to_config(config& cfg, const style& s, std::string_view section = "theme");
 theme_result  from_config(const config& cfg, style& s, std::string_view section = "theme");
 
+// lightweight polling hot-reloader for .theme files (no background threads or OS watchers)
+class theme_watcher {
+public:
+    explicit theme_watcher(std::string path, f32 poll_interval_s = 0.25f) noexcept;
+
+    // call once per frame with `dt`; returns true when the file was loaded or reloaded into `s`
+    [[nodiscard]] bool poll(style& s, f32 dt, theme_result* result = nullptr);
+    void               reset() noexcept;
+    [[nodiscard]] std::string_view path() const noexcept { return path_; }
+
+private:
+    std::string path_;
+    f32         interval_{0.25f};
+    f32         accum_{0.0f};
+    i64         last_stamp_{0};
+    bool        loaded_{false};
+};
+
 } // namespace strata::themes

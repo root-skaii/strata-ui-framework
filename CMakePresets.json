@@ -27,6 +27,7 @@
                 "strategy": "external"
             },
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl.exe",
                 "CMAKE_CXX_COMPILER": "cl.exe"
             }
         },
@@ -43,6 +44,7 @@
             "hidden": true,
             "inherits": "ninja-base",
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang-cl",
                 "CMAKE_CXX_COMPILER": "clang-cl",
                 "CMAKE_LINKER": "lld-link"
             }
@@ -114,6 +116,22 @@
             "architecture": {
                 "value": "x64",
                 "strategy": "set"
+            }
+        },
+        {
+            "name": "wasm-release",
+            "displayName": "WebAssembly Release (Emscripten + WebGPU)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "STRATA_BUILD_WEBGPU": "ON",
+                "STRATA_BUILD_OPENGL": "OFF",
+                "STRATA_BUILD_VULKAN": "OFF",
+                "STRATA_BUILD_SANDBOX": "OFF",
+                "STRATA_BUILD_OVERLAY": "OFF",
+                "STRATA_BUILD_TESTS": "OFF",
+                "STRATA_PCH": "OFF"
             }
         }
     ],

@@ -177,7 +177,12 @@ float4 ps_main(ps_input i) : SV_Target
         return encode_output(shade_shape(shapes[i.shape_index], i.pos.xy + view.xy));
     }
     float coverage = atlas.SampleLevel(sampler0, i.uv, 0.0f).r;
-    if (output.z > 0.0f)
+    if (output.z < 0.0f)
+    {
+        float w  = max(fwidth(coverage), 0.02f);
+        coverage = smoothstep(0.5f - w, 0.5f + w, coverage);
+    }
+    else if (output.z > 0.0f)
     {
         // thicken light-on-dark glyph edges in proportion to text lightness (0 and 1 are kept)
         float k  = output.z * dot(i.col.rgb, float3(0.2126f, 0.7152f, 0.0722f));

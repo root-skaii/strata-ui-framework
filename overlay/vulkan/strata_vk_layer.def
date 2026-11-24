@@ -1,0 +1,5 @@
+LIBRARY strata_vk_layer
+EXPORTS
+    vkNegotiateLoaderLayerInterfaceVersion
+    vkGetInstanceProcAddr=strata_vk_get_instance_proc_addr
+    vkGetDeviceProcAddr=strata_vk_get_device_proc_addr

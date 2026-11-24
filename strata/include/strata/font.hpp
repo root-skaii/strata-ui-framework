@@ -95,6 +95,9 @@ struct font_config {
     // whose ink sits higher or lower in its line box (an icon font next to a pixel font)
     f32  y_offset     = 0.0f;
     bool kerning      = true; // apply kerning pairs (integer pixels)
+    // bake glyphs as signed distance fields (single-channel R8, 0.5 = edge) for sharp zoomed text
+    bool sdf          = false;
+    u8   sdf_spread   = 4;    // SDF padding / distance spread in physical pixels (1..16)
     // fail with font_unavailable instead of letting gdi substitute a missing `face`
     bool exact_face   = false;
     // fallback faces for missing glyphs, in order: {"Segoe UI Emoji", "Segoe UI Symbol"}. same size and baseline;
@@ -172,6 +175,8 @@ public:
 
     // physical pixels per logical pixel baked for
     [[nodiscard]] f32 scale() const noexcept { return scale_; }
+    [[nodiscard]] bool is_sdf() const noexcept { return sdf_; }
+    [[nodiscard]] u8   sdf_spread() const noexcept { return sdf_spread_; }
 
     [[nodiscard]] std::size_t font_count() const noexcept { return fonts_.size(); }
 
@@ -280,6 +285,8 @@ private:
     mutable u32                    height_{};
     f32                            scale_{1.0f};
     f32                            inv_scale_{1.0f};
+    bool                           sdf_{false};
+    u8                             sdf_spread_{4};
     std::shared_ptr<dynamic_state> dyn_;
 };
 

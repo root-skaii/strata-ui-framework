@@ -357,6 +357,7 @@ struct context_config {
     capacity_config              capacity{};
     ui_strings                   strings{};
     diagnostics_hook             diagnostics{};   // none: marked on screen
+    bool                         multi_viewport = false; // emit secondary viewports for off-canvas floating windows
 };
 
 // widget parameters ------------------------------------------------------------
@@ -461,6 +462,19 @@ enum class window_flags : u16 {
     // want_capture_mouse()); interactive widgets inside (and the title bar, if any) still take input.
     // ignores drag_by_body and dockable; implies no_move when combined with no_title_bar
     click_through = 2048,
+    // when context_config::multi_viewport is enabled, forces this window into its own secondary viewport
+    detached      = 4096,
+};
+
+// secondary OS viewport emitted for a floating window dragged outside the primary display (or flagged detached)
+// when multi_viewport is enabled. bounds are in logical pixels relative to the primary viewport origin.
+struct viewport_desc {
+    id               window_id{};
+    std::string_view title;
+    rect             bounds;
+    u32              cmd_first{};
+    u32              cmd_count{};
+    bool             focused{};
 };
 
 [[nodiscard]] constexpr window_flags operator|(window_flags a, window_flags b) noexcept
@@ -638,12 +652,13 @@ enum class log_view_flags : u8 {
 // automatic plot value range
 inline constexpr f32 plot_auto = std::numeric_limits<f32>::quiet_NaN();
 
-enum class plot_kind : u8 { lines, histogram };
+enum class plot_kind : u8 { lines, histogram, scatter, stacked_bars };
 
 struct plot_series {
-    std::string_view    name;
+    std::string_view     name;
     std::span<const f32> values;
-    color               col{0, 0, 0, 0}; // alpha 0 = theme series colour (`{}` would be opaque black)
+    color                col{0, 0, 0, 0}; // alpha 0 = theme series colour (`{}` would be opaque black)
+    std::span<const f32> x_values{};      // optional explicit x coordinates (for scatter / irregular XY series)
 };
 
 // a styled byte range [start, end) of a text field (font, colour, style); see context::input_spans
@@ -661,6 +676,63 @@ struct plot_axis {
     std::string_view unit;              // "ms": appended to every tick label
     f32              lo{plot_auto};     // a fixed start / end; plot_auto fits the data
     f32              hi{plot_auto};
+    bool             log_scale{false};  // base-10 logarithmic scaling (positive values only)
+};
+
+// ---- timeline / sequencer, bezier curve editor, property inspector ------------------------------------------------
+
+struct timeline_state {
+    f32  time{0.0f};         // current playhead position
+    f32  start{0.0f};        // total range start
+    f32  end{120.0f};        // total range end
+    f32  view_start{0.0f};   // visible window start
+    f32  view_end{120.0f};   // visible window end
+    f32  snap{1.0f};         // > 0 snaps dragged playhead / clips / keys to multiples of `snap`
+    f32  label_width{130.0f};
+    bool playing{false};
+};
+
+struct timeline_clip {
+    f32              start{};
+    f32              end{};
+    std::string_view label;
+    color            col{0, 0, 0, 0}; // alpha 0: theme accent
+};
+
+struct timeline_keyframe {
+    f32   time{};
+    color col{0, 0, 0, 0}; // alpha 0: theme accent
+};
+
+struct timeline_track_result {
+    int changed_clip{-1};
+    int changed_key{-1};
+    int selected_clip{-1};
+    int selected_key{-1};
+};
+
+struct curve_point {
+    f32  x{};
+    f32  y{};
+    vec2 in_tangent{-0.12f, 0.0f};
+    vec2 out_tangent{0.12f, 0.0f};
+    bool broken{false};
+};
+
+// evaluates a sorted list of cubic Bezier curve_points at coordinate `x`
+[[nodiscard]] f32 eval_curve(std::span<const curve_point> points, f32 x) noexcept;
+
+struct flex_options {
+    f32 gap_x{6.0f};
+    f32 gap_y{6.0f};
+    f32 max_width{0.0f}; // 0: current content_width()
+};
+
+struct property_options {
+    bool             modified{false}; // draws an accent indicator dot and clickable reset button
+    bool             mixed{false};    // draws a muted mixed-value badge for multi-object selection
+    bool             read_only{false};
+    std::string_view tooltip{};
 };
 
 // optional horizontal or vertical threshold / reference line on a chart
@@ -1350,6 +1422,10 @@ public:
     void end_row() noexcept;
     [[nodiscard]] row_scope row(u32 columns, f32 gap = -1.0f) noexcept { return {*this, begin_row(columns, gap)}; }
     [[nodiscard]] row_scope row(std::span<const layout_col> columns, f32 gap = -1.0f) noexcept { return {*this, begin_row(columns, gap)}; }
+
+    // responsive wrapping horizontal container: child widgets flow left-to-right and wrap onto the next line
+    void begin_flex(const flex_options& opt = {}) noexcept;
+    void end_flex() noexcept;
     [[nodiscard]] row_scope row(std::initializer_list<layout_col> columns, f32 gap = -1.0f) noexcept
     {
         return {*this, begin_row(columns, gap)};
@@ -1817,10 +1893,37 @@ public:
               plot_kind kind = plot_kind::lines, f32 lo = plot_auto, f32 hi = plot_auto, u32 offset = 0);
     // full chart with axes, optional zoom / pan. x follows the data, y the visible samples, unless fixed or zoomed.
     void plot(std::string_view label, std::span<const plot_series> series, const plot_options& options);
+    // 2D matrix heatmap (row-major `rows * cols` values, viridis-like colormap, hover cell readout)
+    void plot_heatmap(std::string_view label, std::span<const f32> values, u32 rows, u32 cols,
+                      vec2 size = {0.0f, 180.0f}, f32 lo = plot_auto, f32 hi = plot_auto);
     void plot_reset_view(std::string_view label);
     // whether the chart is zoomed / panned, and last frame's x range ({0, 0} before the first)
     [[nodiscard]] bool plot_zoomed(std::string_view label) const;
     [[nodiscard]] vec2 plot_x_range(std::string_view label) const;
+
+    // timeline / sequencer: call timeline_track() between begin_timeline() and end_timeline()
+    bool                  begin_timeline(std::string_view label, timeline_state& state, vec2 size = {0.0f, 220.0f});
+    timeline_track_result timeline_track(std::string_view name, std::span<timeline_clip> clips,
+                                         std::span<timeline_keyframe> keys = {});
+    void                  end_timeline();
+
+    // interactive cubic Bezier curve editor (double-click adds point, right-click removes, drag handles to shape)
+    bool curve_editor(std::string_view label, std::vector<curve_point>& points, vec2 size = {0.0f, 180.0f},
+                      rect domain = {{0.0f, 0.0f}, {1.0f, 1.0f}});
+
+    // two-column property inspector grid with modified-state indicator, reset button, and mixed-value marker
+    bool begin_property_grid(std::string_view id, f32 label_ratio = 0.38f);
+    void end_property_grid();
+    bool property_row_begin(std::string_view label, const property_options& opt = {});
+    void property_row_end();
+    template <class Fn>
+    bool property_row(std::string_view label, const property_options& opt, Fn&& draw_value)
+    {
+        const bool reset = property_row_begin(label, opt);
+        draw_value();
+        property_row_end();
+        return reset;
+    }
 
     // selectable text ----------------------------------------------------------
     // wrapped, mouse-selectable, copyable. the one-argument form keys on the text, so changing text needs an `id`.
@@ -2063,6 +2166,14 @@ public:
     // draws the popup layers (menus, popups, tooltips) last and reports in render_data() where they start (overlay_first) and what
     // they cover (overlay_bounds), so the host can draw them into a window of its own, per frame, only when they leave the main one
     void set_detach_overlay(bool on) noexcept;
+
+    // multi-viewport support: floating windows dragged outside display_size (or flagged window_flags::detached) are
+    // split out of render_data() into viewports(), each rendered via viewport_render_data(window_id)
+    void set_multi_viewport(bool on) noexcept;
+    [[nodiscard]] bool multi_viewport() const noexcept;
+    [[nodiscard]] std::span<const viewport_desc> viewports() const noexcept;
+    [[nodiscard]] draw_data viewport_render_data(id window_id) const noexcept;
+    void set_viewport_bounds(id window_id, vec2 pos, vec2 size) noexcept;
 
     // fonts ----------------------------------------------------------------
     // ids: context_config::font, then extra_fonts. applies to text and widget sizes until popped; titles use font 0.

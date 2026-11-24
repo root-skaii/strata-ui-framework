@@ -1,0 +1,32 @@
+{
+  "name": "strata",
+  "version-semver": "0.1.0",
+  "description": "Zero-heap-in-steady-state C++ immediate-mode UI framework with Direct3D 11/12, OpenGL, Vulkan, WebGPU, Metal, and CPU software renderers.",
+  "license": "MIT",
+  "supports": "x64 | arm64",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "opengl": {
+      "description": "Build the OpenGL 3.3+ Core backend"
+    },
+    "vulkan": {
+      "description": "Build the Vulkan 1.0+ backend",
+      "dependencies": [
+        "vulkan-headers",
+        "vulkan-loader"
+      ]
+    },
+    "webgpu": {
+      "description": "Build the WebGPU backend"
+    }
+  }
+}

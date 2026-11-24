@@ -398,7 +398,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     }
     m_->nav_.kbd_suppress = false;
 
-    if (!docked && m_->display_.x > 0 && m_->display_.y > 0) {
+    if (!docked && !m_->multi_viewport_ && m_->display_.x > 0 && m_->display_.y > 0) {
         st->pos.x = std::clamp(st->pos.x, 48.0f - st->width, m_->display_.x - 48.0f);
         st->pos.y = std::clamp(st->pos.y, 0.0f, m_->display_.y - std::max(title_h, 24.0f));
     }
@@ -406,7 +406,7 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
     const bool fixed_h = st->height > 0.0f;
     // an auto-height window does not grow past the bottom of the display: it scrolls instead
     st->capped_h = 0.0f;
-    if (!fixed_h && !docked && !st->menubar && !st->collapsed && m_->display_.y > 0.0f) {
+    if (!fixed_h && !docked && !m_->multi_viewport_ && !st->menubar && !st->collapsed && m_->display_.y > 0.0f) {
         const f32 wanted = title_h + pad + st->content_h + pad + hbar;
         const f32 room   = std::max(m_->display_.y - st->pos.y - 8.0f, title_h + 48.0f);
         if (wanted > room) { st->capped_h = room; }
@@ -418,6 +418,10 @@ bool context::begin_window(std::string_view title, vec2 initial_pos, vec2 size, 
                                  : title_h + pad + st->content_h + pad + hbar;
     const rect frame   = rect::from_size(st->pos, {st->width, height});
     const rect bar     = rect::from_size(st->pos, {st->width, title_h});
+    st->last_bounds    = frame;
+    st->detached_now   = m_->multi_viewport_ && !docked && !st->menubar && st->modal_level == 0 &&
+                         (has_flag(flags, window_flags::detached) || frame.min.x < 0.0f || frame.min.y < 0.0f ||
+                          frame.max.x > m_->display_.x || frame.max.y > m_->display_.y);
     m_->cur_frame_ = frame;
 
     // a modal takes the input from everything else; click_through windows only claim the pointer over their title bar

@@ -60,6 +60,8 @@ struct app_config {
     bool             idle    = true;
     // follow the system dark / light mode, accent and high contrast (themes::for_appearance), live. off: ui.theme as is
     bool             follow_system_theme = false;
+    // allow floating windows dragged outside the main window to detach into secondary OS windows (D3D11)
+    bool             multi_viewport = false;
     // utf-8 path for the saved layout (context::save_state), restored at start, written at exit. empty: none
     std::string_view state_file{};
     color            clear{14, 16, 22, 255};   // behind the ui

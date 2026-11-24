@@ -122,6 +122,35 @@ struct context::impl {
     std::vector<internal::font_source> font_sources_;
     u32  max_atlas_size_{4096};
     bool dynamic_glyphs_{false};
+    bool multi_viewport_{false};
+    u32  main_cmd_count_{~0u};
+    std::vector<viewport_desc> viewports_;
+
+    // active timeline / sequencer session (begin_timeline .. end_timeline)
+    struct timeline_frame {
+        bool            active{};
+        id              key{};
+        timeline_state* state{};
+        rect            outer{};
+        rect            ruler{};
+        rect            tracks{};
+        f32             cursor_y{};
+        u32             track_idx{};
+    };
+    timeline_frame timeline_{};
+
+    // active property grid session (begin_property_grid .. end_property_grid)
+    struct prop_grid_frame {
+        bool active{};
+        f32  label_w{};
+        f32  value_w{};
+        f32  origin_x{};
+        f32  row_y{};
+        bool row_read_only{};
+        bool row_mixed{};
+    };
+    prop_grid_frame prop_grid_{};
+
     f32  scale_{1.0f};
     u32  font_generation_{1};
 

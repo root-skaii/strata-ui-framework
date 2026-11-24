@@ -60,6 +60,17 @@ target_link_libraries(strata_overlay_module_test PRIVATE strata_overlay $<BUILD_
 add_executable(strata_overlay_inject tools/injector.cpp)
 target_link_libraries(strata_overlay_inject PRIVATE $<BUILD_INTERFACE:strata_options> user32.lib)
 
+# Official Vulkan explicit overlay layer (VK_LAYER_strata_overlay)
+if(STRATA_BUILD_VULKAN)
+    add_library(strata_vk_layer SHARED vulkan/vk_layer.cpp vulkan/strata_vk_layer.def)
+    target_link_libraries(strata_vk_layer PRIVATE strata::strata $<BUILD_INTERFACE:strata_options> Vulkan::Vulkan user32.lib)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/vulkan/VK_LAYER_strata_overlay.json.in"
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/VK_LAYER_strata_overlay.json"
+        COPYONLY
+    )
+endif()
+
 if(STRATA_BUILD_TESTS)
     add_test(NAME strata_overlay_modules COMMAND strata_overlay_module_test)
 

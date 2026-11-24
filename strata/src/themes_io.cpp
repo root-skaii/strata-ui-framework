@@ -4,9 +4,12 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstdio>
+#include <filesystem>
+#include <system_error>
 
 namespace strata::themes {
 
@@ -320,6 +323,38 @@ bool load_file(std::string_view path, style& s, theme_result* result)
     }
     const theme_result r = from_string(text, s);
     if (result != nullptr) { *result = r; }
+    return true;
+}
+
+theme_watcher::theme_watcher(std::string path, f32 poll_interval_s) noexcept
+    : path_{std::move(path)}
+    , interval_{std::max(poll_interval_s, 0.0f)}
+{}
+
+void theme_watcher::reset() noexcept
+{
+    loaded_     = false;
+    last_stamp_ = 0;
+    accum_      = 0.0f;
+}
+
+bool theme_watcher::poll(style& s, f32 dt, theme_result* result)
+{
+    if (path_.empty()) { return false; }
+    accum_ += std::max(dt, 0.0f);
+    if (loaded_ && accum_ < interval_) { return false; }
+    accum_ = 0.0f;
+
+    std::error_code ec;
+    const std::filesystem::path p{reinterpret_cast<const char8_t*>(path_.data()),
+                                  reinterpret_cast<const char8_t*>(path_.data() + path_.size())};
+    const auto wt = std::filesystem::last_write_time(p, ec);
+    if (ec) { return false; }
+    const i64 stamp = static_cast<i64>(wt.time_since_epoch().count());
+    if (loaded_ && stamp == last_stamp_) { return false; }
+    if (!load_file(path_, s, result)) { return false; }
+    last_stamp_ = stamp;
+    loaded_     = true;
     return true;
 }
 

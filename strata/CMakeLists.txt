@@ -23,6 +23,7 @@ add_library(strata STATIC
     src/context_datetime.cpp
     src/context_debug.cpp
     src/context_dock.cpp
+    src/context_editor_widgets.cpp
     src/context_hotkey.cpp
     src/context_image.cpp
     src/context_input.cpp
@@ -52,6 +53,7 @@ add_library(strata STATIC
     src/keybinds.cpp
     src/limits.cpp
     src/node_editor.cpp
+    src/svg.cpp
     src/texture.cpp
     src/themes.cpp
     src/themes_contrast.cpp
@@ -71,6 +73,7 @@ target_sources(strata PUBLIC
         include/strata/backend/backend.hpp
         include/strata/backend/d3d11.hpp
         include/strata/backend/d3d12.hpp
+        include/strata/backend/metal.hpp
         include/strata/backend/null.hpp
         include/strata/backend/opengl.hpp
         include/strata/backend/openvr.hpp
@@ -78,6 +81,7 @@ target_sources(strata PUBLIC
         include/strata/backend/software.hpp
         include/strata/backend/vr_types.hpp
         include/strata/backend/vulkan.hpp
+        include/strata/backend/webgpu.hpp
         include/strata/bidi.hpp
         include/strata/config.hpp
         include/strata/context.hpp
@@ -96,6 +100,7 @@ target_sources(strata PUBLIC
         include/strata/platform/win32.hpp
         include/strata/strata.hpp
         include/strata/strata_c.h
+        include/strata/svg.hpp
         include/strata/texture.hpp
         include/strata/themes.hpp
         include/strata/types.hpp
@@ -165,6 +170,8 @@ target_compile_definitions(strata PUBLIC
     $<$<BOOL:${STRATA_BUILD_DX12}>:STRATA_HAS_DX12=1>
     $<$<BOOL:${STRATA_BUILD_OPENGL}>:STRATA_HAS_OPENGL=1>
     $<$<BOOL:${STRATA_BUILD_VULKAN}>:STRATA_HAS_VULKAN=1>
+    $<$<BOOL:${STRATA_BUILD_WEBGPU}>:STRATA_HAS_WEBGPU=1>
+    $<$<BOOL:${STRATA_BUILD_METAL}>:STRATA_HAS_METAL=1>
     $<$<BOOL:${STRATA_BUILD_OPENXR}>:STRATA_HAS_OPENXR=1>
     $<$<BOOL:${STRATA_BUILD_OPENVR}>:STRATA_HAS_OPENVR=1>
 )
@@ -200,6 +207,20 @@ endif()
 
 if(STRATA_BUILD_OPENGL)
     target_sources(strata PRIVATE src/backend_opengl.cpp)
+endif()
+
+if(STRATA_BUILD_WEBGPU)
+    target_sources(strata PRIVATE src/backend_webgpu.cpp)
+    if(EMSCRIPTEN)
+        target_link_options(strata INTERFACE -sUSE_WEBGPU=1)
+    endif()
+endif()
+
+if(STRATA_BUILD_METAL)
+    enable_language(OBJCXX)
+    target_sources(strata PRIVATE src/backend_metal.mm)
+    set_source_files_properties(src/backend_metal.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(strata PRIVATE "-framework Metal" "-framework Foundation")
 endif()
 
 if(STRATA_BUILD_VULKAN)

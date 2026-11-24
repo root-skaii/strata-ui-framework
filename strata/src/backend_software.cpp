@@ -277,10 +277,11 @@ struct software_renderer::impl {
 
     // rows [y_lo, y_hi) of one command; `blurred` is the snapshot a backdrop command reads. commands touch rows
     // independently, so bands of rows can run on separate threads
-    void draw(const draw_data& d, const draw_cmd& cmd, const blur_copy* blurred, i32 y_lo, i32 y_hi);
+    void draw(const draw_data& d, const draw_cmd& cmd, const blur_copy* blurred, i32 y_lo, i32 y_hi, i32 x_lo, i32 x_hi);
 };
 
-void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, const blur_copy* blurred, i32 y_lo, i32 y_hi)
+void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, const blur_copy* blurred,
+                                   i32 y_lo, i32 y_hi, i32 x_lo, i32 x_hi)
 {
     if (cmd.idx_count < 3 || static_cast<std::size_t>(cmd.idx_offset) + cmd.idx_count > d.indices.size() ||
         cmd.vtx_offset >= d.vertices.size()) {
@@ -288,10 +289,10 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
     }
     const std::span<const vertex> verts = d.vertices.subspan(cmd.vtx_offset);
 
-    // pixels whose centre lies inside the clip
-    const i32 cx0 = std::max<i32>(0, static_cast<i32>(std::ceil(cmd.clip.min.x - 0.5f)));
+    // pixels whose centre lies inside the clip intersected with the active damage rectangle
+    const i32 cx0 = std::max<i32>(x_lo, static_cast<i32>(std::ceil(cmd.clip.min.x - 0.5f)));
     const i32 cy0 = std::max<i32>(y_lo, static_cast<i32>(std::ceil(cmd.clip.min.y - 0.5f)));
-    const i32 cx1 = std::min<i32>(static_cast<i32>(width), static_cast<i32>(std::ceil(cmd.clip.max.x - 0.5f)));
+    const i32 cx1 = std::min<i32>(x_hi, static_cast<i32>(std::ceil(cmd.clip.max.x - 0.5f)));
     const i32 cy1 = std::min<i32>(y_hi, static_cast<i32>(std::ceil(cmd.clip.max.y - 0.5f)));
     if (cx1 <= cx0 || cy1 <= cy0) { return; }
 
@@ -353,7 +354,9 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
         vec4 solid_out;
         if (solid) {
             f32 cov = atlas_coverage({static_cast<f32>(a->u) * inv_uv, static_cast<f32>(a->v) * inv_uv});
-            if (d.text_contrast > 0.0f) {
+            if (d.text_contrast < 0.0f) {
+                cov = smoothstep(0.38f, 0.62f, cov);
+            } else if (d.text_contrast > 0.0f) {
                 const f32 k = d.text_contrast * luma(ca.r, ca.g, ca.b);
                 cov = cov * (1.0f + k) / (1.0f + k * cov);
             }
@@ -421,7 +424,9 @@ void software_renderer::impl::draw(const draw_data& d, const draw_cmd& cmd, cons
                 } else {
                     f32 cov = atlas_coverage({(static_cast<f32>(a->u) * wa + static_cast<f32>(b->u) * wb + static_cast<f32>(c->u) * wc) * inv_uv,
                                               (static_cast<f32>(a->v) * wa + static_cast<f32>(b->v) * wb + static_cast<f32>(c->v) * wc) * inv_uv});
-                    if (d.text_contrast > 0.0f) {
+                    if (d.text_contrast < 0.0f) {
+                        cov = smoothstep(0.38f, 0.62f, cov);
+                    } else if (d.text_contrast > 0.0f) {
                         // thickens light-on-dark glyph edges in proportion to text lightness
                         const f32 k = d.text_contrast * luma(col.r, col.g, col.b);
                         cov = cov * (1.0f + k) / (1.0f + k * cov);
@@ -496,19 +501,44 @@ void software_renderer::clear(color c)
     }
 }
 
+void software_renderer::clear(color c, const rect& damage)
+{
+    if (!impl_ || impl_->width == 0 || impl_->height == 0) { return; }
+    const i32 x0 = std::clamp(static_cast<i32>(std::floor(damage.min.x)), 0, static_cast<i32>(impl_->width));
+    const i32 y0 = std::clamp(static_cast<i32>(std::floor(damage.min.y)), 0, static_cast<i32>(impl_->height));
+    const i32 x1 = std::clamp(static_cast<i32>(std::ceil(damage.max.x)), 0, static_cast<i32>(impl_->width));
+    const i32 y1 = std::clamp(static_cast<i32>(std::ceil(damage.max.y)), 0, static_cast<i32>(impl_->height));
+    if (x1 <= x0 || y1 <= y0) { return; }
+    const f32 a = static_cast<f32>(c.a) * inv255;
+    const u8 px[4] = {static_cast<u8>(static_cast<f32>(c.r) * a + 0.5f), static_cast<u8>(static_cast<f32>(c.g) * a + 0.5f),
+                      static_cast<u8>(static_cast<f32>(c.b) * a + 0.5f), c.a};
+    for (i32 y = y0; y < y1; ++y) {
+        u8* row = impl_->target.data() + (static_cast<std::size_t>(y) * impl_->width + static_cast<std::size_t>(x0)) * 4;
+        for (i32 x = x0; x < x1; ++x, row += 4) { std::copy(px, px + 4, row); }
+    }
+}
+
 void software_renderer::render(const draw_data& data)
+{
+    if (!impl_) { return; }
+    const u32 w = static_cast<u32>(std::max(data.display_size.x, 0.0f) + 0.5f);
+    const u32 h = static_cast<u32>(std::max(data.display_size.y, 0.0f) + 0.5f);
+    render(data, {{0.0f, 0.0f}, {static_cast<f32>(w), static_cast<f32>(h)}});
+}
+
+void software_renderer::render(const draw_data& data, const rect& damage)
 {
     if (!impl_) { return; }
     const u32 w = static_cast<u32>(std::max(data.display_size.x, 0.0f) + 0.5f);
     const u32 h = static_cast<u32>(std::max(data.display_size.y, 0.0f) + 0.5f);
     if (w != impl_->width || h != impl_->height) { impl_->resize(w, h); }
     if (w == 0 || h == 0) { return; }
+    const i32 x_lo = std::clamp(static_cast<i32>(std::floor(damage.min.x)), 0, static_cast<i32>(w));
+    const i32 y_lo = std::clamp(static_cast<i32>(std::floor(damage.min.y)), 0, static_cast<i32>(h));
+    const i32 x_hi = std::clamp(static_cast<i32>(std::ceil(damage.max.x)), 0, static_cast<i32>(w));
+    const i32 y_hi = std::clamp(static_cast<i32>(std::ceil(damage.max.y)), 0, static_cast<i32>(h));
+    if (x_hi <= x_lo || y_hi <= y_lo) { return; }
     impl& im = *impl_;
-
-    const auto run_serial = [&](auto&& fn) {
-        const i32 rows = static_cast<i32>(h);
-        fn(0, rows);
-    };
 
     const std::span<const draw_cmd> cmds = data.commands;
     std::size_t i = 0;
@@ -516,16 +546,14 @@ void software_renderer::render(const draw_data& data)
         if (cmds[i].blur > 0.0f) {
             blur_copy blurred;
             if (im.backdrop_blur(data, cmds[i], blurred)) {
-                run_serial([&](i32 lo, i32 hi) { im.draw(data, cmds[i], &blurred, lo, hi); });
+                im.draw(data, cmds[i], &blurred, y_lo, y_hi, x_lo, x_hi);
             }
             ++i;
             continue;
         }
         std::size_t j = i;
         while (j < cmds.size() && cmds[j].blur <= 0.0f) { ++j; }
-        run_serial([&](i32 lo, i32 hi) {
-            for (std::size_t k = i; k < j; ++k) { im.draw(data, cmds[k], nullptr, lo, hi); }
-        });
+        for (std::size_t k = i; k < j; ++k) { im.draw(data, cmds[k], nullptr, y_lo, y_hi, x_lo, x_hi); }
         i = j;
     }
 }

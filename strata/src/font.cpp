@@ -83,6 +83,16 @@ namespace {
 #endif
 }
 
+// zeroes a buffer that held font data before it is freed
+struct scrub_on_exit {
+    std::vector<u8>& bytes;
+    ~scrub_on_exit()
+    {
+        if (!bytes.empty()) { detail::secure_wipe(bytes.data(), bytes.size()); }
+    }
+};
+
+#ifdef _WIN32
 [[nodiscard]] std::optional<u32> be16(std::span<const u8> d, std::size_t off) noexcept
 {
     if (off + 2 > d.size()) { return std::nullopt; }
@@ -95,16 +105,6 @@ namespace {
     return (u32{d[off]} << 24) | (u32{d[off + 1]} << 16) | (u32{d[off + 2]} << 8) | d[off + 3];
 }
 
-// zeroes a buffer that held font data before it is freed
-struct scrub_on_exit {
-    std::vector<u8>& bytes;
-    ~scrub_on_exit()
-    {
-        if (!bytes.empty()) { detail::secure_wipe(bytes.data(), bytes.size()); }
-    }
-};
-
-#ifdef _WIN32
 // name id 1 (font family), the name gdi uses to select a face
 [[nodiscard]] std::optional<std::wstring> family_name(std::span<const u8> d)
 {
@@ -245,9 +245,96 @@ struct raw_glyph {
     bool visible{};
 };
 
+// exact 1D squared Euclidean distance transform (Felzenszwalb & Huttenlocher)
+void edt_1d(const f32* f, f32* d, int n, int* v, f32* z) noexcept
+{
+    int k = 0;
+    v[0] = 0;
+    z[0] = -1.0e20f;
+    z[1] = 1.0e20f;
+    for (int q = 1; q < n; ++q) {
+        f32 s = ((f[q] + static_cast<f32>(q * q)) - (f[v[k]] + static_cast<f32>(v[k] * v[k]))) /
+                static_cast<f32>(2 * q - 2 * v[k]);
+        while (s <= z[k]) {
+            --k;
+            s = ((f[q] + static_cast<f32>(q * q)) - (f[v[k]] + static_cast<f32>(v[k] * v[k]))) /
+                static_cast<f32>(2 * q - 2 * v[k]);
+        }
+        ++k;
+        v[k]     = q;
+        z[k]     = s;
+        z[k + 1] = 1.0e20f;
+    }
+    k = 0;
+    for (int q = 0; q < n; ++q) {
+        while (z[k + 1] < static_cast<f32>(q)) { ++k; }
+        const f32 dq = static_cast<f32>(q - v[k]);
+        d[q] = dq * dq + f[v[k]];
+    }
+}
+
+void bitmap_to_sdf(const u8* src, u32 sw, u32 sh, u32 pad, f32 spread, std::vector<u8>& out)
+{
+    const int w = static_cast<int>(sw + 2 * pad);
+    const int h = static_cast<int>(sh + 2 * pad);
+    const std::size_t n = static_cast<std::size_t>(w) * h;
+    constexpr f32 inf = 1.0e12f;
+
+    std::vector<f32> outside(n, inf), inside(n, inf);
+    for (u32 y = 0; y < sh; ++y) {
+        for (u32 x = 0; x < sw; ++x) {
+            const std::size_t idx = static_cast<std::size_t>(y + pad) * w + (x + pad);
+            if (src[static_cast<std::size_t>(y) * sw + x] >= 128) {
+                outside[idx] = 0.0f;
+            } else {
+                inside[idx] = 0.0f;
+            }
+        }
+    }
+    // outer border is always outside the glyph
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            if (x < static_cast<int>(pad) || x >= static_cast<int>(sw + pad) ||
+                y < static_cast<int>(pad) || y >= static_cast<int>(sh + pad)) {
+                inside[static_cast<std::size_t>(y) * w + x] = 0.0f;
+            }
+        }
+    }
+
+    const int max_dim = std::max(w, h);
+    std::vector<f32> fbuf(static_cast<std::size_t>(max_dim));
+    std::vector<f32> dbuf(static_cast<std::size_t>(max_dim));
+    std::vector<int> vbuf(static_cast<std::size_t>(max_dim));
+    std::vector<f32> zbuf(static_cast<std::size_t>(max_dim + 1));
+
+    const auto edt_2d = [&](std::vector<f32>& grid) {
+        for (int x = 0; x < w; ++x) {
+            for (int y = 0; y < h; ++y) { fbuf[static_cast<std::size_t>(y)] = grid[static_cast<std::size_t>(y) * w + x]; }
+            edt_1d(fbuf.data(), dbuf.data(), h, vbuf.data(), zbuf.data());
+            for (int y = 0; y < h; ++y) { grid[static_cast<std::size_t>(y) * w + x] = dbuf[static_cast<std::size_t>(y)]; }
+        }
+        for (int y = 0; y < h; ++y) {
+            edt_1d(grid.data() + static_cast<std::size_t>(y) * w, dbuf.data(), w, vbuf.data(), zbuf.data());
+            std::memcpy(grid.data() + static_cast<std::size_t>(y) * w, dbuf.data(), static_cast<std::size_t>(w) * sizeof(f32));
+        }
+    };
+    edt_2d(outside);
+    edt_2d(inside);
+
+    out.resize(n);
+    const f32 inv_spread = 0.5f / std::max(spread, 1.0f);
+    for (std::size_t i = 0; i < n; ++i) {
+        const f32 sd = std::sqrt(std::max(inside[i], 0.0f)) - std::sqrt(std::max(outside[i], 0.0f));
+        const f32 norm = std::clamp(0.5f + sd * inv_spread, 0.0f, 1.0f);
+        out[i] = static_cast<u8>(norm * 255.0f + 0.5f);
+    }
+}
+
 // everything one font needs during build() and (when dynamic) for on-demand glyph baking
 struct font_source {
     bool                         use_ttf{};
+    bool                         sdf{};
+    u8                           sdf_pad{};
     std::vector<u8>              file_bytes;
     int                          y_shift{}; // font_config::y_offset in physical pixels
     f32                          line_height{};
@@ -400,36 +487,46 @@ struct font_source {
     [[nodiscard]] bool rasterise_measured(const raw_glyph& r, std::vector<u8>& pixels_out) const
     {
         if (!r.visible) { return false; }
+        const u32 pad = sdf ? static_cast<u32>(sdf_pad) : 0u;
+        const u32 bw  = r.w > 2 * pad ? r.w - 2 * pad : 0u;
+        const u32 bh  = r.h > 2 * pad ? r.h - 2 * pad : 0u;
+        if (bw == 0 || bh == 0) { return false; }
+        std::vector<u8> raw_cov;
+        std::vector<u8>& dst = sdf ? raw_cov : pixels_out;
+
         if (use_ttf) {
             const internal::ttf_font& face = r.source == 0 ? ttf : ttf_fallbacks[r.source - 1].font;
             const f32 sc = r.source == 0 ? ttf_scale : ttf_fallbacks[r.source - 1].scale;
             internal::ttf_bitmap bm;
-            if (!face.rasterise(r.index, sc, bm, true) || bm.w != r.w || bm.h != r.h) { return false; }
-            pixels_out = std::move(bm.pixels);
-            return true;
-        }
+            if (!face.rasterise(r.index, sc, bm, true) || bm.w != bw || bm.h != bh) { return false; }
+            dst = std::move(bm.pixels);
+        } else {
 #ifdef _WIN32
-        HDC glyph_dc = r.source == 0 ? dc : gdi_fallbacks[r.source - 1].dc;
-        GLYPHMETRICS gm{};
-        const DWORD  size = ::GetGlyphOutlineW(glyph_dc, r.index, gdi_bitmap_flags, &gm, 0, nullptr, &gdi_identity);
-        if (size == GDI_ERROR || size == 0) { return false; }
-        std::vector<u8> raw(size);
-        const scrub_on_exit scrub{raw};
-        if (::GetGlyphOutlineW(glyph_dc, r.index, gdi_bitmap_flags, &gm, size, raw.data(), &gdi_identity) == GDI_ERROR) {
-            return false;
-        }
-        const u32 pitch = (r.w + 3u) & ~3u;
-        pixels_out.resize(static_cast<std::size_t>(r.w) * r.h);
-        for (u32 y = 0; y < r.h; ++y) {
-            for (u32 x = 0; x < r.w; ++x) {
-                const u32 level = raw[static_cast<std::size_t>(y) * pitch + x]; // 0..64
-                pixels_out[static_cast<std::size_t>(y) * r.w + x] = static_cast<u8>(std::min(level * 4u, 255u));
+            HDC glyph_dc = r.source == 0 ? dc : gdi_fallbacks[r.source - 1].dc;
+            GLYPHMETRICS gm{};
+            const DWORD  size = ::GetGlyphOutlineW(glyph_dc, r.index, gdi_bitmap_flags, &gm, 0, nullptr, &gdi_identity);
+            if (size == GDI_ERROR || size == 0) { return false; }
+            std::vector<u8> raw(size);
+            const scrub_on_exit scrub{raw};
+            if (::GetGlyphOutlineW(glyph_dc, r.index, gdi_bitmap_flags, &gm, size, raw.data(), &gdi_identity) == GDI_ERROR) {
+                return false;
             }
+            const u32 pitch = (bw + 3u) & ~3u;
+            dst.resize(static_cast<std::size_t>(bw) * bh);
+            for (u32 y = 0; y < bh; ++y) {
+                for (u32 x = 0; x < bw; ++x) {
+                    const u32 level = raw[static_cast<std::size_t>(y) * pitch + x]; // 0..64
+                    dst[static_cast<std::size_t>(y) * bw + x] = static_cast<u8>(std::min(level * 4u, 255u));
+                }
+            }
+#else
+            return false;
+#endif
+        }
+        if (sdf) {
+            bitmap_to_sdf(raw_cov.data(), bw, bh, pad, static_cast<f32>(pad), pixels_out);
         }
         return true;
-#else
-        return false;
-#endif
     }
 };
 
@@ -501,6 +598,24 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
         src.use_ttf = cfg.rasterizer == font_rasterizer::truetype;
 #else
         src.use_ttf = true;
+        if (bytes.empty()) {
+            static constexpr std::string_view kFallbackFonts[] = {
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf",
+            };
+            for (const std::string_view p : kFallbackFonts) {
+                if (auto loaded = read_file(p)) {
+                    src.file_bytes = std::move(*loaded);
+                    bytes          = src.file_bytes;
+                    break;
+                }
+            }
+        }
 #endif
         src.y_shift = static_cast<int>(std::lround(cfg.y_offset * scale));
 
@@ -634,10 +749,25 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
         }
 #endif
 
+        src.sdf     = cfg.sdf;
+        src.sdf_pad = cfg.sdf ? std::clamp<u8>(cfg.sdf_spread, 1, 16) : 0;
+        if (src.sdf) {
+            atlas.sdf_        = true;
+            atlas.sdf_spread_ = std::max(atlas.sdf_spread_, src.sdf_pad);
+        }
+
         // which glyphs exist, and how big are their bitmaps
         for (const range_entry& range : fd.ranges) {
             for (char32_t cp = range.first; cp <= range.last; ++cp) {
-                src.rasterise_cp(cp, src.raws[range.offset + (cp - range.first)], nullptr);
+                raw_glyph& rg = src.raws[range.offset + (cp - range.first)];
+                src.rasterise_cp(cp, rg, nullptr);
+                if (src.sdf && rg.visible) {
+                    const u16 pad = static_cast<u16>(src.sdf_pad);
+                    rg.w        = static_cast<u16>(rg.w + 2 * pad);
+                    rg.h        = static_cast<u16>(rg.h + 2 * pad);
+                    rg.origin_x = static_cast<decltype(rg.origin_x)>(rg.origin_x - static_cast<i32>(pad));
+                    rg.origin_y = static_cast<decltype(rg.origin_y)>(rg.origin_y + static_cast<i32>(pad));
+                }
             }
         }
     }

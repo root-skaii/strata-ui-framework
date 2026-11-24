@@ -1,0 +1,32 @@
+vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
+
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO strata-ui/strata
+    REF "v${VERSION}"
+    SHA512 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+    HEAD_REF main
+)
+
+vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
+    FEATURES
+        opengl STRATA_BUILD_OPENGL
+        vulkan STRATA_BUILD_VULKAN
+        webgpu STRATA_BUILD_WEBGPU
+)
+
+vcpkg_cmake_configure(
+    SOURCE_PATH "${SOURCE_PATH}"
+    OPTIONS
+        -DSTRATA_BUILD_SANDBOX=OFF
+        -DSTRATA_BUILD_OVERLAY=OFF
+        -DSTRATA_BUILD_TESTS=OFF
+        -DSTRATA_INSTALL=ON
+        ${FEATURE_OPTIONS}
+)
+
+vcpkg_cmake_install()
+vcpkg_cmake_config_fixup(PACKAGE_NAME strata CONFIG_PATH lib/cmake/strata)
+
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")

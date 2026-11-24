@@ -324,9 +324,11 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
     if (st.cur_ == nullptr || series.empty()) {
         return;
     }
-    const font_id f  = ui.current_font();
-    const f32     lh = st.font_.line_height(f);
-    const bool    hist = o.kind == plot_kind::histogram;
+    const font_id f       = ui.current_font();
+    const f32     lh      = st.font_.line_height(f);
+    const bool    hist    = o.kind == plot_kind::histogram || o.kind == plot_kind::stacked_bars;
+    const bool    stacked = o.kind == plot_kind::stacked_bars;
+    const bool    scatter = o.kind == plot_kind::scatter;
 
     std::size_t n = series[0].values.size();
     for (const plot_series& sr : series) { n = std::min(n, sr.values.size()); }
@@ -346,8 +348,22 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
 
     // the x range: the data (or the given one), or what the user zoomed to
     const f32 data_lo = o.x.lo, data_hi = o.x.hi;
-    const f32 xd0 = is_nan_f32(data_lo) ? o.x_start : data_lo;
-    f32       xd1 = is_nan_f32(data_hi) ? o.x_start + static_cast<f32>(n > 1 ? n - 1 : 1) * x_step : data_hi;
+    f32 xd0 = is_nan_f32(data_lo) ? o.x_start : data_lo;
+    f32 xd1 = is_nan_f32(data_hi) ? o.x_start + static_cast<f32>(n > 1 ? n - 1 : 1) * x_step : data_hi;
+    if (scatter && (is_nan_f32(data_lo) || is_nan_f32(data_hi))) {
+        f32 xmn = std::numeric_limits<f32>::max(), xmx = std::numeric_limits<f32>::lowest();
+        for (const plot_series& sr : series) {
+            if (!sr.x_values.empty()) {
+                for (std::size_t i = 0; i < std::min(sr.values.size(), sr.x_values.size()); ++i) {
+                    if (is_finite_f32(sr.x_values[i])) { xmn = std::min(xmn, sr.x_values[i]); xmx = std::max(xmx, sr.x_values[i]); }
+                }
+            }
+        }
+        if (xmn <= xmx) {
+            if (is_nan_f32(data_lo)) { xd0 = xmn; }
+            if (is_nan_f32(data_hi)) { xd1 = xmx; }
+        }
+    }
     if (hist && is_nan_f32(data_hi)) { xd1 = o.x_start + static_cast<f32>(std::max<std::size_t>(n, 1)) * x_step; } // bars have width
     if (!is_finite_f32(xd0) || !is_finite_f32(xd1) || xd1 - xd0 < 1.0e-9f) { xd1 = (is_finite_f32(xd0) ? xd0 : 0.0f) + 1.0f; }
 
@@ -419,12 +435,27 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
     } else if (is_nan_f32(yv0) || is_nan_f32(yv1)) {
         f32 mn = std::numeric_limits<f32>::max();
         f32 mx = std::numeric_limits<f32>::lowest();
-        for (std::size_t si = 0; si < series.size(); ++si) {
-            if (is_hidden(si)) { continue; }
-            const plot_series& sr = series[si];
-            for (std::size_t i = i0; i <= i1 && n > 0; ++i) {
-                const f32 v = sample(sr, i);
-                if (is_finite_f32(v)) { mn = std::min(mn, v); mx = std::max(mx, v); }
+        if (stacked && n > 0) {
+            for (std::size_t i = i0; i <= i1; ++i) {
+                f32 sum = 0.0f;
+                for (std::size_t si = 0; si < series.size(); ++si) {
+                    if (is_hidden(si)) { continue; }
+                    const f32 v = sample(series[si], i);
+                    if (is_finite_f32(v) && v > 0.0f) { sum += v; }
+                }
+                mn = std::min(mn, 0.0f);
+                mx = std::max(mx, sum);
+            }
+        } else {
+            for (std::size_t si = 0; si < series.size(); ++si) {
+                if (is_hidden(si)) { continue; }
+                const plot_series& sr = series[si];
+                for (std::size_t i = i0; i <= i1 && n > 0; ++i) {
+                    const f32 v = sample(sr, i);
+                    if (is_finite_f32(v)) {
+                        if (!o.y.log_scale || v > 0.0f) { mn = std::min(mn, v); mx = std::max(mx, v); }
+                    }
+                }
             }
         }
         if (mn > mx) { mn = 0.0f; mx = 1.0f; }
@@ -437,6 +468,10 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
     if (!is_finite_f32(yv0) || !is_finite_f32(yv1) || yv1 - yv0 < 1.0e-9f) {
         yv0 = is_finite_f32(yv0) ? yv0 : 0.0f;
         yv1 = yv0 + 1.0f;
+    }
+    if (o.y.log_scale) {
+        yv0 = std::max(yv0, 1.0e-4f);
+        yv1 = std::max(yv1, yv0 * 10.0f);
     }
 
     const bool  legend = series.size() > 1;
@@ -463,10 +498,19 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
         return;
     }
 
-    const f32 kx = inner.width() / (xv1 - xv0);
-    const f32 ky = inner.height() / (yv1 - yv0);
+    const f32 kx  = inner.width() / (xv1 - xv0);
+    const f32 ky  = inner.height() / (yv1 - yv0);
+    const f32 ly0 = o.y.log_scale ? std::log10(yv0) : 0.0f;
+    const f32 ly1 = o.y.log_scale ? std::log10(yv1) : 1.0f;
     const auto x_of = [&](f32 xv) { return inner.min.x + (xv - xv0) * kx; };
-    const auto y_of = [&](f32 v) { return inner.max.y - std::clamp((v - yv0) * ky, -2.0f, inner.height() + 2.0f); };
+    const auto y_of = [&](f32 v) {
+        if (o.y.log_scale) {
+            const f32 lv = std::log10(std::max(v, yv0));
+            const f32 t  = (lv - ly0) / std::max(ly1 - ly0, 1.0e-6f);
+            return inner.max.y - std::clamp(t * inner.height(), -2.0f, inner.height() + 2.0f);
+        }
+        return inner.max.y - std::clamp((v - yv0) * ky, -2.0f, inner.height() + 2.0f);
+    };
 
     if (o.ticks) {
         const color grid = color{255, 255, 255, 18};
@@ -557,10 +601,48 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
     const f32 base_y   = y_of(std::clamp(0.0f, yv0, yv1));
     const std::size_t count = n > 0 ? i1 - i0 + 1 : 0;
     st.dl_.push_clip(inner.expanded(2.0f));
-    for (int pass = 0; pass < 2 && count > 0; ++pass) { // pass 0: fills, pass 1: lines / bars
+    for (int pass = 0; pass < 2 && count > 0; ++pass) { // pass 0: fills, pass 1: lines / bars / scatter
+        if (stacked && pass == 1) {
+            const f32 bw_full = x_step * kx;
+            const bool bucketed = static_cast<f32>(count) > width_px;
+            const std::size_t buckets = bucketed ? static_cast<std::size_t>(width_px) : count;
+            const f32 bw = bucketed ? inner.width() / static_cast<f32>(buckets) : bw_full;
+            const f32 gap = bw > 3.0f ? 1.0f : 0.0f;
+            for (std::size_t b = 0; b < buckets; ++b) {
+                const std::size_t from = bucketed ? i0 + b * count / buckets : i0 + b;
+                const f32 x0 = bucketed ? inner.min.x + bw * static_cast<f32>(b) : x_of(o.x_start + static_cast<f32>(from) * x_step);
+                f32 accum = 0.0f;
+                for (std::size_t si = 0; si < series.size(); ++si) {
+                    if (is_hidden(si)) { continue; }
+                    const f32 v = std::max(0.0f, sample(series[si], from));
+                    if (v <= 0.0f) { continue; }
+                    const f32 y_bot = y_of(accum);
+                    accum += v;
+                    const f32 y_top = y_of(accum);
+                    const color c = series_color(si, series[si].col, st.style_);
+                    st.dl_.rect_filled({{x0, std::min(y_top, y_bot)}, {x0 + bw - gap, std::max(y_top, y_bot)}}, c, 1.0f);
+                }
+            }
+            continue;
+        }
         for (std::size_t si = 0; si < series.size(); ++si) {
             if (is_hidden(si)) { continue; }
             const color c = series_color(si, series[si].col, st.style_);
+            if (scatter) {
+                if (pass != 1) { continue; }
+                const plot_series& sr = series[si];
+                const bool has_x = sr.x_values.size() >= sr.values.size();
+                const std::size_t total_pts = has_x ? sr.values.size() : (i1 + 1);
+                const std::size_t start_pt  = has_x ? 0 : i0;
+                for (std::size_t i = start_pt; i < total_pts; ++i) {
+                    const f32 xv = has_x ? sr.x_values[i] : (o.x_start + static_cast<f32>(i) * x_step);
+                    const f32 yv = has_x ? sr.values[i] : sample(sr, i);
+                    if (!is_finite_f32(xv) || !is_finite_f32(yv)) { continue; }
+                    if (xv < xv0 || xv > xv1) { continue; }
+                    st.dl_.circle_filled({x_of(xv), y_of(yv)}, 3.5f, c);
+                }
+                continue;
+            }
             if (!hist) {
                 if (pass == 0 && !o.fill) { continue; }
                 st.chart_.plot_scratch_.clear();
@@ -671,6 +753,99 @@ static void chart_impl(context& ui, std::string_view label, std::span<const plot
 void context::plot(std::string_view label, std::span<const plot_series> series, const plot_options& options)
 {
     chart_impl(*this, label, series, options);
+}
+
+void context::plot_heatmap(std::string_view label, std::span<const f32> values, u32 rows, u32 cols, vec2 size, f32 lo, f32 hi)
+{
+    auto& st = *m_;
+    if (st.cur_ == nullptr || rows == 0 || cols == 0 || values.size() < static_cast<std::size_t>(rows) * cols) { return; }
+
+    const font_id f = current_font();
+    const f32 w     = size.x > 0.0f ? size.x : content_width();
+    const f32 h     = size.y > 0.0f ? size.y : 180.0f;
+    if (size.x > 0.0f) { st.layout_.next_width = w; }
+    const field_layout fl = layout_field(*this, visible_label(label), h);
+    const rect box = fl.control;
+    const id   key = widget_id(*this, label);
+    const interaction in = interact(*this, key, box);
+
+    const std::size_t total = static_cast<std::size_t>(rows) * cols;
+    f32 v0 = lo, v1 = hi;
+    if (is_nan_f32(v0) || is_nan_f32(v1)) {
+        f32 mn = std::numeric_limits<f32>::max(), mx = std::numeric_limits<f32>::lowest();
+        for (std::size_t i = 0; i < total; ++i) {
+            if (is_finite_f32(values[i])) { mn = std::min(mn, values[i]); mx = std::max(mx, values[i]); }
+        }
+        if (mn > mx) { mn = 0.0f; mx = 1.0f; }
+        if (is_nan_f32(v0)) { v0 = mn; }
+        if (is_nan_f32(v1)) { v1 = mx; }
+    }
+    if (!is_finite_f32(v0) || !is_finite_f32(v1) || v1 - v0 < 1.0e-9f) { v0 = 0.0f; v1 = 1.0f; }
+
+    shape_style bg;
+    bg.radius       = radii(st.style_.rounding * 0.8f);
+    bg.fill_top     = color{0, 0, 0, 60};
+    bg.fill_bottom  = bg.fill_top;
+    bg.border       = st.style_.widget_border;
+    bg.border_width = st.style_.border_width;
+    st.dl_.shape(box, bg);
+
+    constexpr f32 bar_w = 14.0f;
+    const rect grid = {{box.min.x + 6.0f, box.min.y + 6.0f}, {box.max.x - bar_w - 14.0f, box.max.y - 6.0f}};
+    const rect bar  = {{box.max.x - bar_w - 6.0f, box.min.y + 6.0f}, {box.max.x - 6.0f, box.max.y - 6.0f}};
+    if (grid.width() < 8.0f || grid.height() < 8.0f) { return; }
+
+    // 5-stop Viridis-inspired perceptual ramp
+    static constexpr color ramp[5] = {
+        {68, 1, 84, 255},
+        {59, 82, 139, 255},
+        {33, 145, 140, 255},
+        {94, 201, 98, 255},
+        {253, 231, 37, 255},
+    };
+    const auto map_color = [](f32 t) -> color {
+        const f32 x = std::clamp(t, 0.0f, 1.0f) * 4.0f;
+        const int i = std::clamp(static_cast<int>(x), 0, 3);
+        return lerp(ramp[i], ramp[i + 1], x - static_cast<f32>(i));
+    };
+
+    const f32 cw = grid.width() / static_cast<f32>(cols);
+    const f32 ch = grid.height() / static_cast<f32>(rows);
+    const f32 inv_span = 1.0f / (v1 - v0);
+    for (u32 r = 0; r < rows; ++r) {
+        const f32 y0 = grid.min.y + static_cast<f32>(r) * ch;
+        const f32 y1 = grid.min.y + static_cast<f32>(r + 1) * ch;
+        for (u32 c = 0; c < cols; ++c) {
+            const f32 x0 = grid.min.x + static_cast<f32>(c) * cw;
+            const f32 x1 = grid.min.x + static_cast<f32>(c + 1) * cw;
+            const f32 v  = values[static_cast<std::size_t>(r) * cols + c];
+            const f32 t  = is_finite_f32(v) ? (v - v0) * inv_span : 0.0f;
+            st.dl_.rect_filled({{x0, y0}, {x1, y1}}, map_color(t));
+        }
+    }
+
+    // vertical colorbar (high at top, low at bottom)
+    for (int s = 0; s < 16; ++s) {
+        const f32 t0 = 1.0f - static_cast<f32>(s) / 16.0f;
+        const f32 t1 = 1.0f - static_cast<f32>(s + 1) / 16.0f;
+        const f32 y0 = bar.min.y + (static_cast<f32>(s) / 16.0f) * bar.height();
+        const f32 y1 = bar.min.y + (static_cast<f32>(s + 1) / 16.0f) * bar.height();
+        st.dl_.rect_filled({{bar.min.x, y0}, {bar.max.x, y1}}, map_color(0.5f * (t0 + t1)));
+    }
+    st.dl_.rect_outline(bar, st.style_.widget_border, 0.0f, 1.0f);
+
+    if (in.hovered && grid.contains(st.input_.mouse_)) {
+        const u32 hc = std::min(cols - 1, static_cast<u32>((st.input_.mouse_.x - grid.min.x) / cw));
+        const u32 hr = std::min(rows - 1, static_cast<u32>((st.input_.mouse_.y - grid.min.y) / ch));
+        const f32 hv = values[static_cast<std::size_t>(hr) * cols + hc];
+        st.dl_.rect_outline({{grid.min.x + hc * cw, grid.min.y + hr * ch},
+                             {grid.min.x + (hc + 1) * cw, grid.min.y + (hr + 1) * ch}},
+                            color{255, 255, 255, 220}, 0.0f, 1.5f);
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "[%u, %u] = %.4g", hr, hc, static_cast<double>(hv));
+        draw_tooltip_at(*this, st.input_.mouse_ + vec2{14.0f, 18.0f}, buf);
+    }
+    (void)f;
 }
 
 void context::plot_lines(std::string_view label, std::span<const f32> values, vec2 size, std::string_view overlay, f32 lo, f32 hi,

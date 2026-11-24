@@ -43,8 +43,12 @@ public:
     void resize(u32 width, u32 height);
     // fills the target (sized by resize() or an earlier render()); render() draws over what is there
     void clear(color c = {0, 0, 0, 0});
+    // fills only pixels inside `damage` (physical pixels), leaving the rest untouched for partial redraws
+    void clear(color c, const rect& damage);
 
     void render(const draw_data& data);
+    // partial redraw: rasterises only triangles and commands intersecting `damage` (physical pixels)
+    void render(const draw_data& data, const rect& damage);
 
     void set_output(const output_desc& output) noexcept;
     [[nodiscard]] output_desc output() const noexcept;

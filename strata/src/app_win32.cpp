@@ -123,14 +123,24 @@ struct app::impl {
     std::unique_ptr<context> ui;
 
 #if STRATA_HAS_DX11
+    struct aux_viewport {
+        id                             window_id{};
+        HWND                           hwnd{};
+        ComPtr<IDXGISwapChain1>        chain;
+        ComPtr<ID3D11RenderTargetView> rtv;
+        u32                            w{}, h{};
+        bool                           seen{};
+    };
     ComPtr<ID3D11Device>           device;
     ComPtr<ID3D11DeviceContext>    ctx;
+    ComPtr<IDXGIFactory2>          factory;
     ComPtr<IDXGISwapChain2>        chain;
     ComPtr<ID3D11RenderTargetView> rtv;
     HANDLE                         latency_wait{}; // swap chain frame latency waitable object
     bool                           tearing{};
     UINT                           chain_flags{};
     d3d11_renderer                 renderer;
+    std::vector<aux_viewport>      aux_viewports;
 #endif
 
 #if STRATA_HAS_OPENGL
@@ -185,11 +195,18 @@ struct app::impl {
     void release_device() noexcept
     {
 #if STRATA_HAS_DX11
+        for (auto& av : aux_viewports) {
+            av.rtv.Reset();
+            av.chain.Reset();
+            if (av.hwnd != nullptr) { ::DestroyWindow(av.hwnd); }
+        }
+        aux_viewports.clear();
         if (ctx != nullptr) { ctx->ClearState(); }
         rtv.Reset();
         renderer.destroy();
         if (latency_wait != nullptr) { ::CloseHandle(latency_wait); latency_wait = nullptr; }
         chain.Reset();
+        factory.Reset();
         ctx.Reset();
         device.Reset();
 #endif
@@ -246,7 +263,6 @@ struct app::impl {
         }
         ComPtr<IDXGIDevice>   dxgi_device;
         ComPtr<IDXGIAdapter>  adapter;
-        ComPtr<IDXGIFactory2> factory;
         if (FAILED(device.As(&dxgi_device)) || FAILED(dxgi_device->GetAdapter(&adapter)) || FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
             return std::unexpected{app_error::device};
         }
@@ -666,6 +682,7 @@ struct app::impl {
             const UINT interval = cfg.vsync ? 1u : 0u;
             const UINT flags    = !cfg.vsync && tearing ? DXGI_PRESENT_ALLOW_TEARING : 0u;
             const HRESULT hr = chain->Present(interval, flags);
+            present_aux_viewports_d3d11(c);
             ++frames_drawn;
             return hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET;
         }
@@ -755,6 +772,89 @@ struct app::impl {
         return false;
     }
 
+    void present_aux_viewports_d3d11(const float clear_col[4]) noexcept
+    {
+#if STRATA_HAS_DX11
+        if (!cfg.multi_viewport || factory == nullptr) { return; }
+        for (auto& av : aux_viewports) { av.seen = false; }
+        POINT origin{0, 0};
+        ::ClientToScreen(hwnd, &origin);
+        const f32 sc = ui->scale();
+        for (const viewport_desc& vp : ui->viewports()) {
+            const int sx = origin.x + static_cast<int>(std::lround(vp.bounds.min.x * sc));
+            const int sy = origin.y + static_cast<int>(std::lround(vp.bounds.min.y * sc));
+            const u32 sw = static_cast<u32>(std::max<LONG>(1, static_cast<LONG>(std::lround(vp.bounds.width() * sc))));
+            const u32 sh = static_cast<u32>(std::max<LONG>(1, static_cast<LONG>(std::lround(vp.bounds.height() * sc))));
+            aux_viewport* found = nullptr;
+            for (auto& av : aux_viewports) {
+                if (av.window_id == vp.window_id) { found = &av; break; }
+            }
+            if (found == nullptr) {
+                aux_viewport av;
+                av.window_id = vp.window_id;
+                const std::wstring wt = to_wide(vp.title);
+                av.hwnd = ::CreateWindowExW(WS_EX_TOOLWINDOW, window_class, wt.c_str(), WS_POPUP | WS_VISIBLE,
+                                            sx, sy, static_cast<int>(sw), static_cast<int>(sh), hwnd, nullptr,
+                                            ::GetModuleHandleW(nullptr), nullptr);
+                if (av.hwnd == nullptr) { continue; }
+                DXGI_SWAP_CHAIN_DESC1 sd{};
+                sd.Width            = sw;
+                sd.Height           = sh;
+                sd.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+                sd.SampleDesc.Count = 1;
+                sd.BufferUsage      = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+                sd.BufferCount      = 2;
+                sd.SwapEffect       = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+                if (FAILED(factory->CreateSwapChainForHwnd(device.Get(), av.hwnd, &sd, nullptr, nullptr, &av.chain))) {
+                    ::DestroyWindow(av.hwnd);
+                    continue;
+                }
+                ComPtr<ID3D11Texture2D> back;
+                if (FAILED(av.chain->GetBuffer(0, IID_PPV_ARGS(&back))) ||
+                    FAILED(device->CreateRenderTargetView(back.Get(), nullptr, &av.rtv))) {
+                    av.chain.Reset();
+                    ::DestroyWindow(av.hwnd);
+                    continue;
+                }
+                av.w = sw; av.h = sh; av.seen = true;
+                aux_viewports.push_back(std::move(av));
+                found = &aux_viewports.back();
+            } else {
+                found->seen = true;
+                ::SetWindowPos(found->hwnd, nullptr, sx, sy, static_cast<int>(sw), static_cast<int>(sh),
+                               SWP_NOZORDER | SWP_NOACTIVATE);
+                if (found->w != sw || found->h != sh) {
+                    found->rtv.Reset();
+                    if (SUCCEEDED(found->chain->ResizeBuffers(0, sw, sh, DXGI_FORMAT_UNKNOWN, 0))) {
+                        ComPtr<ID3D11Texture2D> back;
+                        if (SUCCEEDED(found->chain->GetBuffer(0, IID_PPV_ARGS(&back)))) {
+                            (void)device->CreateRenderTargetView(back.Get(), nullptr, &found->rtv);
+                        }
+                        found->w = sw;
+                        found->h = sh;
+                    }
+                }
+            }
+            if (found != nullptr && found->rtv != nullptr) {
+                ID3D11RenderTargetView* target = found->rtv.Get();
+                ctx->OMSetRenderTargets(1, &target, nullptr);
+                ctx->ClearRenderTargetView(target, clear_col);
+                renderer.render(ui->viewport_render_data(vp.window_id));
+                (void)found->chain->Present(0, 0);
+            }
+        }
+        std::erase_if(aux_viewports, [](aux_viewport& av) {
+            if (av.seen) { return false; }
+            av.rtv.Reset();
+            av.chain.Reset();
+            if (av.hwnd != nullptr) { ::DestroyWindow(av.hwnd); }
+            return true;
+        });
+#else
+        (void)clear_col;
+#endif
+    }
+
     bool reset_device()
     {
         release_device();
@@ -821,7 +921,9 @@ std::expected<app, app_error> app::create(const app_config& cfg)
     p->cfg.title      = p->title;
     p->cfg.state_file = p->state_path;
 
-    auto created = context::create(cfg.ui);
+    context_config ui_cfg = cfg.ui;
+    if (cfg.multi_viewport) { ui_cfg.multi_viewport = true; }
+    auto created = context::create(ui_cfg);
     if (!created) { return std::unexpected{app_error::fonts}; }
     p->ui = std::make_unique<context>(std::move(*created));
 

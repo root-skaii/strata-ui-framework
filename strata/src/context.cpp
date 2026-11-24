@@ -150,6 +150,7 @@ std::expected<context, font_error> context::create(const context_config& cfg)
     ctx.m_->scale_          = scale;
     ctx.m_->max_atlas_size_ = cfg.max_atlas_size;
     ctx.m_->dynamic_glyphs_ = cfg.dynamic_glyphs;
+    ctx.m_->multi_viewport_ = cfg.multi_viewport;
     ctx.m_->diag_           = cfg.diagnostics;
     ctx.m_->strings_        = cfg.strings;
     ctx.m_->font_sources_.reserve(fonts.size());
@@ -571,7 +572,9 @@ void context::end_frame()
     }
     apply_layer_order(*this);
     // (the popup layers' first command stays the first of them: it is where a host splits the frame)
-    m_->dl_.merge_commands(m_->menu_.detach_overlay_ ? &m_->menu_.overlay_first_ : nullptr);
+    if (m_->viewports_.empty()) {
+        m_->dl_.merge_commands(m_->menu_.detach_overlay_ ? &m_->menu_.overlay_first_ : nullptr);
+    }
 
     if (!m_->input_.mouse_down_) {
         m_->active_       = 0; // a widget that vanished mid-drag must not stay active forever
@@ -948,6 +951,8 @@ static void apply_layer_order(context& ui)
         }
     }
     m.menu_.overlay_first_ = ~0u; // (no layering this frame: nothing to detach)
+    m.main_cmd_count_      = ~0u;
+    m.viewports_.clear();
     if (m.runs_overflow_ || m.run_count_ == 0) {
         return;
     }
@@ -966,7 +971,9 @@ static void apply_layer_order(context& ui)
     add_owner(run_base);
     u32 backdrops_done = 0;
     for (u32 i = 0; i < n; ++i) {
-        const u32 level = m.win_.frame_windows_[order[i]]->modal_level;
+        const window_state* ws = m.win_.frame_windows_[order[i]];
+        if (m.multi_viewport_ && ws->detached_now) { continue; }
+        const u32 level = ws->modal_level;
         while (level > backdrops_done) { // the dimmed area goes right below the first window of its level
             ++backdrops_done;
             add_owner(run_backdrop + backdrops_done - 1);
@@ -982,6 +989,27 @@ static void apply_layer_order(context& ui)
         add_owner(popup_stack::popup_run(level));
     }
     if (!m.menu_.detach_overlay_) { add_owner(run_foreground); }
+
+    m.main_cmd_count_ = placed;
+    if (m.multi_viewport_) {
+        for (u32 i = 0; i < n; ++i) {
+            const window_state* ws = m.win_.frame_windows_[order[i]];
+            if (!ws->detached_now) { continue; }
+            const u32 first = placed;
+            add_owner(order[i]);
+            const u32 cnt = placed - first;
+            if (cnt > 0) {
+                m.viewports_.push_back(viewport_desc{
+                    .window_id = ws->key,
+                    .title     = std::string_view{ws->title.data(), ws->title_len},
+                    .bounds    = ws->last_bounds,
+                    .cmd_first = first,
+                    .cmd_count = cnt,
+                    .focused   = ws->key == m.win_.focused_window_,
+                });
+            }
+        }
+    }
 
     // nothing to do when the emission order already is the draw order
     u32  cursor   = 0;
@@ -1124,7 +1152,20 @@ rect internal::layout_place(context& ui, vec2 size) noexcept
     f32  target_h; // the height to center this item against: siblings already placed on this line, or (for a
                     // line's first item) a caller-supplied expectation such as a table row's known height. Purely
                     // cosmetic: it nudges where the item is *drawn*, never how much room the line is deemed to take.
-    if (l.same_line && !l.first) {
+    if (l.flex_wrap && !l.first) {
+        const f32 next_x = l.cursor_x + l.flex_gap_x;
+        if (next_x + size.x <= l.flex_right + 0.5f) {
+            pos      = {next_x, l.line_top};
+            target_h = l.line_h;
+            l.line_h = std::max(l.line_h, size.y);
+        } else {
+            pos        = {l.origin.x, l.line_top + l.line_h + l.flex_gap_y};
+            l.line_top = pos.y;
+            target_h   = l.line_h_seed;
+            l.line_h   = size.y;
+            if (size.y > 0.0f) { l.line_h_seed = 0.0f; }
+        }
+    } else if (l.same_line && !l.first) {
         pos      = {l.cursor_x + m.style_.item_spacing, l.line_top};
         target_h = l.line_h;
         l.line_h = std::max(l.line_h, size.y);
@@ -2224,6 +2265,30 @@ bool context::slider_f32(std::string_view label, f32& value, f32 lo, f32 hi, int
     }
     track_edit(*this, key, changed, m_->active_ == key);
     return changed;
+}
+
+void context::begin_flex(const flex_options& opt) noexcept
+{
+    if (m_->cur_ == nullptr) { return; }
+    const f32 w = opt.max_width > 0.0f ? opt.max_width : content_width();
+    layout_state& l = m_->layout_;
+    if (!l.first && !l.same_line) {
+        l.line_top += l.line_h + m_->style_.item_spacing;
+        l.line_h    = 0.0f;
+        l.cursor_x  = l.origin.x;
+        l.first     = true;
+        l.origin.y  = l.line_top;
+    }
+    l.flex_wrap  = true;
+    l.flex_gap_x = std::max(opt.gap_x, 0.0f);
+    l.flex_gap_y = std::max(opt.gap_y, 0.0f);
+    l.flex_right = l.origin.x + w;
+}
+
+void context::end_flex() noexcept
+{
+    m_->layout_.flex_wrap = false;
+    m_->layout_.same_line = false;
 }
 
 void context::set_keyboard_nav(bool on) noexcept
