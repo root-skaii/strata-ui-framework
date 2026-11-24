@@ -15,9 +15,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure Clang 22+ for MSVC STL
+        if: contains(matrix.preset, 'clang')
+        shell: pwsh
+        run: |
+          function Get-ClangMajor([string]$exe) {
+            $out = & $exe --version 2>$null | Select-Object -First 1
+            if ($out -match 'version (\d+)\.') { return [int]$Matches[1] }
+            return 0
+          }
+          $major = Get-ClangMajor "clang-cl"
+          if ($major -lt 22) {
+            $vsLlvm = "${env:ProgramFiles}\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin"
+            if ((Test-Path "$vsLlvm\clang-cl.exe") -and (Get-ClangMajor "$vsLlvm\clang-cl.exe") -ge 22) {
+              $vsLlvm | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              $major = Get-ClangMajor "$vsLlvm\clang-cl.exe"
+            } else {
+              choco install llvm --upgrade --no-progress -y
+              $major = Get-ClangMajor "C:\Program Files\LLVM\bin\clang-cl.exe"
+            }
+          }
+          if ($major -lt 22) {
+            "CLANG_EXTRA_ARGS=-DCMAKE_CXX_FLAGS=/D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
       - name: Configure and build (${{ matrix.preset }})
         shell: cmd
-        run: .\build_vs.cmd ${{ matrix.preset }} -DSTRATA_WERROR=ON
+        run: .\build_vs.cmd ${{ matrix.preset }} -DSTRATA_WERROR=ON ${{ env.CLANG_EXTRA_ARGS }}
 
       - name: Run headless tests
         shell: pwsh
