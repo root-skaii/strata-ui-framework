@@ -6,8 +6,8 @@ project(strata
     LANGUAGES CXX
 )
 
-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "strata only supports 64-bit builds")
+if(NOT EMSCRIPTEN AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "strata only supports 64-bit builds (or Emscripten WebAssembly)")
 endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -31,6 +31,10 @@ add_subdirectory(strata)
 
 if(WIN32 AND STRATA_BUILD_SANDBOX)
     add_subdirectory(sandbox)
+endif()
+
+if(EMSCRIPTEN AND STRATA_BUILD_WEB_DEMO)
+    add_subdirectory(web)
 endif()
 
 if(STRATA_BUILD_TESTS)

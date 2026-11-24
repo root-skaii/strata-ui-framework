@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__EMSCRIPTEN__)
+#include <cstdlib>
 #else
 #include <sys/mman.h>
 #endif
@@ -12,6 +14,8 @@ void* vmem_reserve(std::size_t bytes) noexcept
 {
 #ifdef _WIN32
     return ::VirtualAlloc(nullptr, bytes, MEM_RESERVE, PAGE_READWRITE);
+#elif defined(__EMSCRIPTEN__)
+    return bytes > 0 ? std::malloc(bytes) : nullptr;
 #else
     if (bytes == 0) { return nullptr; }
     void* p = ::mmap(nullptr, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -23,6 +27,9 @@ bool vmem_commit(void* address, std::size_t bytes) noexcept
 {
 #ifdef _WIN32
     return ::VirtualAlloc(address, bytes, MEM_COMMIT, PAGE_READWRITE) != nullptr;
+#elif defined(__EMSCRIPTEN__)
+    (void)bytes;
+    return address != nullptr;
 #else
     return address != nullptr && ::mprotect(address, bytes, PROT_READ | PROT_WRITE) == 0;
 #endif
@@ -45,6 +52,9 @@ void vmem_release(void* base, std::size_t bytes) noexcept
 #ifdef _WIN32
     (void)bytes;
     ::VirtualFree(base, 0, MEM_RELEASE);
+#elif defined(__EMSCRIPTEN__)
+    (void)bytes;
+    std::free(base);
 #else
     ::munmap(base, bytes);
 #endif

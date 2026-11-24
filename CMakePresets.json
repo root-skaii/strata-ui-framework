@@ -126,11 +126,13 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "STRATA_BUILD_WEBGPU": "ON",
+                "STRATA_BUILD_WEB_DEMO": "ON",
                 "STRATA_BUILD_OPENGL": "OFF",
                 "STRATA_BUILD_VULKAN": "OFF",
                 "STRATA_BUILD_SANDBOX": "OFF",
                 "STRATA_BUILD_OVERLAY": "OFF",
                 "STRATA_BUILD_TESTS": "OFF",
+                "STRATA_LTO": "OFF",
                 "STRATA_PCH": "OFF"
             }
         }

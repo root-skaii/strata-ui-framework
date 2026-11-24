@@ -82,13 +82,13 @@ Requires CMake 4.3+ and a C++23/latest compiler (MSVC, `clang-cl`, GCC, Clang, o
 | **Windows (MSVC / `clang-cl`)** | `.\build_vs.cmd x64-release` (fast iteration: `x64-dev`; Clang: `x64-clang-release`) |
 | **Visual Studio** | `cmake --preset vs2022` and open `build/vs2022/strata.sln` |
 | **Linux (headless + OpenGL)** | `cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build/linux` |
-| **WebAssembly (Emscripten)** | `emcmake cmake --preset wasm-release && cmake --build build/wasm-release` |
+| **WebAssembly (Emscripten)** | `emcmake cmake --preset wasm-release && cmake --build build/wasm-release` (serves `build/wasm-release/web/index.html`; auto-deployed to GitHub Pages by `.github/workflows/pages.yml`) |
 | **Headless tests** | `ctest --test-dir build/x64-release -LE gpu --output-on-failure` |
 
 Key CMake options (`-D<OPT>=ON|OFF`):
 
 - **Backends:** `STRATA_BUILD_DX11`, `STRATA_BUILD_DX12`, `STRATA_BUILD_OPENGL`, `STRATA_BUILD_VULKAN`, `STRATA_BUILD_WEBGPU`, `STRATA_BUILD_METAL`, `STRATA_BUILD_OPENXR`, `STRATA_BUILD_OPENVR`
-- **Components:** `STRATA_MINIMAL`, `STRATA_BUILD_SANDBOX`, `STRATA_BUILD_OVERLAY`, `STRATA_BUILD_TESTS`, `STRATA_BUILD_FUZZERS`
+- **Components:** `STRATA_MINIMAL`, `STRATA_BUILD_SANDBOX`, `STRATA_BUILD_WEB_DEMO`, `STRATA_BUILD_OVERLAY`, `STRATA_BUILD_TESTS`, `STRATA_BUILD_FUZZERS`
 - **Build:** `STRATA_STATIC_CRT`, `STRATA_LTO`, `STRATA_FAST_MATH`, `STRATA_AVX2`, `STRATA_WERROR`, `STRATA_PCH`, `STRATA_DIAGNOSTICS`, `STRATA_ASAN`
 
 ## Documentation
@@ -104,7 +104,8 @@ Key CMake options (`-D<OPT>=ON|OFF`):
 
 ```text
 strata/     static library (strata::strata) + optional app host (strata::app)
-sandbox/    showcase & test application (D3D11, D3D12, OpenGL, Vulkan, software, VR)
+sandbox/    desktop showcase & test application (D3D11, D3D12, OpenGL, Vulkan, software, VR)
+web/        browser WebGPU + WASM interactive sandbox (with CPU software fallback)
 overlay/    in-game overlays (DXGI D3D11/12, OpenGL IAT, Vulkan explicit layer, injector)
 bindings/   official language bindings (Rust workspace: strata-sys + strata)
 packaging/  vcpkg overlay port

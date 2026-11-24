@@ -41,3 +41,21 @@ jobs:
             -DSTRATA_WERROR=ON
           cmake --build build/linux
           ctest --test-dir build/linux --output-on-failure
+
+  wasm-webgpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools & fonts
+        run: sudo apt-get update && sudo apt-get install -y ninja-build fonts-dejavu-core
+
+      - name: Setup Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - name: Configure and build WebGPU browser sandbox
+        run: |
+          emcmake cmake --preset wasm-release -DSTRATA_WERROR=ON
+          cmake --build build/wasm-release

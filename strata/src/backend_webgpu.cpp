@@ -1,4 +1,4 @@
-// WebGPU renderer backend (Dawn, wgpu-native, Emscripten): ports strata/shaders/ui.hlsl to WGSL.
+// WebGPU renderer backend (Dawn, wgpu-native, Emscripten emdawnwebgpu): ports strata/shaders/ui.hlsl to WGSL.
 
 #include "strata/backend/webgpu.hpp"
 
@@ -160,19 +160,19 @@ fn shade_shape(s : Shape, pixel : vec2<f32>) -> vec4<f32> {
 
 @fragment
 fn ps_main(i : VsOut) -> @location(0) vec4<f32> {
+    var cov = textureSampleLevel(u_atlas, u_sampler, i.uv, 0.0).r;
+    let fw = fwidth(cov);
     if (i.shape_idx != NO_SHAPE) {
         let s = u_shapes[i.shape_idx];
-        return encode_output(shade_shape(s, i.pos.xy + u_xform.view_origin.xy) * i.col.a);
+        return encode_output(shade_shape(s, i.pos.xy + u_xform.view_origin.xy));
     }
-    var cov = textureSample(u_atlas, u_sampler, i.uv).r;
     let tc = u_xform.output_params.z;
     if (tc < 0.0) {
-        // SDF glyph atlas: -tc encodes the pixel spread; smooth edge via screen-space derivatives
-        let w = max(fwidth(cov), 0.02);
+        let w = max(fw, 0.02);
         cov = smoothstep(0.5 - w, 0.5 + w, cov);
-    } else if (tc > 0.0 && cov > 0.0 && cov < 1.0) {
-        let luma = 0.2126 * i.col.r + 0.7152 * i.col.g + 0.0722 * i.col.b;
-        cov = pow(cov, mix(1.0 + tc, 1.0 / (1.0 + tc), luma));
+    } else if (tc > 0.0) {
+        let k = tc * dot(i.col.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        cov = cov * (1.0 + k) / (1.0 + k * cov);
     }
     let a = i.col.a * cov;
     return encode_output(vec4<f32>(i.col.rgb * a, a));
@@ -180,8 +180,19 @@ fn ps_main(i : VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn ps_image(i : VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(u_tex, u_sampler, i.uv) * i.col;
-    return encode_output(vec4<f32>(t.rgb * t.a, t.a));
+    let s = u_shapes[i.shape_idx];
+    let p = i.pos.xy + u_xform.view_origin.xy - s.center;
+    let cov = clamp(0.5 - sd_round_box(p, s.half_size, s.radius), 0.0, 1.0);
+    let t = clamp(p / (2.0 * s.half_size) + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+    let uv0 = s.shadow_offset;
+    let uv1 = vec2<f32>(s.border_width, s.shadow_blur);
+    let uv = mix(uv0, uv1, t);
+    let dim = vec2<f32>(textureDimensions(u_tex));
+    let tpp = abs(uv1 - uv0) * dim / max(2.0 * s.half_size, vec2<f32>(1.0));
+    let lod = max(log2(max(max(tpp.x, tpp.y), 1.0e-4)), 0.0);
+    let c = textureSampleLevel(u_tex, u_sampler, uv, lod) * i.col;
+    let a = c.a * cov;
+    return encode_output(vec4<f32>(c.rgb * a, a));
 }
 )wgsl";
 
@@ -191,6 +202,11 @@ struct alignas(16) xform_ubo {
     f32 output[4]{};
     f32 view[4]{};
 };
+
+[[nodiscard]] WGPUStringView wgpu_sv(const char* s) noexcept
+{
+    return WGPUStringView{s, WGPU_STRLEN};
+}
 
 [[nodiscard]] WGPUTextureFormat to_wgpu_format(texture_layout l) noexcept
 {
@@ -203,11 +219,11 @@ struct alignas(16) xform_ubo {
 
 [[nodiscard]] WGPUShaderModule create_shader(WGPUDevice dev, const char* wgsl) noexcept
 {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc{};
-    wgsl_desc.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
-    wgsl_desc.code        = wgsl;
+    WGPUShaderSourceWGSL wgsl_src{};
+    wgsl_src.chain.sType = WGPUSType_ShaderSourceWGSL;
+    wgsl_src.code        = wgpu_sv(wgsl);
     WGPUShaderModuleDescriptor desc{};
-    desc.nextInChain = &wgsl_desc.chain;
+    desc.nextInChain = &wgsl_src.chain;
     return wgpuDeviceCreateShaderModule(dev, &desc);
 }
 
@@ -270,7 +286,7 @@ struct wgpu_renderer::impl {
         atlas_w = atlas_h = 0;
     }
 
-    void ensure_buffer(WGPUBuffer& buf, std::size_t& cap, std::size_t need, WGPUBufferUsageFlags usage)
+    void ensure_buffer(WGPUBuffer& buf, std::size_t& cap, std::size_t need, WGPUBufferUsage usage)
     {
         need = std::max<std::size_t>(need, 64);
         if (buf != nullptr && cap >= need) { return; }
@@ -303,9 +319,10 @@ struct wgpu_renderer::impl {
         atlas_w = w;
         atlas_h = h;
 
-        WGPUImageCopyTexture dst{};
+        WGPUTexelCopyTextureInfo dst{};
         dst.texture = atlas_tex;
-        WGPUTextureDataLayout lay{};
+        dst.aspect  = WGPUTextureAspect_All;
+        WGPUTexelCopyBufferLayout lay{};
         lay.bytesPerRow  = w;
         lay.rowsPerImage = h;
         WGPUExtent3D ext{w, h, 1};
@@ -336,7 +353,7 @@ struct wgpu_renderer::impl {
     {
         for (auto& t : textures) {
             if (!t.in_use) { continue; }
-            if (t.bg != nullptr)   { wgpuBindGroupRelease(t.bg); }
+            if (t.bg != nullptr) { wgpuBindGroupRelease(t.bg); }
             if (t.owned && t.view != nullptr) { wgpuTextureViewRelease(t.view); }
             if (t.owned && t.tex != nullptr)  { wgpuTextureDestroy(t.tex); wgpuTextureRelease(t.tex); }
         }
@@ -383,6 +400,8 @@ bool wgpu_renderer::create(const wgpu_init_info& info, const font_atlas& atlas)
     sd.magFilter     = WGPUFilterMode_Linear;
     sd.minFilter     = WGPUFilterMode_Linear;
     sd.mipmapFilter  = WGPUMipmapFilterMode_Linear;
+    sd.lodMinClamp   = 0.0f;
+    sd.lodMaxClamp   = 32.0f;
     sd.maxAnisotropy = 1;
     p->sampler = wgpuDeviceCreateSampler(p->device, &sd);
 
@@ -435,14 +454,14 @@ bool wgpu_renderer::create(const wgpu_init_info& info, const font_atlas& atlas)
 
     WGPUFragmentState frag{};
     frag.module      = p->shader;
-    frag.entryPoint  = "ps_main";
+    frag.entryPoint  = wgpu_sv("ps_main");
     frag.targetCount = 1;
     frag.targets     = &target;
 
     WGPURenderPipelineDescriptor rpd{};
     rpd.layout             = p->pl_main;
     rpd.vertex.module      = p->shader;
-    rpd.vertex.entryPoint  = "vs_main";
+    rpd.vertex.entryPoint  = wgpu_sv("vs_main");
     rpd.vertex.bufferCount = 1;
     rpd.vertex.buffers     = &vbl;
     rpd.primitive.topology = WGPUPrimitiveTopology_TriangleList;
@@ -453,7 +472,7 @@ bool wgpu_renderer::create(const wgpu_init_info& info, const font_atlas& atlas)
     p->pipe_main = wgpuDeviceCreateRenderPipeline(p->device, &rpd);
 
     rpd.layout      = p->pl_image;
-    frag.entryPoint = "ps_image";
+    frag.entryPoint = wgpu_sv("ps_image");
     p->pipe_image = wgpuDeviceCreateRenderPipeline(p->device, &rpd);
 
     WGPUBufferDescriptor ubd{};
@@ -496,7 +515,15 @@ void wgpu_renderer::render(const draw_data& data, WGPURenderPassEncoder pass)
     im.rebuild_frame_bg();
 
     wgpuQueueWriteBuffer(im.queue, im.vbuf, 0, data.vertices.data(), vbytes);
-    wgpuQueueWriteBuffer(im.queue, im.ibuf, 0, data.indices.data(), data.indices.size() * sizeof(u16));
+    const std::size_t raw_ibytes = data.indices.size() * sizeof(u16);
+    if ((raw_ibytes & 3u) == 0u) {
+        wgpuQueueWriteBuffer(im.queue, im.ibuf, 0, data.indices.data(), raw_ibytes);
+    } else {
+        const std::size_t aligned = raw_ibytes & ~std::size_t{3u};
+        if (aligned > 0) { wgpuQueueWriteBuffer(im.queue, im.ibuf, 0, data.indices.data(), aligned); }
+        const u16 tail[2] = {data.indices.back(), 0};
+        wgpuQueueWriteBuffer(im.queue, im.ibuf, aligned, tail, sizeof(tail));
+    }
     if (!data.shapes.empty()) {
         wgpuQueueWriteBuffer(im.queue, im.sbuf, 0, data.shapes.data(), data.shapes.size() * sizeof(shape_record));
     }
@@ -555,6 +582,7 @@ void wgpu_renderer::render(const draw_data& data, WGPUCommandEncoder encoder, WG
     if (!impl_ || encoder == nullptr || target_view == nullptr) { return; }
     WGPURenderPassColorAttachment ca{};
     ca.view       = target_view;
+    ca.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
     ca.loadOp     = clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
     ca.storeOp    = WGPUStoreOp_Store;
     ca.clearValue = {clear_col.r / 255.0, clear_col.g / 255.0, clear_col.b / 255.0, clear_col.a / 255.0};
@@ -576,10 +604,11 @@ bool wgpu_renderer::update_atlas_region(const font_atlas& atlas, atlas_region re
 {
     if (!impl_ || region.empty() || impl_->atlas_tex == nullptr) { return false; }
     if (atlas.width() != impl_->atlas_w || atlas.height() != impl_->atlas_h) { return update_atlas(atlas); }
-    WGPUImageCopyTexture dst{};
+    WGPUTexelCopyTextureInfo dst{};
     dst.texture = impl_->atlas_tex;
     dst.origin  = {region.x, region.y, 0};
-    WGPUTextureDataLayout lay{};
+    dst.aspect  = WGPUTextureAspect_All;
+    WGPUTexelCopyBufferLayout lay{};
     lay.offset       = static_cast<u64>(region.y) * atlas.width() + region.x;
     lay.bytesPerRow  = atlas.width();
     lay.rowsPerImage = atlas.height();
@@ -620,10 +649,11 @@ texture_id wgpu_renderer::create_texture(const texture_desc& desc, std::span<con
     const u32 bpp = texture_layout_bytes(gt.cpu.layout());
     for (u32 m = 0; m < gt.cpu.mip_count(); ++m) {
         const auto mpx = gt.cpu.pixels(m);
-        WGPUImageCopyTexture dst{};
+        WGPUTexelCopyTextureInfo dst{};
         dst.texture  = gt.tex;
         dst.mipLevel = m;
-        WGPUTextureDataLayout lay{};
+        dst.aspect   = WGPUTextureAspect_All;
+        WGPUTexelCopyBufferLayout lay{};
         lay.bytesPerRow  = gt.cpu.width(m) * bpp;
         lay.rowsPerImage = gt.cpu.height(m);
         WGPUExtent3D ext{gt.cpu.width(m), gt.cpu.height(m), 1};
@@ -659,11 +689,12 @@ bool wgpu_renderer::update_texture(texture_id id, u32 x, u32 y, u32 width, u32 h
     const u32 bpp = texture_layout_bytes(gt.cpu.layout());
     for (const auto& r : dirty) {
         const auto mpx = gt.cpu.pixels(r.mip);
-        WGPUImageCopyTexture dst{};
+        WGPUTexelCopyTextureInfo dst{};
         dst.texture  = gt.tex;
         dst.mipLevel = r.mip;
         dst.origin   = {r.x, r.y, 0};
-        WGPUTextureDataLayout lay{};
+        dst.aspect   = WGPUTextureAspect_All;
+        WGPUTexelCopyBufferLayout lay{};
         lay.offset       = (static_cast<u64>(r.y) * gt.cpu.width(r.mip) + r.x) * bpp;
         lay.bytesPerRow  = gt.cpu.width(r.mip) * bpp;
         lay.rowsPerImage = gt.cpu.height(r.mip);
