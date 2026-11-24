@@ -132,7 +132,8 @@ win32_platform::appearance_settings win32_platform::appearance() noexcept
                        RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS) {
         a.dark = value == 0;
     }
-    HIGHCONTRASTW hc{sizeof hc};
+    HIGHCONTRASTW hc{};
+    hc.cbSize = sizeof hc;
     a.high_contrast = ::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0) != FALSE && (hc.dwFlags & HCF_HIGHCONTRASTON) != 0;
     BOOL animations = TRUE;
     a.reduced_motion = ::SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0) != FALSE && animations == FALSE;

@@ -122,7 +122,13 @@ constexpr std::array<arabic_form, 43> forms = {{
 
 [[nodiscard]] bool available(const font_atlas* atlas, font_id f, char32_t cp) noexcept
 {
-    return atlas == nullptr || atlas->has_glyph(f, cp);
+    if (atlas == nullptr) { return true; }
+    if (atlas->has_glyph(f, cp)) { return true; }
+    if (atlas->dynamic()) {
+        (void)atlas->bake_glyph(f, cp);
+        return atlas->has_glyph(f, cp);
+    }
+    return false;
 }
 
 // joins `in_cps` into out.shaped / out.origin / out.span (the other fields are left alone)

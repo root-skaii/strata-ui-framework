@@ -271,14 +271,15 @@ struct font_source {
     HFONT                        font{};
     HGDIOBJ                      previous{};
     TEXTMETRICW                  tm{};
-    cmap12                       cmap;
-    bool                         cmap_loaded{};
+    mutable cmap12               cmap;
+    mutable bool                 cmap_loaded{};
 
     struct gdi_fallback {
-        HDC     dc{};
-        HFONT   font{};
-        HGDIOBJ previous{};
-        cmap12  cmap;
+        HDC            dc{};
+        HFONT          font{};
+        HGDIOBJ        previous{};
+        mutable cmap12 cmap;
+        mutable bool   cmap_loaded{};
     };
     std::vector<gdi_fallback>    gdi_fallbacks;
 #endif
@@ -346,11 +347,18 @@ struct font_source {
         }
 
 #ifdef _WIN32
+        const auto lookup_gdi = [](HDC d, cmap12& cm, bool& loaded, char32_t c) noexcept -> WORD {
+            if (c > 0xffff && !loaded) {
+                cm     = load_cmap12(d);
+                loaded = true;
+            }
+            return gdi_glyph_index(d, cm, c);
+        };
         HDC  hdc    = dc;
-        WORD index  = gdi_glyph_index(dc, cmap, cp);
+        WORD index  = lookup_gdi(dc, cmap, cmap_loaded, cp);
         u8   origin = 0;
         for (std::size_t k = 0; index == 0xffff && k < gdi_fallbacks.size(); ++k) {
-            index = gdi_glyph_index(gdi_fallbacks[k].dc, gdi_fallbacks[k].cmap, cp);
+            index = lookup_gdi(gdi_fallbacks[k].dc, gdi_fallbacks[k].cmap, gdi_fallbacks[k].cmap_loaded, cp);
             if (index != 0xffff) { hdc = gdi_fallbacks[k].dc; origin = static_cast<u8>(k + 1); }
         }
         if (index == 0xffff) { return; }
@@ -574,7 +582,6 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
                     wchar_t actual[LF_FACESIZE]{};
                     ::GetTextFaceW(f.dc, LF_FACESIZE, actual);
                     if (::_wcsicmp(actual, fb_face.c_str()) == 0) {
-                        f.cmap = load_cmap12(f.dc);
                         src.gdi_fallbacks.push_back(std::move(f));
                         continue;
                     }
@@ -621,7 +628,7 @@ std::expected<font_atlas, font_error> font_atlas::build(std::span<const font_con
         src.raws.resize(total);
 
 #ifdef _WIN32
-        if (!src.use_ttf && (dynamic || (!src.merged.empty() && src.merged.back().last > 0xffff))) {
+        if (!src.use_ttf && !src.merged.empty() && src.merged.back().last > 0xffff) {
             src.cmap        = load_cmap12(src.dc);
             src.cmap_loaded = true;
         }
