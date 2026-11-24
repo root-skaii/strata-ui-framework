@@ -251,7 +251,7 @@ void apply_css_cursor(cursor_kind c)
 
 EM_BOOL on_mouse_move(int, const EmscriptenMouseEvent* e, void*)
 {
-    g.in.mouse_pos = {static_cast<f32>(e->targetX) * g.in.dpr, static_cast<f32>(e->targetY) * g.in.dpr};
+    g.in.mouse_pos = {static_cast<f32>(e->clientX) * g.in.dpr, static_cast<f32>(e->clientY) * g.in.dpr};
     g.in.ctrl      = e->ctrlKey != 0 || e->metaKey != 0;
     g.in.shift     = e->shiftKey != 0;
     g.in.alt       = e->altKey != 0;
@@ -260,7 +260,7 @@ EM_BOOL on_mouse_move(int, const EmscriptenMouseEvent* e, void*)
 
 EM_BOOL on_mouse_down(int, const EmscriptenMouseEvent* e, void*)
 {
-    g.in.mouse_pos = {static_cast<f32>(e->targetX) * g.in.dpr, static_cast<f32>(e->targetY) * g.in.dpr};
+    g.in.mouse_pos = {static_cast<f32>(e->clientX) * g.in.dpr, static_cast<f32>(e->clientY) * g.in.dpr};
     const int idx  = e->button == 0 ? 0 : (e->button == 2 ? 1 : (e->button == 1 ? 2 : -1));
     if (idx >= 0) { g.in.mouse_down[static_cast<std::size_t>(idx)] = true; }
     js_focus_canvas();
@@ -493,7 +493,8 @@ void build_sandbox_ui(context& ui, f32 dt)
     if (auto w = ui.window("Timeline & Curves", {40, 500}, {680, 220}, wflags)) {
         if (auto r = ui.row({col_weight(1.4f), col_weight(1.0f)}, 10.0f)) {
             if (ui.begin_timeline("Sequencer", g.tl, {0.0f, 145.0f})) {
-                (void)ui.timeline_track("Camera", g.clips, g.keys);
+                (void)ui.timeline_track("Camera", g.clips);
+                (void)ui.timeline_track("FOV Keys", {}, g.keys);
                 ui.end_timeline();
             }
             ui.row_next();
@@ -613,7 +614,7 @@ void start_loop(bool webgpu_ok)
         g.log.add(log_level::info, "WebGPU initialized (strata::wgpu_renderer)");
     }
 
-    emscripten_set_mousemove_callback("#canvas", nullptr, EM_TRUE, on_mouse_move);
+    emscripten_set_mousemove_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, EM_TRUE, on_mouse_move);
     emscripten_set_mousedown_callback("#canvas", nullptr, EM_TRUE, on_mouse_down);
     emscripten_set_mouseup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, EM_TRUE, on_mouse_up);
     emscripten_set_wheel_callback("#canvas", nullptr, EM_TRUE, on_wheel);

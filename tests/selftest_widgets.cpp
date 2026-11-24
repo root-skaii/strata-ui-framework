@@ -1301,6 +1301,101 @@ void test_tool_widgets_and_rich_tooltip()
     CHECK(tip_ran);
 }
 
+void test_timeline_slow_drag_and_resize()
+{
+    std::fprintf(stderr, "[timeline slow drag, edge trim, keyframe priority]\n");
+    harness h;
+    timeline_state st;
+    st.start = 0.0f; st.end = 120.0f; st.view_start = 0.0f; st.view_end = 120.0f;
+    st.snap = 1.0f; st.label_width = 100.0f;
+    std::array<timeline_clip, 2> clips{{
+        {10.0f, 40.0f, "Camera Pan"},
+        {55.0f, 90.0f, "Zoom In"},
+    }};
+    std::array<timeline_keyframe, 1> keys{{{25.0f}}};
+
+    const auto build = [&] {
+        if (auto w = h.ui.window("tl", {20, 20}, {500, 180}, plain_window)) {
+            if (h.ui.begin_timeline("Seq", st, {460.0f, 120.0f})) {
+                (void)h.ui.timeline_track("Camera", clips, keys);
+                h.ui.end_timeline();
+            }
+        }
+    };
+    h.frames(build, 3);
+
+    // Compute exact lane screen geometry: window content min = (20+12, 20+12) = (32, 32), lane x = [132, 492], width = 360 (3 px/unit)
+    const f32 ruler_h = h.ui.font().line_height(0) + 8.0f;
+    const f32 row_h   = std::max(h.ui.frame_height() + 4.0f, 26.0f);
+    const f32 lane_x0 = 32.0f + st.label_width;
+    const f32 lane_w  = 460.0f - st.label_width;
+    const f32 row_cy  = 32.0f + ruler_h + row_h * 0.5f;
+    const auto x_of = [&](f32 t) { return lane_x0 + (t / 120.0f) * lane_w; };
+
+    // 1. Slow right-edge resize of clip 0 (0.5 px/frame = 0.167 units/frame < 0.5 snap) over 60 frames = +30 px = +10 units
+    const f32 r0_x = x_of(clips[0].end) - 2.0f;
+    h.move({r0_x, row_cy});
+    h.frames(build, 2);
+    h.down();
+    h.frame(build);
+    for (int i = 1; i <= 60; ++i) {
+        h.move({r0_x + 0.5f * static_cast<f32>(i), row_cy});
+        h.frame(build);
+    }
+    h.up();
+    h.frames(build, 2);
+    CHECK(std::abs(clips[0].start - 10.0f) < 0.01f);
+    CHECK(std::abs(clips[0].end - 50.0f) <= 1.01f);
+
+    // 2. Slow left-edge resize of clip 1 (-0.5 px/frame over 60 frames = -30 px = -10 units)
+    const f32 l1_x = x_of(clips[1].start) + 2.0f;
+    h.move({l1_x, row_cy});
+    h.frames(build, 2);
+    h.down();
+    h.frame(build);
+    for (int i = 1; i <= 60; ++i) {
+        h.move({l1_x - 0.5f * static_cast<f32>(i), row_cy});
+        h.frame(build);
+    }
+    h.up();
+    h.frames(build, 2);
+    CHECK(std::abs(clips[1].start - 45.0f) <= 1.01f);
+    CHECK(std::abs(clips[1].end - 90.0f) < 0.01f);
+
+    // 3. Slow body drag of clip 1 (+0.5 px/frame over 30 frames = +15 px = +5 units), duration preserved
+    const f32 dur1   = clips[1].end - clips[1].start;
+    const f32 b1_x   = x_of(0.5f * (clips[1].start + clips[1].end));
+    const f32 start1 = clips[1].start;
+    h.move({b1_x, row_cy});
+    h.frames(build, 2);
+    h.down();
+    h.frame(build);
+    for (int i = 1; i <= 30; ++i) {
+        h.move({b1_x + 0.5f * static_cast<f32>(i), row_cy});
+        h.frame(build);
+    }
+    h.up();
+    h.frames(build, 2);
+    CHECK(std::abs(clips[1].start - (start1 + 5.0f)) <= 1.01f);
+    CHECK(std::abs((clips[1].end - clips[1].start) - dur1) < 0.01f);
+
+    // 4. Keyframe diamond sitting over clip 0 grabs the keyframe, not the clip behind it
+    const f32 k0_x = x_of(keys[0].time);
+    const f32 c0_before = clips[0].start;
+    h.move({k0_x, row_cy});
+    h.frames(build, 2);
+    h.down();
+    h.frame(build);
+    for (int i = 1; i <= 30; ++i) {
+        h.move({k0_x + 0.5f * static_cast<f32>(i), row_cy});
+        h.frame(build);
+    }
+    h.up();
+    h.frames(build, 2);
+    CHECK(std::abs(keys[0].time - 30.0f) <= 1.01f);
+    CHECK(std::abs(clips[0].start - c0_before) < 0.01f);
+}
+
 } // namespace
 
 void run_widgets_tests()
@@ -1318,4 +1413,5 @@ void run_widgets_tests()
     test_item_list();
     test_ui_strings();
     test_tool_widgets_and_rich_tooltip();
+    test_timeline_slow_drag_and_resize();
 }

@@ -180,49 +180,115 @@ timeline_track_result context::timeline_track(std::string_view name, std::span<t
     const f32 span = std::max(st.view_end - st.view_start, 1.0e-3f);
     const f32 rw   = std::max(lane_r.width(), 1.0f);
     const auto x_of = [&](f32 t) { return lane_r.min.x + (t - st.view_start) / span * rw; };
+    const auto t_of = [&](f32 x) { return st.view_start + (x - lane_r.min.x) / rw * span; };
+
+    if (!m_->input_.mouse_down_) { m_->timeline_drag_id_ = 0; }
 
     m_->dl_.push_clip(lane_r);
     const id track_key = hash_id(name, hash_id({reinterpret_cast<const char*>(&tidx), sizeof(tidx)}, tl.key));
 
-    // clips: draggable body + left/right trim edges
+    // Hit-test keyframes before clips so diamonds sitting over a clip remain directly grabbable,
+    // while still drawing clips first and diamonds on top.
+    const f32 ky = 0.5f * (y0 + y1);
+    std::array<interaction, 64> key_in_stack{};
+    std::vector<interaction>    key_in_heap;
+    interaction*                key_ins = key_in_stack.data();
+    if (keys.size() > key_in_stack.size()) {
+        key_in_heap.resize(keys.size());
+        key_ins = key_in_heap.data();
+    }
+    for (std::size_t ki = 0; ki < keys.size(); ++ki) {
+        timeline_keyframe& k = keys[ki];
+        const id kk = hash_id("##K", hash_id({reinterpret_cast<const char*>(&ki), sizeof(ki)}, track_key));
+        const f32 kx = x_of(k.time);
+        if ((kx < lane_r.min.x - 8.0f || kx > lane_r.max.x + 8.0f) && m_->active_ != kk) { continue; }
+        const f32 r = 5.0f;
+        const rect kr{{kx - r - 2.0f, ky - r - 2.0f}, {kx + r + 2.0f, ky + r + 2.0f}};
+        const interaction in_k = interact(*this, kk, kr);
+        key_ins[ki] = in_k;
+        if (in_k.held) {
+            if (m_->timeline_drag_id_ != kk) {
+                m_->timeline_drag_id_   = kk;
+                m_->timeline_drag_grab_ = t_of(m_->input_.mouse_.x) - k.time;
+            }
+            const f32 target = t_of(m_->input_.mouse_.x) - m_->timeline_drag_grab_;
+            const f32 next   = std::clamp(snap_val(target, st.snap), st.start, st.end);
+            if (next != k.time) { k.time = next; res.changed_key = static_cast<int>(ki); }
+        }
+        if (in_k.pressed || in_k.held) { res.selected_key = static_cast<int>(ki); }
+    }
+
+    // clips: disjoint left/right trim edges + draggable interior body, tracked from absolute pointer position
+    // so slow drags accumulate cleanly across snap boundaries.
     for (std::size_t ci = 0; ci < clips.size(); ++ci) {
         timeline_clip& c = clips[ci];
+        const id ck   = hash_id({reinterpret_cast<const char*>(&ci), sizeof(ci)}, track_key);
+        const id lk_l = hash_id("##L", ck);
+        const id lk_r = hash_id("##R", ck);
         const f32 cx0 = x_of(c.start);
         const f32 cx1 = x_of(c.end);
-        if (cx1 < lane_r.min.x || cx0 > lane_r.max.x) { continue; }
-        const rect cr{{cx0, y0 + 3.0f}, {std::max(cx1, cx0 + 6.0f), y1 - 3.0f}};
-        const f32 edge_w = std::min(6.0f, cr.width() * 0.25f);
-        const id ck      = hash_id({reinterpret_cast<const char*>(&ci), sizeof(ci)}, track_key);
-        const id lk_l    = hash_id("##L", ck);
-        const id lk_r    = hash_id("##R", ck);
+        const bool any_active = (m_->active_ == ck || m_->active_ == lk_l || m_->active_ == lk_r);
+        if ((cx1 < lane_r.min.x || cx0 > lane_r.max.x) && !any_active) { continue; }
 
-        const interaction in_l = interact(*this, lk_l, {{cr.min.x, cr.min.y}, {cr.min.x + edge_w, cr.max.y}});
-        const interaction in_r = interact(*this, lk_r, {{cr.max.x - edge_w, cr.min.y}, {cr.max.x, cr.max.y}});
-        const interaction in_b = interact(*this, ck, cr);
+        const rect cr_hit{{cx0, y0 + 3.0f}, {std::max(cx1, cx0 + 8.0f), y1 - 3.0f}};
+        const f32 edge_w = std::clamp(std::floor(cr_hit.width() * 0.22f), 4.0f, 8.0f);
+        const rect lr{{cr_hit.min.x, cr_hit.min.y}, {cr_hit.min.x + edge_w, cr_hit.max.y}};
+        const rect rr{{cr_hit.max.x - edge_w, cr_hit.min.y}, {cr_hit.max.x, cr_hit.max.y}};
+        const rect br{{cr_hit.min.x + edge_w, cr_hit.min.y}, {std::max(cr_hit.max.x - edge_w, cr_hit.min.x + edge_w), cr_hit.max.y}};
 
-        const f32 dt = m_->input_.mouse_delta_.x / rw * span;
+        const interaction in_l = interact(*this, lk_l, lr);
+        const interaction in_r = interact(*this, lk_r, rr);
+        const interaction in_b = interact(*this, ck, br);
+
         if (in_l.hovered || in_l.held || in_r.hovered || in_r.held) { m_->cursor_ = cursor_kind::resize_ew; }
-        if (in_l.held && dt != 0.0f) {
-            const f32 next = std::clamp(snap_val(c.start + dt, st.snap), st.start, c.end - std::max(st.snap, 0.1f));
+        const f32 min_dur = std::max(st.snap, 0.1f);
+        if (in_l.held) {
+            if (m_->timeline_drag_id_ != lk_l) {
+                m_->timeline_drag_id_   = lk_l;
+                m_->timeline_drag_grab_ = t_of(m_->input_.mouse_.x) - c.start;
+            }
+            const f32 target = t_of(m_->input_.mouse_.x) - m_->timeline_drag_grab_;
+            const f32 next   = std::clamp(snap_val(target, st.snap), st.start, c.end - min_dur);
             if (next != c.start) { c.start = next; res.changed_clip = static_cast<int>(ci); }
-        } else if (in_r.held && dt != 0.0f) {
-            const f32 next = std::clamp(snap_val(c.end + dt, st.snap), c.start + std::max(st.snap, 0.1f), st.end);
+        } else if (in_r.held) {
+            if (m_->timeline_drag_id_ != lk_r) {
+                m_->timeline_drag_id_   = lk_r;
+                m_->timeline_drag_grab_ = t_of(m_->input_.mouse_.x) - c.end;
+            }
+            const f32 target = t_of(m_->input_.mouse_.x) - m_->timeline_drag_grab_;
+            const f32 next   = std::clamp(snap_val(target, st.snap), c.start + min_dur, st.end);
             if (next != c.end) { c.end = next; res.changed_clip = static_cast<int>(ci); }
-        } else if (in_b.held && dt != 0.0f) {
-            const f32 dur  = c.end - c.start;
-            const f32 next = std::clamp(snap_val(c.start + dt, st.snap), st.start, st.end - dur);
+        } else if (in_b.held) {
+            if (m_->timeline_drag_id_ != ck) {
+                m_->timeline_drag_id_   = ck;
+                m_->timeline_drag_grab_ = t_of(m_->input_.mouse_.x) - c.start;
+            }
+            const f32 dur    = c.end - c.start;
+            const f32 target = t_of(m_->input_.mouse_.x) - m_->timeline_drag_grab_;
+            const f32 next   = std::clamp(snap_val(target, st.snap), st.start, st.end - dur);
             if (next != c.start) {
                 c.start = next;
                 c.end   = next + dur;
                 res.changed_clip = static_cast<int>(ci);
             }
         }
-        if (in_b.pressed || in_b.held) { res.selected_clip = static_cast<int>(ci); }
+        if (in_b.pressed || in_b.held || in_l.held || in_r.held) { res.selected_clip = static_cast<int>(ci); }
 
+        // Recompute rect from updated start/end so rendering tracks the pointer with zero 1-frame lag.
+        const f32 dx0 = x_of(c.start);
+        const f32 dx1 = x_of(c.end);
+        const rect cr{{dx0, y0 + 3.0f}, {std::max(dx1, dx0 + 8.0f), y1 - 3.0f}};
         const color base = c.col.a != 0 ? c.col : m_->style_.accent;
-        const color fill = (in_b.hovered || in_b.held) ? base.scaled_alpha(0.92f) : base.scaled_alpha(0.75f);
+        const bool  lit  = in_b.hovered || in_b.held || in_l.hovered || in_l.held || in_r.hovered || in_r.held;
+        const color fill = lit ? base.scaled_alpha(0.92f) : base.scaled_alpha(0.75f);
         m_->dl_.rect_filled(cr, fill, 3.0f);
         m_->dl_.rect_outline(cr, base, 3.0f, 1.0f);
+        if (in_l.hovered || in_l.held) {
+            m_->dl_.rect_filled({{cr.min.x + 1.0f, cr.min.y + 3.0f}, {cr.min.x + 3.5f, cr.max.y - 3.0f}}, color{255, 255, 255, 210}, 1.0f);
+        }
+        if (in_r.hovered || in_r.held) {
+            m_->dl_.rect_filled({{cr.max.x - 3.5f, cr.min.y + 3.0f}, {cr.max.x - 1.0f, cr.max.y - 3.0f}}, color{255, 255, 255, 210}, 1.0f);
+        }
         if (!c.label.empty() && cr.width() > 20.0f) {
             m_->dl_.push_clip(cr);
             m_->dl_.text({cr.min.x + 6.0f, cr.min.y + (cr.height() - m_->font_.line_height(f)) * 0.5f},
@@ -231,22 +297,13 @@ timeline_track_result context::timeline_track(std::string_view name, std::span<t
         }
     }
 
-    // keyframes: draggable diamonds
-    const f32 ky = 0.5f * (y0 + y1);
+    // draw keyframe diamonds on top of clips
     for (std::size_t ki = 0; ki < keys.size(); ++ki) {
-        timeline_keyframe& k = keys[ki];
+        const timeline_keyframe& k = keys[ki];
         const f32 kx = x_of(k.time);
         if (kx < lane_r.min.x - 8.0f || kx > lane_r.max.x + 8.0f) { continue; }
         const f32 r = 5.0f;
-        const rect kr{{kx - r - 2.0f, ky - r - 2.0f}, {kx + r + 2.0f, ky + r + 2.0f}};
-        const id kk = hash_id("##K", hash_id({reinterpret_cast<const char*>(&ki), sizeof(ki)}, track_key));
-        const interaction in_k = interact(*this, kk, kr);
-        if (in_k.held && m_->input_.mouse_delta_.x != 0.0f) {
-            const f32 dt   = m_->input_.mouse_delta_.x / rw * span;
-            const f32 next = std::clamp(snap_val(k.time + dt, st.snap), st.start, st.end);
-            if (next != k.time) { k.time = next; res.changed_key = static_cast<int>(ki); }
-        }
-        if (in_k.pressed || in_k.held) { res.selected_key = static_cast<int>(ki); }
+        const interaction in_k = key_ins[ki];
         const color kc = (in_k.hovered || in_k.held) ? m_->style_.accent_hover
                                                      : (k.col.a != 0 ? k.col : m_->style_.accent);
         const vec2 top{kx, ky - r}, right{kx + r, ky}, bot{kx, ky + r}, left{kx - r, ky};
@@ -326,16 +383,13 @@ bool context::curve_editor(std::string_view label, std::vector<curve_point>& poi
     bool changed = false;
     bool hit_any_handle = false;
 
-    // control points and tangent handles
+    // interact with control points and tangent handles first so the curve and dots render with zero 1-frame lag
     for (std::size_t i = 0; i < points.size(); ++i) {
         curve_point& pt = points[i];
-        const vec2 sp   = to_screen({pt.x, pt.y});
         const id pk     = hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, key);
 
-        // tangent handles (in & out)
         const auto handle_tangent = [&](vec2& tang, vec2& other, const char* tag) {
             const vec2 tp = to_screen({pt.x + tang.x, pt.y + tang.y});
-            m_->dl_.line(sp, tp, m_->style_.text_dim.scaled_alpha(0.65f), 1.0f);
             const rect hr{{tp.x - 5.0f, tp.y - 5.0f}, {tp.x + 5.0f, tp.y + 5.0f}};
             const interaction hi = interact(*this, hash_id(tag, pk), hr);
             if (hi.hovered || hi.held) { hit_any_handle = true; }
@@ -346,12 +400,11 @@ bool context::curve_editor(std::string_view label, std::vector<curve_point>& poi
                 if (!pt.broken) { other = -tang; }
                 changed = true;
             }
-            m_->dl_.circle_filled(tp, 3.0f, (hi.hovered || hi.held) ? m_->style_.accent_hover : m_->style_.text_dim);
         };
         if (i > 0)                  { handle_tangent(pt.in_tangent, pt.out_tangent, "##tin"); }
         if (i + 1 < points.size())  { handle_tangent(pt.out_tangent, pt.in_tangent, "##tout"); }
 
-        // main point
+        const vec2 sp   = to_screen({pt.x, pt.y});
         const rect pr{{sp.x - 6.0f, sp.y - 6.0f}, {sp.x + 6.0f, sp.y + 6.0f}};
         const interaction pi = interact(*this, pk, pr);
         if (pi.hovered || pi.held) { hit_any_handle = true; }
@@ -368,7 +421,6 @@ bool context::curve_editor(std::string_view label, std::vector<curve_point>& poi
             pt.y = std::clamp(np.y, domain.min.y, domain.max.y);
             changed = true;
         }
-        m_->dl_.circle_filled(sp, 4.5f, (pi.hovered || pi.held) ? m_->style_.accent_hover : m_->style_.accent);
     }
 
     // double-click background to insert a new point
@@ -385,7 +437,7 @@ bool context::curve_editor(std::string_view label, std::vector<curve_point>& poi
         changed = true;
     }
 
-    // draw evaluated curve polyline
+    // draw evaluated curve polyline, then tangent arms and control points on top
     if (points.size() >= 2) {
         m_->dl_.push_clip(inner);
         std::array<vec2, 65> samples{};
@@ -397,6 +449,23 @@ bool context::curve_editor(std::string_view label, std::vector<curve_point>& poi
         }
         m_->dl_.polyline(samples, m_->style_.accent, 2.0f, false);
         m_->dl_.pop_clip();
+    }
+
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        const curve_point& pt = points[i];
+        const vec2 sp = to_screen({pt.x, pt.y});
+        const id pk   = hash_id({reinterpret_cast<const char*>(&i), sizeof(i)}, key);
+        const auto draw_tangent = [&](vec2 tang, const char* tag) {
+            const vec2 tp = to_screen({pt.x + tang.x, pt.y + tang.y});
+            const id   tk = hash_id(tag, pk);
+            const bool active = m_->active_ == tk || rect{{tp.x - 5.0f, tp.y - 5.0f}, {tp.x + 5.0f, tp.y + 5.0f}}.contains(m_->input_.mouse_);
+            m_->dl_.line(sp, tp, m_->style_.text_dim.scaled_alpha(0.65f), 1.0f);
+            m_->dl_.circle_filled(tp, 3.0f, active ? m_->style_.accent_hover : m_->style_.text_dim);
+        };
+        if (i > 0)                 { draw_tangent(pt.in_tangent, "##tin"); }
+        if (i + 1 < points.size()) { draw_tangent(pt.out_tangent, "##tout"); }
+        const bool p_active = m_->active_ == pk || rect{{sp.x - 6.0f, sp.y - 6.0f}, {sp.x + 6.0f, sp.y + 6.0f}}.contains(m_->input_.mouse_);
+        m_->dl_.circle_filled(sp, 4.5f, p_active ? m_->style_.accent_hover : m_->style_.accent);
     }
 
     m_->last_item_key_  = key;

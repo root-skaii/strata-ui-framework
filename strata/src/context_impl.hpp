@@ -138,6 +138,8 @@ struct context::impl {
         u32             track_idx{};
     };
     timeline_frame timeline_{};
+    id             timeline_drag_id_{};
+    f32            timeline_drag_grab_{};
 
     // active property grid session (begin_property_grid .. end_property_grid)
     struct prop_grid_frame {

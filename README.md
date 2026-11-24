@@ -1,6 +1,6 @@
 # strata
 
-A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C++ with **Direct3D 11**, **Direct3D 12**, **OpenGL 3.3+**, **Vulkan**, **WebGPU**, **Metal**, and **CPU software** backends — plus a C99 API, Rust bindings, multi-viewport support, and in-game / VR overlays.
+A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C++ with **Direct3D 11**, **Direct3D 12**, **OpenGL 3.3+**, **Vulkan**, **WebGPU**, **Metal**, and **CPU software** backends - plus a C99 API, Rust bindings, multi-viewport support, and in-game / VR overlays.
 
 > **Work in progress:** the API and core layout are actively evolving and may change between commits.
 
@@ -10,12 +10,12 @@ A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C+
 
 ## Why strata?
 
-- **Zero heap traffic in steady state** — geometry buffers use reserved virtual memory (`vmem_array`) committed in 64 KiB chunks; unchanged frames hash identical and let hosts sleep (`ui.can_idle()`).
-- **Analytic SDF rendering & frosted glass** — one quad per rounded panel evaluates per-corner radii, linear/radial gradients, borders, soft shadows, and live backdrop blur directly in the shader.
-- **Universal graphics & platform reach** — C++20 concept-driven backends (`D3D11`, `D3D12`, `OpenGL 3.3+`, `Vulkan`, `WebGPU/WASM`, `Metal`, `CPU software`, `Null`) with Win32, GLFW, and SDL3 platform adapters plus a ready-made multi-backend `strata::app` host.
-- **Built-in pro-tool widgets** — docking & tear-off multi-viewport OS windows, syntax-highlighted code editor (`Ctrl+/`, find/replace), node graph editor, interactive charts & heatmaps, timeline/sequencer, Bezier curve editor, property inspector grid, rich text, and 100k-row virtualized tables.
-- **Sharp text & vector icons everywhere** — optional single-channel SDF glyph baking (`font_config::sdf`), full UTF-8/RTL/IME support, and a built-in zero-dependency SVG path engine (`strata/svg.hpp`) with cross-platform vector UI icons.
-- **C99 & Rust ready, lean static footprint** — no exceptions, no RTTI, static library only, `<windows.h>` kept out of public headers, and official Rust crates in [`bindings/rust/`](bindings/rust/README.md).
+- **Zero heap traffic in steady state** - geometry buffers use reserved virtual memory (`vmem_array`) committed in 64 KiB chunks; unchanged frames hash identical and let hosts sleep (`ui.can_idle()`).
+- **Analytic SDF rendering & frosted glass** - one quad per rounded panel evaluates per-corner radii, linear/radial gradients, borders, soft shadows, and live backdrop blur directly in the shader.
+- **Universal graphics & platform reach** - C++20 concept-driven backends (`D3D11`, `D3D12`, `OpenGL 3.3+`, `Vulkan`, `WebGPU/WASM`, `Metal`, `CPU software`, `Null`) with Win32, GLFW, and SDL3 platform adapters plus a ready-made multi-backend `strata::app` host.
+- **Built-in pro-tool widgets** - docking & tear-off multi-viewport OS windows, syntax-highlighted code editor (`Ctrl+/`, find/replace), node graph editor, interactive charts & heatmaps, timeline/sequencer, Bezier curve editor, property inspector grid, rich text, and 100k-row virtualized tables.
+- **Sharp text & vector icons everywhere** - optional single-channel SDF glyph baking (`font_config::sdf`), full UTF-8/RTL/IME support, and a built-in zero-dependency SVG path engine (`strata/svg.hpp`) with cross-platform vector UI icons.
+- **C99 & Rust ready, lean static footprint** - no exceptions, no RTTI, static library only, `<windows.h>` kept out of public headers, and official Rust crates in [`bindings/rust/`](bindings/rust/README.md).
 
 ## Screenshots
 
@@ -23,22 +23,22 @@ All captured from the sandbox (`strata_sandbox --scene NAME --shot FILE`).
 
 | | |
 |---|---|
-| ![Docking](docs/screenshots/docking.png)<br>**Docking** — drag windows into edge docks, tabs, splits, or tear-off viewports | ![Acrylic](docs/screenshots/acrylic.png)<br>**Acrylic** — gradients, antialiased curves, frosted glass (`glass` theme) |
-| ![Charts](docs/screenshots/charts.png)<br>**Charts** — ticks, units, log scale, scatter/stacked/heatmap, clickable legend, zoom/pan | ![Code editor](docs/screenshots/editor.png)<br>**Code editor** — highlighting, line numbers, `Ctrl+/`, find/replace, input masks |
-| ![Command palette](docs/screenshots/palette.png)<br>**Command palette** — rebindable keys, multi-key chords, fuzzy search | ![Pickers](docs/screenshots/pickers.png)<br>**Drag & drop, date/time pickers** |
-| ![Menus](docs/screenshots/menus.png)<br>**Menus** — mnemonics, accelerators, icons, nested submenus | ![App scene](docs/screenshots/app.png)<br>**App-shaped UI** — row accessories, filtered combo, custom drawing |
+| ![Docking](docs/screenshots/docking.png)<br>**Docking** - drag windows into edge docks, tabs, splits, or tear-off viewports | ![Acrylic](docs/screenshots/acrylic.png)<br>**Acrylic** - gradients, antialiased curves, frosted glass (`glass` theme) |
+| ![Charts](docs/screenshots/charts.png)<br>**Charts** - ticks, units, log scale, scatter/stacked/heatmap, clickable legend, zoom/pan | ![Code editor](docs/screenshots/editor.png)<br>**Code editor** - highlighting, line numbers, `Ctrl+/`, find/replace, input masks |
+| ![Command palette](docs/screenshots/palette.png)<br>**Command palette** - rebindable keys, multi-key chords, fuzzy search | ![Pickers](docs/screenshots/pickers.png)<br>**Drag & drop, date/time pickers** |
+| ![Menus](docs/screenshots/menus.png)<br>**Menus** - mnemonics, accelerators, icons, nested submenus | ![App scene](docs/screenshots/app.png)<br>**App-shaped UI** - row accessories, filtered combo, custom drawing |
 
 ## Backends & platforms
 
 | Category | Supported |
 |---|---|
-| **GPU Renderers** | Direct3D 11 (`d3d11_renderer`), Direct3D 12 (`d3d12_renderer`), OpenGL 3.3+ Core (`gl_renderer`), Vulkan 1.0+ (`vulkan_renderer`), WebGPU (`wgpu_renderer` — Dawn / wgpu / WASM), Metal (`metal_renderer` — macOS / iOS) |
+| **GPU Renderers** | Direct3D 11 (`d3d11_renderer`), Direct3D 12 (`d3d12_renderer`), OpenGL 3.3+ Core (`gl_renderer`), Vulkan 1.0+ (`vulkan_renderer`), WebGPU (`wgpu_renderer` - Dawn / wgpu / WASM), Metal (`metal_renderer` - macOS / iOS) |
 | **Headless Renderers** | CPU Software (`software_renderer` with partial damage-rect redraw), Null (`null_renderer` validator) |
 | **Platform Adapters** | Win32 (`win32_platform` + IME + file drop), GLFW (`glfw_platform`), SDL3 (`sdl3_platform`), ready-made `strata::app` (D3D11 / OpenGL / Vulkan) |
-| **Language Bindings** | C++23/latest native, C99 (`strata/strata_c.h`), Rust (`bindings/rust/` — `strata-sys` + `strata`) |
+| **Language Bindings** | C++23/latest native, C99 (`strata/strata_c.h`), Rust (`bindings/rust/` - `strata-sys` + `strata`) |
 | **Overlays** | Direct3D 11/12 (DXGI vtable), OpenGL (`SwapBuffers` IAT), Vulkan (`VK_LAYER_strata_overlay`), OpenXR & OpenVR |
 
-All shaders are compiled at build time (DXBC / SPIR-V) or embedded as WGSL / MSL / GLSL — zero runtime shader compiler dependencies.
+All shaders are compiled at build time (DXBC / SPIR-V) or embedded as WGSL / MSL / GLSL - zero runtime shader compiler dependencies.
 
 ## Quickstart
 

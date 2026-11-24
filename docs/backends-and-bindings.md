@@ -26,7 +26,7 @@ Every renderer satisfies the `strata::renderer_backend` concept (`strata/backend
 | WebGPU | `strata/backend/webgpu.hpp` | `wgpu_renderer` | `render(data, pass)` / `render(data, encoder, view)` | Flat tint / pass encoder |
 | Metal | `strata/backend/metal.hpp` | `metal_renderer` | `render(data, render_encoder)` | Flat tint / encoder |
 | CPU Software | `strata/backend/software.hpp` | `software_renderer` | `render(data)` / `render(data, damage)` | Built-in |
-| Null | `strata/backend/null.hpp` | `null_renderer` | `render(data)` | — |
+| Null | `strata/backend/null.hpp` | `null_renderer` | `render(data)` | - |
 
 - **State restoration:** `d3d11_renderer` and `gl_renderer` save and restore modified pipeline state by default (safe for overlays); dedicated hosts can disable this via `set_state_restore(false)`.
 - **HDR & color spaces:** `renderer.set_output({output_space::srgb | srgb_view | scrgb | hdr10, paper_white_nits})`.
