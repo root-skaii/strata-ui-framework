@@ -43,8 +43,8 @@
             "hidden": true,
             "inherits": "ninja-base",
             "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
-                "CMAKE_LINKER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/lld-link.exe"
+                "CMAKE_CXX_COMPILER": "clang-cl",
+                "CMAKE_LINKER": "lld-link"
             }
         },
         {
@@ -159,6 +159,55 @@
             "name": "vs2022-release",
             "configurePreset": "vs2022",
             "configuration": "Release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "x64-release-headless",
+            "displayName": "x64 Release (headless / no GPU)",
+            "configurePreset": "x64-release",
+            "output": {
+                "outputOnFailure": true
+            },
+            "filter": {
+                "exclude": {
+                    "label": "gpu"
+                }
+            }
+        },
+        {
+            "name": "x64-dev-headless",
+            "displayName": "x64 Dev (headless / no GPU)",
+            "configurePreset": "x64-dev",
+            "output": {
+                "outputOnFailure": true
+            },
+            "filter": {
+                "exclude": {
+                    "label": "gpu"
+                }
+            }
+        },
+        {
+            "name": "x64-debug-headless",
+            "displayName": "x64 Debug (headless / no GPU)",
+            "configurePreset": "x64-debug",
+            "output": {
+                "outputOnFailure": true
+            },
+            "filter": {
+                "exclude": {
+                    "label": "gpu"
+                }
+            }
+        },
+        {
+            "name": "x64-release",
+            "displayName": "x64 Release (full suite, includes GPU tests)",
+            "configurePreset": "x64-release",
+            "output": {
+                "outputOnFailure": true
+            }
         }
     ]
 }

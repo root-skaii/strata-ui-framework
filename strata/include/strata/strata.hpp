@@ -1,6 +1,6 @@
 #pragma once
 
-// umbrella header: core ui (renderer-agnostic). backends: strata/backend/d3d11.hpp, strata/backend/d3d12.hpp;
+// umbrella header: core ui (renderer-agnostic). backends: strata/backend/{d3d11,d3d12,opengl,vulkan,software,null}.hpp;
 // win32 input: strata/platform/win32.hpp.
 
 #include "strata/backend/backend.hpp"

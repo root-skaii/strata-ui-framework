@@ -1,4 +1,4 @@
-# openxr (vr) support: strata's only external dependency, fetched only when STRATA_BUILD_OPENXR is on.
+# openxr (vr) support: fetched on demand when STRATA_BUILD_OPENXR is on.
 # provides the `openxr_loader` target (khronos loader, headers are PUBLIC on it) for strata/CMakeLists.txt to link.
 
 include_guard(GLOBAL)

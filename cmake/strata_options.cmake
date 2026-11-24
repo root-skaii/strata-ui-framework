@@ -13,61 +13,67 @@ if(WIN32 AND PROJECT_IS_TOP_LEVEL)
     set(_strata_sandbox_default ON)
 endif()
 
-option(STRATA_BUILD_SANDBOX "build the sandbox test application"   ${_strata_sandbox_default})
-option(STRATA_BUILD_DX11    "build the direct3d 11 backend"        ${_strata_win_default})
-option(STRATA_BUILD_OVERLAY "build the in-game overlay (needs direct3d 11 and 12): dll, test host, injector" ${_strata_win_default})
-option(STRATA_BUILD_DX12    "build the direct3d 12 backend"        ${_strata_win_default})
-# vr: renders the ui as an openxr composition quad layer. off by default -- fetches the khronos loader
-# (strata's only external dependency) the first time it's turned on. needs STRATA_BUILD_DX11 (XR_KHR_D3D11_enable).
-option(STRATA_BUILD_OPENXR  "build the openxr (vr) backend"        OFF)
-# vr: an IVROverlay quad, positioned in the tracking volume and fed a d3d11 texture -- steamvr composites and
-# stereo-renders it, nothing is hooked. off by default -- fetches openvr's headers + prebuilt loader.
-option(STRATA_BUILD_OPENVR  "build the openvr (steamvr) backend"   OFF)
-option(STRATA_INSTALL       "generate install / package rules"     ${PROJECT_IS_TOP_LEVEL})
-option(STRATA_STATIC_CRT    "link the static msvc runtime (/MT)"   ON)
-option(STRATA_FAST_MATH     "compile with /fp:fast"                ON)
-# /arch:AVX2 makes the binaries fault with an illegal instruction on cpus
-# without AVX2 (pre-2013 intel / pre-2015 amd). off by default: a library, and
-# above all an overlay dll loaded into someone else's program, cannot choose the
-# cpu it runs on -- and the ui gains little from it. see README "requirements".
-option(STRATA_AVX2          "compile with /arch:AVX2"              OFF)
-option(STRATA_WERROR        "treat warnings as errors"             OFF)
-option(STRATA_LTO          "whole-program optimisation (/GL + /LTCG, or ThinLTO) outside debug builds; off: much faster relinks" ON)
-# AddressSanitizer on everything built here (library, sandbox, tests): out-of-bounds reads / writes, use after free.
-# the x64-asan preset turns it on together with the fuzzer
-option(STRATA_DIAGNOSTICS "report runtime problems (limit hit, unbalanced begin/end, duplicate ids) to the hook, or mark them on screen without one; off: nothing is reported and no message text is compiled in" ON)
-option(STRATA_ASAN         "build with AddressSanitizer (/fsanitize=address)" OFF)
-# off now and then: a file that forgets an include it needs still compiles while the pch hands it over
-option(STRATA_PCH           "precompile the standard headers the public headers include" ON)
-# strata_fuzz: libFuzzer over the parsers (config, theme, dock layout, saved state, rich text, key chords) and text editing
-option(STRATA_BUILD_FUZZERS "build the libFuzzer target strata_fuzz (use with STRATA_ASAN)" OFF)
-# ctest: the headless self-test, and screenshot comparisons of the sandbox scenes against sandbox/golden/*.png
-option(STRATA_BUILD_TESTS   "register the sandbox tests with ctest"  ${PROJECT_IS_TOP_LEVEL})
+find_package(Vulkan QUIET)
+set(_strata_vulkan_default OFF)
+if(Vulkan_FOUND)
+    set(_strata_vulkan_default ON)
+endif()
+
+# -- Backends ------------------------------------------------------------------
+option(STRATA_BUILD_DX11    "Build the Direct3D 11 backend (Windows)"          ${_strata_win_default})
+option(STRATA_BUILD_DX12    "Build the Direct3D 12 backend (Windows)"          ${_strata_win_default})
+option(STRATA_BUILD_OPENGL  "Build the OpenGL 3.3+ Core backend"               ON)
+option(STRATA_BUILD_VULKAN  "Build the Vulkan backend (needs Vulkan SDK)"      ${_strata_vulkan_default})
+# VR quad overlays (fetches Khronos OpenXR / Valve OpenVR on first enable; requires STRATA_BUILD_DX11)
+option(STRATA_BUILD_OPENXR  "Build the OpenXR VR quad backend (Windows)"       OFF)
+option(STRATA_BUILD_OPENVR  "Build the OpenVR (SteamVR) backend (Windows)"     OFF)
+
+# -- Components ----------------------------------------------------------------
+set(_strata_overlay_default OFF)
+if(WIN32 AND STRATA_BUILD_DX11 AND STRATA_BUILD_DX12)
+    set(_strata_overlay_default ON)
+endif()
+option(STRATA_BUILD_SANDBOX "Build the sandbox test application (Windows)"     ${_strata_sandbox_default})
+option(STRATA_BUILD_OVERLAY "Build the D3D11/D3D12 in-game overlay targets"    ${_strata_overlay_default})
+option(STRATA_BUILD_TESTS   "Register headless and screenshot tests with CTest" ${PROJECT_IS_TOP_LEVEL})
+option(STRATA_BUILD_FUZZERS "Build the libFuzzer target strata_fuzz"           OFF)
+option(STRATA_INSTALL       "Generate CMake install and package config rules"  ${PROJECT_IS_TOP_LEVEL})
+
+# -- Build & diagnostics -------------------------------------------------------
+option(STRATA_STATIC_CRT    "Link the static MSVC runtime (/MT)"               ON)
+option(STRATA_LTO           "Enable LTO (/GL+/LTCG or ThinLTO) outside Debug"  ON)
+option(STRATA_FAST_MATH     "Compile with fast floating-point (/fp:fast)"      ON)
+# /arch:AVX2 faults on pre-2013 Intel / pre-2015 AMD CPUs; off by default for broad portability
+option(STRATA_AVX2          "Compile with AVX2 instructions (/arch:AVX2)"      OFF)
+option(STRATA_WERROR        "Treat compiler warnings as errors"                OFF)
+option(STRATA_PCH           "Precompile standard and core library headers"     ON)
+# OFF strips diagnostic hooks and message text while keeping frame_stats counters
+option(STRATA_DIAGNOSTICS   "Enable runtime misuse/limit diagnostics"          ON)
+option(STRATA_ASAN          "Build with AddressSanitizer (/fsanitize=address)" OFF)
 
 if(NOT WIN32 AND (STRATA_BUILD_DX11 OR STRATA_BUILD_DX12 OR STRATA_BUILD_OPENXR OR STRATA_BUILD_OPENVR OR STRATA_BUILD_OVERLAY))
     message(FATAL_ERROR "Direct3D / VR / overlay targets require Windows")
 endif()
 
 if(STRATA_BUILD_OPENXR AND NOT STRATA_BUILD_DX11)
-    message(FATAL_ERROR "STRATA_BUILD_OPENXR needs STRATA_BUILD_DX11 (openxr interop is via XR_KHR_D3D11_enable)")
+    message(FATAL_ERROR "STRATA_BUILD_OPENXR requires STRATA_BUILD_DX11 (openxr interop uses XR_KHR_D3D11_enable)")
 endif()
 
 if(STRATA_BUILD_OPENVR AND NOT STRATA_BUILD_DX11)
-    message(FATAL_ERROR "STRATA_BUILD_OPENVR needs STRATA_BUILD_DX11 (IVROverlay::SetOverlayTexture here targets d3d11)")
+    message(FATAL_ERROR "STRATA_BUILD_OPENVR requires STRATA_BUILD_DX11 (IVROverlay::SetOverlayTexture targets d3d11)")
 endif()
 
 if(PROJECT_IS_TOP_LEVEL)
     if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-        set(CMAKE_BUILD_TYPE Release CACHE STRING "build type" FORCE)
+        set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
     endif()
 
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-    # /GL + /LTCG for everything that isn't a debug build. clang-cl gets explicit
-    # ThinLTO instead (see the Clang branch below) -- CMake's built-in IPO switch
-    # only emits full -flto for Clang, not thin, so it's wired by hand there.
+    # /GL + /LTCG for MSVC outside Debug. clang-cl uses explicit ThinLTO below
+    # because CMake's IPO switch emits full -flto instead of -flto=thin.
     if(STRATA_LTO AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE        ON)
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
@@ -75,7 +81,7 @@ if(PROJECT_IS_TOP_LEVEL)
     endif()
 
     if(MSVC)
-        # cmake's default /EHsc and /Ob1|/Ob2 would trigger D9025 next to our overrides
+        # strip default /EHsc and /Ob1|/Ob2 to avoid D9025 alongside our overrides
         string(REGEX REPLACE "/EH[a-z-]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
         foreach(_cfg RELEASE RELWITHDEBINFO)
             string(REGEX REPLACE "/Ob[0-3]" "/Ob3" CMAKE_CXX_FLAGS_${_cfg} "${CMAKE_CXX_FLAGS_${_cfg}}")
@@ -89,12 +95,8 @@ endif()
 
 add_library(strata_options INTERFACE)
 
-# cmake 4.3 has no cxx_std_26 mapping for msvc yet: cxx_std_23 selects
-# /std:c++latest, which is also passed explicitly below so we always track the
-# newest standard the installed compiler offers. Skipped for clang-cl: CMake's
-# feature-detection injects -clang:-std=c++23 ahead of our own /std:c++latest,
-# and that one silently wins at the cc1 level -- pinning the build to c++23
-# instead of tracking latest. /std:c++latest below is sufficient on its own.
+# CMake 4.3 has no cxx_std_26 mapping for MSVC yet; /std:c++latest is passed explicitly below.
+# Skipped for clang-cl so CMake does not inject -clang:-std=c++23 ahead of /std:c++latest.
 if(NOT (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     target_compile_features(strata_options INTERFACE cxx_std_23)
 endif()
@@ -107,13 +109,11 @@ if(WIN32)
         UNICODE
         _UNICODE
         _CRT_SECURE_NO_WARNINGS
-        # the framework is exception free; keeps the stl from pulling in unwind tables
+        # the framework is exception-free; keeps the STL from pulling in unwind tables
         _HAS_EXCEPTIONS=0
     )
 endif()
 
-# nearly all of a strata .cpp's compile time is parsing these (<format> and <chrono> via log.hpp above all), not
-# strata's own code. each target linking strata_options builds its own pch
 if(STRATA_PCH)
     target_precompile_headers(strata_options INTERFACE
         <algorithm> <array> <chrono> <cmath> <compare> <concepts> <cstddef> <cstdint> <cstdio> <cstring> <ctime>
@@ -127,13 +127,10 @@ if(MSVC)
         /std:c++latest /W4 /permissive- /utf-8
         /Zc:__cplusplus /Zc:inline
         /GR- /EHs-c-
-        # release: intrinsics, function-level + global-data comdats for /OPT:REF|ICF
-        # (/O2 and /Ob3 come from CMAKE_CXX_FLAGS_RELEASE, see above)
         $<$<NOT:$<CONFIG:Debug>>:/Oi /Gy /Gw>
     )
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        # clang-cl doesn't implement these switches -- it's already conforming
-        # by default and warns them as unused; real cl.exe still needs them.
+        # clang-cl is conforming by default and warns these MSVC-only switches as unused
         target_compile_options(strata_options INTERFACE /Zc:preprocessor /Zc:throwingNew)
     endif()
     target_link_options(strata_options INTERFACE
@@ -141,7 +138,6 @@ if(MSVC)
     )
 
     if(STRATA_LTO AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT STRATA_ASAN)
-        # ThinLTO: faster to build and to link than MSVC's /GL+LTCG.
         target_compile_options(strata_options INTERFACE $<$<NOT:$<CONFIG:Debug>>:-flto=thin>)
         target_link_options(strata_options INTERFACE $<$<NOT:$<CONFIG:Debug>>:-flto=thin>)
     endif()
@@ -156,7 +152,6 @@ if(MSVC)
         target_compile_options(strata_options INTERFACE /WX)
     endif()
     if(STRATA_ASAN)
-        # (debug information for readable reports; asan does not work with incremental linking)
         target_compile_options(strata_options INTERFACE /fsanitize=address /Zi)
         target_link_options(strata_options INTERFACE /DEBUG /INCREMENTAL:NO)
     endif()
@@ -181,7 +176,6 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(STRATA_ASAN AND PROJECT_IS_TOP_LEVEL)
-    # whole-program optimisation would inline across the instrumented code for no gain in a checking build
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE        OFF)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF)
 endif()

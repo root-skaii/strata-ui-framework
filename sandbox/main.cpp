@@ -26,8 +26,8 @@
 namespace {
 
 struct options {
-    bool           use_dx12   = false;
-    bool           use_software = false;
+    enum class api_kind { auto_pick, dx11, dx12, opengl, vulkan, software };
+    api_kind       api        = api_kind::auto_pick;
     bool           use_xr     = false; // --xr: standalone vr loop (xr_main.cpp), skips the windowed path entirely
     bool           use_openvr = false; // --openvr: standalone steamvr overlay loop (openvr_main.cpp)
     bool           vsync      = true;
@@ -81,7 +81,7 @@ struct options {
 
 constexpr const wchar_t* usage_text =
     L"strata_sandbox [options]\n\n"
-    L"  --dx11 | --dx12          graphics backend (default dx11)\n"
+    L"  --dx11 | --dx12 | --gl | --vk   graphics backend (default dx11; also --opengl / --vulkan)\n"
     L"  --software               cpu rasteriser instead of a gpu backend (slow; screenshots work without a gpu)\n"
     L"  --xr                     standalone vr loop instead of a window (needs a build with STRATA_BUILD_OPENXR;\n"
     L"                           uses --width/--height as the panel's pixel size, --face/--size/--theme as usual)\n"
@@ -169,9 +169,11 @@ struct app {
 
     for (int i = 1; i < argc; ++i) {
         const std::wstring_view a = argv[i];
-        if (a == L"--dx12")                { opt.use_dx12 = true; }
-        else if (a == L"--dx11")           { opt.use_dx12 = false; }
-        else if (a == L"--software")       { opt.use_software = true; }
+        if (a == L"--dx12")                { opt.api = options::api_kind::dx12; }
+        else if (a == L"--dx11")           { opt.api = options::api_kind::dx11; }
+        else if (a == L"--gl" || a == L"--opengl") { opt.api = options::api_kind::opengl; }
+        else if (a == L"--vk" || a == L"--vulkan") { opt.api = options::api_kind::vulkan; }
+        else if (a == L"--software")       { opt.api = options::api_kind::software; }
         else if (a == L"--xr")             { opt.use_xr = true; }
         else if (a == L"--openvr")         { opt.use_openvr = true; }
         else if (a == L"--vsync")          { opt.vsync = true; }
@@ -1354,16 +1356,58 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 #endif
 
     std::unique_ptr<gfx_host> host;
-    if (opt.use_software) { host = make_software_host(); }
-#if STRATA_HAS_DX12
-    if (host == nullptr && opt.use_dx12) { host = make_d3d12_host(); }
-#endif
-#if STRATA_HAS_DX11
-    if (host == nullptr) { host = make_d3d11_host(); }
-#endif
-    if (host == nullptr) {
-        ::MessageBoxW(nullptr, L"no graphics backend was compiled in", L"strata sandbox", MB_ICONERROR);
+    const auto fail_backend = [&](const wchar_t* msg) -> int {
+        ::MessageBoxW(nullptr, msg, L"strata sandbox", MB_ICONERROR);
         return 1;
+    };
+    switch (opt.api) {
+    case options::api_kind::software:
+        host = make_software_host();
+        break;
+    case options::api_kind::dx12:
+#if STRATA_HAS_DX12
+        host = make_d3d12_host();
+#else
+        return fail_backend(L"this build has no direct3d 12 backend (configure with -DSTRATA_BUILD_DX12=ON)");
+#endif
+        break;
+    case options::api_kind::opengl:
+#if STRATA_HAS_OPENGL
+        host = make_opengl_host();
+#else
+        return fail_backend(L"this build has no opengl backend (configure with -DSTRATA_BUILD_OPENGL=ON)");
+#endif
+        break;
+    case options::api_kind::vulkan:
+#if STRATA_HAS_VULKAN
+        host = make_vulkan_host();
+#else
+        return fail_backend(L"this build has no vulkan backend (configure with -DSTRATA_BUILD_VULKAN=ON)");
+#endif
+        break;
+    case options::api_kind::dx11:
+#if STRATA_HAS_DX11
+        host = make_d3d11_host();
+#else
+        return fail_backend(L"this build has no direct3d 11 backend (configure with -DSTRATA_BUILD_DX11=ON)");
+#endif
+        break;
+    case options::api_kind::auto_pick:
+#if STRATA_HAS_DX11
+        host = make_d3d11_host();
+#elif STRATA_HAS_DX12
+        host = make_d3d12_host();
+#elif STRATA_HAS_VULKAN
+        host = make_vulkan_host();
+#elif STRATA_HAS_OPENGL
+        host = make_opengl_host();
+#else
+        host = make_software_host();
+#endif
+        break;
+    }
+    if (host == nullptr) {
+        return fail_backend(L"no graphics backend was compiled in");
     }
 
     std::vector<strata::codepoint_range> ranges(strata::glyph_ranges::default_set.begin(),

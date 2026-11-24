@@ -38,8 +38,8 @@ set_target_properties(openvr_api PROPERTIES
 )
 
 # openvr_api.dll is a prebuilt file elsewhere in the fetched tree, not something ninja produces into
-# CMAKE_RUNTIME_OUTPUT_DIRECTORY the way openxr_loader.dll is -- callers that need to run (strata_sandbox,
-# strata_overlay_host) must copy it next to their own output explicitly with this.
+# CMAKE_RUNTIME_OUTPUT_DIRECTORY the way openxr_loader.dll is -- targets that need to run (strata_sandbox,
+# strata_overlay_demo) copy it next to their output explicitly with this helper.
 function(strata_openvr_copy_dll target)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

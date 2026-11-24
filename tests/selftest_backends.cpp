@@ -4,6 +4,14 @@
 
 #include <strata/backend/null.hpp>
 #include <strata/backend/software.hpp>
+#if STRATA_HAS_OPENGL
+#include <strata/backend/opengl.hpp>
+static_assert(renderer_backend<gl_renderer>);
+#endif
+#if STRATA_HAS_VULKAN
+#include <strata/backend/vulkan.hpp>
+static_assert(renderer_backend<vulkan_renderer>);
+#endif
 
 static_assert(renderer_backend<null_renderer>);
 static_assert(renderer_backend<software_renderer>);
@@ -150,6 +158,30 @@ void test_software_ui_frame()
     CHECK(pixel(r, 700, 500) == (std::array<u8, 4>{30, 30, 34, 255})); // far from the window
 }
 
+void test_gpu_backend_shells()
+{
+    std::fprintf(stderr, "[gpu backends: uninitialised lifecycle & concept checks]\n");
+#if STRATA_HAS_OPENGL
+    {
+        gl_renderer gl;
+        CHECK(!gl.valid());
+        CHECK(!gl.device_lost());
+        CHECK(gl.create_texture(2, 2, red2x2) == 0);
+        gl.destroy();
+    }
+#endif
+#if STRATA_HAS_VULKAN
+    {
+        vulkan_renderer vk;
+        CHECK(!vk.valid());
+        CHECK(!vk.device_lost());
+        CHECK(vk.create_texture(2, 2, red2x2) == 0);
+        vk.clear_target_cache();
+        vk.destroy();
+    }
+#endif
+}
+
 } // namespace
 
 void run_backend_tests()
@@ -157,4 +189,5 @@ void run_backend_tests()
     test_null_renderer();
     test_software_renderer();
     test_software_ui_frame();
+    test_gpu_backend_shells();
 }

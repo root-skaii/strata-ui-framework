@@ -5,7 +5,7 @@
 // strata::frame takes `renderer_backend auto&` / `platform_backend auto&` and never names a graphics api.
 //
 //   platform  feeds the ui: input, dpi, cursor, clipboard, IME        win32_platform
-//   renderer  draws draw_data and owns the gpu textures               d3d11_renderer, d3d12_renderer
+//   renderer  draws draw_data and owns the gpu textures               d3d11_renderer, d3d12_renderer, gl_renderer, vulkan_renderer
 //
 // the one thing renderers do NOT share is setup and the draw call itself, because they take the api's own objects
 // (device + context for d3d11; device, queue and a command list for d3d12). everything a host does between those two

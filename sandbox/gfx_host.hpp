@@ -41,3 +41,9 @@ public:
 #if STRATA_HAS_DX12
 [[nodiscard]] std::unique_ptr<gfx_host> make_d3d12_host();
 #endif
+#if STRATA_HAS_OPENGL
+[[nodiscard]] std::unique_ptr<gfx_host> make_opengl_host();
+#endif
+#if STRATA_HAS_VULKAN
+[[nodiscard]] std::unique_ptr<gfx_host> make_vulkan_host();
+#endif

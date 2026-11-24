@@ -1,18 +1,20 @@
 # strata
 
-Immediate-mode UI framework for Direct3D 11 and 12. C++ latest (`/std:c++latest`), CMake 4.3+, Windows x64, MSVC.
+Immediate-mode UI framework in C++latest (`/std:c++latest`, CMake 4.3+, Windows x64, MSVC / `clang-cl`) with **Direct3D 11**, **Direct3D 12**, **OpenGL 3.3+**, **Vulkan**, and **CPU software** backends.
 
-**This project is a work in progress and not ready for general use: I don't recommend using it until the core design settles.**
+> **Work in progress:** the API and core layout are still settling and may change between commits.
 
 ![Docked windows with a tree, nested tables, images and rich text](docs/screenshots/features.png)
 
 ```
-strata/    the library  (strata::strata, static)
-sandbox/   test application, same UI on d3d11 or d3d12
-overlay/   in-game overlay for d3d11 / d3d12 programs (hook, demo dll, test host, injector)
-cmake/     options, compile flags, hlsl embedding, package config
-tests/     self-test sources, golden screenshots, fuzz targets
+strata/    static library (strata::strata) + optional app host (strata::app)
+sandbox/   test application (D3D11, D3D12, OpenGL, Vulkan, CPU software, VR)
+overlay/   in-game overlay for D3D11 / D3D12 programs (hook, demo DLL, test host, injector)
+cmake/     build options, compile flags, HLSL / SPIR-V shader embedding, package config
+tests/     self-test sources, local golden screenshots, fuzz targets
 ```
+
+**Jump to:** [Screenshots](#screenshots) · [Build](#build) · [Backends](#backends) · [Quickstart](#using-the-library) · [Sandbox](#sandbox) · [Widgets](#widgets) · [C API](#c-interface) · [Overlay](#in-game-overlay-direct3d-11-and-12) · [VR / XR](#vr-and-xr-overlays) · [Roadmap](#todo)
 
 ## Screenshots
 
@@ -27,51 +29,76 @@ All rendered by the sandbox (`strata_sandbox --scene NAME --shot FILE`) on Direc
 
 ## Build
 
-| Where | How |
+| Environment | Steps |
 |---|---|
-| VS Code | open the folder with the *CMake Tools* extension, pick a preset (`x64-debug` / `x64-release`), build; F5 launches `sandbox (dx11)` / `sandbox (dx12)` |
-| Visual Studio | *Open Folder* on this directory (Ninja presets), **or** generate a solution: `cmake --preset vs2022` then open `build/vs2022/strata.sln` |
-| Terminal | `build_vs.cmd x64-release` (loads the VS x64 environment, configures, builds) |
+| Terminal | `build_vs.cmd x64-release` (loads the VS x64 environment, configures, builds; `x64-dev` skips LTO for fast rebuilds) |
+| VS Code | Open the folder with *CMake Tools*, select a preset (`x64-debug`, `x64-release`, `x64-dev`, `x64-clang-release`), build |
+| Visual Studio | *Open Folder* (requires CMake >= 4.3), or generate a solution: `cmake --preset vs2022` and open `build/vs2022/strata.sln` |
 
-*Open Folder* needs CMake >= 4.3 (Visual Studio's bundled copy may be older) -- use the `vs2022` preset to generate a
-solution instead if so.
+Key CMake options (`-D<OPT>=ON|OFF`):
 
-Options (`-D`): `STRATA_BUILD_DX11`, `STRATA_BUILD_DX12`, `STRATA_BUILD_SANDBOX`, `STRATA_STATIC_CRT` (/MT),
-`STRATA_FAST_MATH` (/fp:fast), `STRATA_AVX2` (/arch:AVX2), `STRATA_WERROR`, `STRATA_INSTALL`, `STRATA_BUILD_TESTS`, `STRATA_DIAGNOSTICS` (OFF reports and marks nothing and
-compiles no message text in; counters in `frame_stats` still count).
+| Option | Default | Notes |
+|---|---|---|
+| `STRATA_BUILD_DX11` / `STRATA_BUILD_DX12` | `ON` (Windows) | Direct3D 11 / 12 backends (HLSL compiled at build time via `fxc.exe`) |
+| `STRATA_BUILD_OPENGL` | `ON` | OpenGL 3.3+ Core backend (zero external dependencies) |
+| `STRATA_BUILD_VULKAN` | Auto (`ON` if Vulkan SDK found) | Vulkan backend (GLSL compiled to SPIR-V at build time via `glslc` / `glslangValidator`) |
+| `STRATA_BUILD_OVERLAY` | `ON` (Windows) | In-game overlay library, demo DLL, test host, injector (requires DX11 + DX12) |
+| `STRATA_BUILD_OPENXR` / `STRATA_BUILD_OPENVR` | `OFF` | VR quad overlays (requires DX11; fetches Khronos / OpenVR loader on first enable) |
+| `STRATA_BUILD_SANDBOX` / `STRATA_BUILD_TESTS` | `ON` (top-level) | Sandbox app and `ctest` suite |
+| `STRATA_STATIC_CRT` / `STRATA_LTO` / `STRATA_FAST_MATH` | `ON` | `/MT`, whole-program optimization (`/GL`+`/LTCG` or ThinLTO), `/fp:fast` |
+| `STRATA_AVX2` / `STRATA_WERROR` / `STRATA_ASAN` | `OFF` | `/arch:AVX2` (off for broad x64 portability), `/WX`, AddressSanitizer (`x64-asan` preset + `STRATA_BUILD_FUZZERS`) |
+| `STRATA_DIAGNOSTICS` | `ON` | Runtime misuse/limit reporting; `OFF` strips all diagnostic message strings (`frame_stats` counters remain) |
+| `STRATA_PCH` / `STRATA_INSTALL` | `ON` | Precompiled headers; install / `find_package(strata)` rules |
 
-`ctest --test-dir build/x64-release` runs the headless self-test and compares sandbox screenshots against
-`tests/golden/*.png` (machine-specific -- other fonts need their own; regenerate with the `strata_update_goldens`
-target after an intended visual change and review the image diff).
+- **Tests:** `ctest --test-dir build/x64-release -LE gpu` runs headless checks (self-test, C API compile test, overlay module tests, software rasterizer). The full `ctest` suite also runs GPU screenshot comparisons against local, machine-specific goldens in `tests/golden/*.png` (regenerate with `--target strata_update_goldens` and inspect diffs before trusting).
+- **Zero runtime shader compilers:** Direct3D bytecode (DXBC) and Vulkan SPIR-V are compiled at build time and embedded as C++ arrays; OpenGL compiles its embedded GLSL 330 source once at renderer creation.
 
-`STRATA_AVX2` is off by default so binaries run on any x64 CPU. Shaders compile at build time (`fxc.exe`, Windows
-SDK) and are embedded as bytecode -- no shader files or `d3dcompiler` DLL at runtime.
+## Backends
+
+Every renderer satisfies the `strata::renderer_backend` concept (`strata/backend/backend.hpp`) with no virtual calls in the frame loop. Graphics API DLLs are delay-loaded or resolved dynamically on demand, so unused backends add no startup load.
+
+| Backend | Header | Class | Backdrop Blur | Notes |
+|---|---|---|---|---|
+| Direct3D 11 | `strata/backend/d3d11.hpp` | `d3d11_renderer` | Automatic (bound RTV) | Optional state save/restore (`set_state_restore`) for overlays |
+| Direct3D 12 | `strata/backend/d3d12.hpp` | `d3d12_renderer` | Via `d3d12_target` | Explicit command-list recording; per-frame upload buffers + static VRAM promotion |
+| OpenGL 3.3+ | `strata/backend/opengl.hpp` | `gl_renderer` | Automatic (bound FBO) | Core profile, built-in WGL loader or custom `proc_loader` (GLFW/SDL/EGL), optional state save/restore |
+| Vulkan 1.0+ | `strata/backend/vulkan.hpp` | `vulkan_renderer` | Via `vulkan_target::image` | Explicit command-buffer recording outside a render pass; staged texture copies and deferred retirement |
+| CPU Software | `strata/backend/software.hpp` | `software_renderer` | Built-in | Multithreaded CPU rasterizer (no GPU or window required) |
+| Null | `strata/backend/null.hpp` | `null_renderer` | — | Header-only validator and draw-data counter for headless tests |
 
 ## Sandbox
 
 ```
 strata_sandbox.exe [options]        (strata_sandbox.exe --help lists everything)
 
-  --dx11 | --dx12          graphics backend (default dx11)
-  --vsync | --novsync      present interval
-  --fps N                  frame cap, 0 = unlimited (default: display refresh; some drivers ignore vsync)
-  --width N --height N     client size (default 1280x720)
-  --frames N               exit after N frames (smoke test)
-  --theme N|NAME           a built-in theme by index or name (midnight, light, ocean, rose, dracula, nord, solarized_dark,
-                           solarized_light, high_contrast, forest, amber, glass);  --theme-file FILE applies a theme file on top
-  --scale F                ui scale (default: the monitor's dpi scale; --width / --height are logical pixels)
-  --scene NAME             only one scene: default, features, visuals, inputs, multiselect, charts, textures, scripts, textlog, menus, context, modal, toasts, config, palette, tabs, dnd, lists, editor, icons, bigtree, rows, app, ...
-  --selftest               headless checks of the ui logic (text editing, docking, menus, modals, ...), exit code 0 = passed
-  --shot FILE              render fixed 1/60 s steps, save the last frame as a png and exit
-  --golden FILE            the same, but compare with the png FILE; exit code 0 = match (--update-golden rewrites it)
-  --log FILE               stderr (D3D debug layer messages in Debug builds, frame report) to a file
-  --metrics                strata's own inspector windows: frame cost, geometry, culling, idle state, live draw commands
-  --idle                   skip rendering and presenting while the ui reports nothing changed
+  --dx11 | --dx12 | --gl | --vk    graphics backend (default dx11; aliases --opengl, --vulkan)
+  --software                       CPU rasterizer (screenshots work without a GPU)
+  --xr | --openvr                  standalone VR loop (requires STRATA_BUILD_OPENXR / STRATA_BUILD_OPENVR)
+  --vsync | --novsync              present interval (default vsync)
+  --fps N                          frame cap, 0 = unlimited (default: display refresh)
+  --width N --height N             logical client size (default 1280x720)
+  --frames N                       exit after N frames (smoke test)
+  --theme N|NAME                   built-in theme by index or name (midnight, light, ocean, rose, dracula, nord,
+                                   solarized_dark, solarized_light, high_contrast, forest, amber, glass)
+  --theme-file FILE                apply a theme file on top of the selected theme
+  --scale F                        UI scale (default: monitor DPI scale)
+  --scene NAME                     single scene: default, features, visuals, inputs, multiselect, charts, textures,
+                                   scripts, textlog, menus, context, modal, toasts, config, palette, tabs, dnd,
+                                   lists, editor, icons, bigtree, rows, nodes, app
+  --menu | --features              show only the sidebar settings menu or the docked feature windows
+  --selftest                       run headless UI logic checks and exit (0 = passed)
+  --shot FILE                      render fixed 1/60 s steps, save the last frame as PNG, and exit
+  --golden FILE                    compare against PNG FILE (0 = match; --update-golden rewrites it)
+  --diff A.png --against B.png     compare two screenshots (--diff-out OUT.png writes an amplified diff)
+  --record FILE | --replay FILE    record or deterministically replay per-frame input
+  --log FILE                       redirect stderr (debug layers, frame report) to a file
+  --metrics                        open built-in metrics and draw-list inspector windows
+  --idle                           skip render and present while the UI reports nothing changed
 
-  --font FILE|NAME --size PX                   primary font (id 0)
-  --mono FILE|NAME --mono-size PX              second font (id 1, default Consolas 13)
-  --heading FILE|NAME --heading-size PX        third font (id 2, bold, default Segoe UI 22)
-  --icons FILE|NAME --icon-size PX             icon font, --no-icons
+  --font FILE|NAME --size PX                 primary font (id 0)
+  --mono FILE|NAME --mono-size PX            second font (id 1, default Consolas 13)
+  --heading FILE|NAME --heading-size PX      third font (id 2, bold, default Segoe UI 22)
+  --icons FILE|NAME --icon-size PX           icon font, --no-icons
   --no-extra-fonts   --cjk   --no-kern
 ```
 
@@ -81,11 +108,12 @@ windows into the side/bottom docks and a floating "Tools" panel -- drag them aro
 ## Using the library
 
 ```cpp
-auto ui = strata::context::create().value();          // builds the font atlas
-strata::win32_platform platform;  platform.attach(hwnd);   // forward WM_* to platform.handle_message()
+auto ui = strata::context::create().value();            // builds the font atlas
+strata::win32_platform platform;  platform.attach(hwnd); // forward WM_* to platform.handle_message()
 
-strata::d3d11_renderer renderer;                       // or d3d12_renderer
+strata::d3d11_renderer renderer;                        // or d3d12_renderer / gl_renderer / vulkan_renderer
 renderer.create(device, device_context, ui.font());
+ui.release_font_pixels();                               // GPU now holds the atlas
 
 // every frame
 ui.begin_frame(platform.new_frame());
@@ -96,29 +124,28 @@ if (auto w = ui.window("debug", {24, 24}, 300)) {
     if (ui.button("reset")) { /* ... */ }
 }
 ui.end_frame();
-// bind your render target, then:
+// bind the render target (or open a command list/buffer for D3D12/Vulkan), then:
 renderer.render(ui.render_data());
 ```
 
-With any `platform_backend`, `strata::run_frame(ui, platform, build)` does begin / build / end (IME, cursor) and returns
-whether to render. Backends are C++ concepts (`strata/backend/backend.hpp`): a new renderer or platform only has to
-satisfy `renderer_backend` / `platform_backend`; there are no virtual calls in the frame loop.
+With any `platform_backend`, `strata::run_frame(ui, platform, build)` runs begin / build / end (IME, cursor) and returns
+whether the frame needs rendering.
 
-`d3d11_renderer::render` saves and restores every pipeline stage it touches. `d3d12_renderer::render` records into
-your open command list and expects the usual frames-in-flight fence discipline.
+- **Direct3D 11 / OpenGL 3.3+:** `render(data)` draws into the currently bound target/framebuffer and saves/restores modified pipeline state by default (`set_state_restore(false)` disables the guard for dedicated hosts). OpenGL accepts an optional `proc_loader` (`glfwGetProcAddress`, `SDL_GL_GetProcAddress`, etc.) or resolves WGL entry points automatically on Windows.
+- **Direct3D 12 / Vulkan:** `render(data, cmd, frame_index, target)` records into the host's open command list / command buffer using per-frame upload slots (the host waits on that slot's fence before reuse). Vulkan records outside a render pass so staged texture copies and backdrop blur passes execute cleanly without extra host hooks.
 
 ## Design notes
 
 - **No heap traffic in steady state.** Vertex / index / command arrays are `vmem_array`s: reserved address space
   committed in 64 KiB chunks, never moved, cleared per frame.
-- **Logical pixels.** Layout is in logical pixels; the draw list scales on output, so renderers see only physical
+- **Logical pixels.** Layout runs in logical pixels; the draw list scales on output, so renderers see only physical
   pixels (see *DPI and UI scale*).
-- **16-byte vertex** (`float2` pos, `unorm16x2` uv, `rgba8`), one atlas, one shader pair; draws merge per clip rect.
+- **16-byte vertex** (`float2` pos, `unorm16x2` uv, `rgba8`), one shared font atlas, minimal pipelines; draws merge per clip rect.
 - **Nothing changed, nothing sent.** `end_frame` hashes the geometry; `ui.can_idle()` is true when the frame is
   identical and no animation is moving (see *Idling*).
-- **Analytic rounded shapes.** One quad per shape; the pixel shader evaluates an SDF with per-corner radii, gradient,
+- **Analytic rounded shapes.** One quad per shape; the fragment shader evaluates an SDF with per-corner radii, gradient,
   inner border and soft shadow. Plain axis-aligned rects take a 4-vertex fast path.
-- **No exceptions, no RTTI**, static CRT, `/GL` + `/LTCG` in release, windows.h kept out of public headers.
+- **No exceptions, no RTTI**, static CRT, LTO in release, `<windows.h>` kept out of public headers.
 
 ## Widgets
 
@@ -194,12 +221,12 @@ if (ui.begin_table("files", 3, strata::table_default, /*scroll height*/ 240.0f))
 
 ```cpp
 // images: the renderer owns the texture (rgba8, straight alpha); the ui only draws it
-strata::texture_id tex = renderer.create_texture(w, h, pixels);        // d3d11_renderer / d3d12_renderer, 0 on failure
+strata::texture_id tex = renderer.create_texture(w, h, pixels);        // any renderer_backend, 0 on failure
 ui.image(tex, {96, 96});                                               // size.x == 0: layout width, size.y == 0: square
 ui.image(tex, {96, 96}, {0.25f, 0.25f}, {0.75f, 0.75f}, tint, /*rounding*/ 12.0f);   // crop, tint, round corners
 if (ui.image_button("open", tex, {64, 64})) { /* clicked */ }
-strata::texture_id view = renderer.register_texture(scene_srv);        // an existing texture (viewport, video)
-renderer.destroy_texture(tex);                                         // d3d12: after the gpu is done with it
+strata::texture_id view = renderer.register_texture(scene_view);       // wrap an existing GPU texture (viewport, video)
+renderer.destroy_texture(tex);                                         // D3D12 / Vulkan retire after frames in flight finish
 
 // docking: regions that windows can be dropped into (every frame, before the windows)
 strata::rect client{{0, 0}, ui.display_size()};
@@ -226,13 +253,13 @@ ui.dock_load_layout(layout);                     // ... and bring it back (befor
 
 ```cpp
 ui.set_scale(platform.dpi_scale());        // 1.0 = 96 dpi, 1.5 = 144 dpi ...  (rebuilds the font atlas)
-renderer.update_atlas(ui.font());          // d3d11 / d3d12: upload it
+renderer.update_atlas(ui.font());          // upload the rebuilt atlas to the renderer
 ui.release_font_pixels();
 // on WM_DPICHANGED: the same three lines with the new platform.dpi_scale()
 ```
 
-Everything you specify stays in logical pixels; the draw list scales on output, so renderers only see physical
-pixels. A rescale costs one atlas rebuild. The dpi scale is a good default but a poor *setting* -- see
+All layout coordinates stay in logical pixels; the draw list scales on output, so renderers only see physical
+pixels. A rescale costs one atlas rebuild. The DPI scale is a good default but a poor *setting* -- see
 *UI scale at runtime* for changing it independently.
 
 ## Drawing: gradients, curves, acrylic
@@ -248,8 +275,8 @@ ui.window("glass", pos, size, strata::window_flags::acrylic);                   
 - **Gradients and curves:** angled or radial gradients, mitred polylines with AA, beziers and arcs that tessellate to
   them -- all one quad or one strip.
 - **Acrylic / blur:** `window_flags::acrylic` / `child_flags::acrylic` frost the background behind a window or child.
-  D3D12 needs the extra `d3d12_target` argument to `renderer.render(...)` for a live blur (otherwise panels are flat
-  tints). Theme `glass` is built for it.
+  D3D11 and OpenGL snapshot the bound target automatically; D3D12 (`d3d12_target`) and Vulkan (`vulkan_target::image`)
+  take the target image for live blur (otherwise panels draw as flat tints). Theme `glass` is built for it.
 
 ## Themes and theme files
 
@@ -335,7 +362,7 @@ strata::date d{2026, 9, 25};  strata::time_of_day t{13, 45, 0};
 ui.date_picker("date", d);  ui.time_picker("time", t, /*seconds*/ true);  ui.datetime_picker("both", d, t);
 ```
 
-- **Drag and drop:** the payload is a small typed copy of your data; a target accepts one type. Esc cancels a drag.
+- **Drag and drop:** the payload is a small typed copy of caller data; a target accepts one type. Esc cancels a drag.
 - **Pickers:** a month calendar or hour / minute (/ second) grids; `datetime.hpp` has the date-math helpers
   (`add_days`, `parse_date`, ...).
 - `--scene dnd` shows both.
@@ -436,12 +463,12 @@ switch (ui.confirm("destroy", {"Destroy", "Cancel"}, {.remember = &never_ask, .d
 ## Code editor, passwords and input masks
 
 ```cpp
-ui.input_spans(spans);                                          // colors from your highlighter, as for any text field
+ui.input_spans(spans);                                          // colors from a syntax highlighter, as for any text field
 ui.input_code("##code", source, {0, 260});                      // line numbers, current line, brackets, auto indent, find / replace
 ui.code_goto_line("##code", 120);   ui.code_find("##code", "TODO", /*replace bar*/ false);
 
 ui.input_text("password", pw, {}, input_flags::password | input_flags::reveal);   // an eye button shows the text
-ui.input_masked("phone", phone, "(###) ###-####");                 // "(555) 123-4567" is built as you type
+ui.input_masked("phone", phone, "(###) ###-####");                 // "(555) 123-4567" formatted while typing
 ui.input_masked("plate", plate, "UU-###");                         // "AB-123": letters are made upper case
 ```
 
@@ -584,7 +611,7 @@ after `end_frame()`.
 ## Theming, custom drawing, overrides
 
 ```cpp
-ui.theme() = strata::themes::light();        // midnight (default), light, ocean, rose; apply between frames
+ui.theme() = strata::themes::light();        // 12 built-in themes (midnight is default); apply between frames
 
 // per-widget overrides: scoped, or push/pop
 {
@@ -605,7 +632,7 @@ ui.draw().shape(item.bounds, s);                           // also: rect_filled,
 ```
 
 `style` covers colors, rounding, padding, spacing, borders, shadow, gradient and animation speed; `style_overrides`
-changes them for a scope. `custom_item` + `draw()` let you build custom widgets with the same primitives strata uses
+changes them for a scope. `custom_item` + `draw()` build custom widgets with the same primitives strata uses
 internally.
 
 ## Windows
@@ -628,7 +655,7 @@ Windows drag, collapse and stack; pressing one raises it. Input goes to the topm
 
 ## Idling
 
-An untouched UI draws the same thing every frame. `end_frame` hashes the geometry to tell you when nothing changed:
+An untouched UI draws the same thing every frame. `end_frame` hashes the geometry to report when nothing changed:
 
 ```cpp
 ui.end_frame();
@@ -742,14 +769,14 @@ rings for every widget are not there yet: only text fields and combos take the k
 
 Static-linked, no heap traffic in steady state. Linking a full-featured probe (window, text, button, checkbox,
 slider, text field, rich text, a table) against an empty release binary adds **~580 KiB** (~420 KiB is strata's own
-code, the rest mostly `std::format` float tables); each D3D backend adds ~35 KiB more.
+code, the rest mostly `std::format` float tables); each GPU backend adds ~35–50 KiB more.
 
 A typical UI (a couple of windows, a table) holds well under 1 MiB of committed memory and emits a few thousand
 vertices/indices per frame (~0.1 ms CPU); steady state allocates nothing.
 
-No registry, thread or hook use; files are touched only by the font, config and theme load / save calls.
-Everything is statically linked, and each backend delay-loads only its own D3D DLL. Typed text (including passwords,
-via `secure_string`) is zeroed on focus loss and context destruction.
+No registry, thread or hook use in the core library; files are touched only by the font, config and theme load / save calls.
+Everything is statically linked, and each backend delay-loads or dynamically resolves only its own graphics API DLL.
+Typed text (including passwords, via `secure_string`) is zeroed on focus loss and context destruction.
 
 ## Fonts, Unicode, kerning
 
@@ -763,7 +790,7 @@ auto ui = strata::context::create(cfg).value();
 
 - **Multiple fonts:** `cfg.extra_fonts` adds fonts 1, 2, ... into one shared atlas; `ui.push_font(id)` / `pop_font()`
   switches. Titles use font 0.
-- **Unicode:** full UTF-8; you choose the baked blocks (`font_config::ranges`). Missing glyphs draw `?`. CJK needs a
+- **Unicode:** full UTF-8; the caller selects the baked blocks (`font_config::ranges`). Missing glyphs draw `?`. CJK needs a
   font with those glyphs (`--font C:\Windows\Fonts\msyh.ttc --cjk`).
 - **Fallback faces and emoji:** `font_config::fallback_faces` fills missing glyphs at bake time;
   `glyph_ranges::emoji` / `symbols` / `math_alphanumeric` are available.
@@ -790,28 +817,30 @@ The DPI scale is a good default, not a setting -- overlays are often wanted smal
 works from any thread and applies on the next frame. Each rebuild costs tens of ms per font, so drive it from a
 stepper rather than a dragged slider.
 
-## In-game overlay (direct3d 11 and 12)
+## In-game overlay (Direct3D 11 and 12)
 
-`overlay/` is a dll loaded into a direct3d program (modding tools, inspectors) that draws a strata ui over every
-frame and takes keyboard and mouse while open.
+`overlay/` is a DLL loaded into a Direct3D program (modding tools, inspectors, profilers) that draws a strata UI over
+every frame and takes keyboard and mouse input while open.
 
 ```cpp
 strata::overlay::options opt;
 opt.ui = [](strata::context& ui) { if (auto w = ui.window("my tool", {40, 40}, {360, 0})) { ui.text("hello"); } };
-strata::overlay::install(opt);       // from a thread of your own, not from DllMain; F1 (opt.toggle_key) shows / hides it
+strata::overlay::install(opt);       // call from a dedicated thread, not from DllMain; F1 (opt.toggle_key) toggles it
 ```
 
 - **The hook:** a dummy swap chain yields `IDXGISwapChain`'s shared vtable, so `Present` / `Present1` /
-  `ResizeBuffers` can be replaced on the game's own swap chain with no code patched (`uninstall()` restores them, and says whether the dll may unload).
-- **Input:** the game window is subclassed and feeds `win32_platform`; while open the game can optionally get no
-  keyboard / mouse (`options.block_game_input`).
-- **Hud:** `options.hud` runs on every frame, menu open or not, with no input and the game keeping its mouse and keyboard: for
-  esp / name plates next to the toggled `ui`. `selfexamples/argon` is a multi-module overlay built on it.
-- **Pieces:** `strata_overlay` (static lib for your dll), `strata_overlay_demo` (sample dll), `strata_overlay_inject
-  <pid|exe> <dll>` (LoadLibrary injector), `strata_overlay_host` (a stand-in game used by ctest).
+  `ResizeBuffers` can be replaced on the target's swap chain with no code patched (`uninstall()` restores them, and
+  reports whether the DLL is safe to unload).
+- **Input:** the host window is subclassed and feeds `win32_platform`; while open, keyboard and mouse input can
+  optionally be blocked from reaching the underlying application (`options.block_game_input`).
+- **HUD:** `options.hud` runs on every frame, menu open or not, with no input capture while the host keeps mouse and
+  keyboard — suitable for always-on metrics, HUD panels, and world-space markers alongside the toggled `ui`.
+- **Targets:** `strata_overlay` (static lib for host DLLs), `strata_overlay_demo` (sample DLL), `strata_overlay_inject
+  <pid|exe> <dll>` (LoadLibrary injector), `strata_overlay_host` (stand-in host used by `ctest`).
 - **Direct3D 12:** the queue seen calling `ExecuteCommandLists` is hooked the same way; the overlay submits its own
-  command list before Present.
-- **Limits:** Vulkan / OpenGL need their own hook; not intended for online games with anti-cheat.
+  command list before `Present`.
+- **Limits:** overlay hooking currently targets DXGI (Direct3D 11 and 12); Vulkan and OpenGL overlays require their own
+  present/swapchain hooks. Not intended for online games with anti-cheat.
 
 ## VR and XR overlays
 
@@ -882,7 +911,8 @@ Would fit, not promised.
 - Bindings on top of the C interface (C#, Python, Rust): the C layer is there, a wrapper would show what is missing from it
 
 **Platform and rendering**
-- A Vulkan or OpenGL backend (the in-game overlay's README lists the missing one as a limit)
+- Vulkan and OpenGL hooks for the in-game overlay
+- Additional platform backends (SDL, GLFW, Linux X11 / Wayland)
 - Screen reader support (UI Automation)
 - Images from the clipboard (paste a picture into `image()`)
 
