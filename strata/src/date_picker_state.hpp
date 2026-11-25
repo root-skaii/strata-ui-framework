@@ -11,6 +11,10 @@ struct date_picker_state {
     id  cal_key_{};
     i32 cal_year_{};
     i32 cal_month_{};
+    id  wheel_drag_key_{};
+    f32 wheel_drag_y_{};
+    id  wheel_col_key_{};
+    f32 wheel_accum_{};
 };
 
 } // namespace strata::internal

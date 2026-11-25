@@ -785,39 +785,61 @@ void test_datetime_pickers()
         CHECK(day_changed && day == date{2026, 11, 1});
     }
 
-    // the time grid: an hour, a minute and the fine step
+    // the wheel-drum time picker: click neighbor rows, wheel-scroll columns, and type directly
     h.click(clock_box.center(), build);
     h.frames(build, 3);
     CHECK(h.ui.any_popup_open());
     {
-        const f32 fh  = h.ui.frame_height();
-        const f32 pad = 12.0f;
-        const f32 ch  = fh - 6.0f;
-        const f32 lh  = h.ui.font().line_height(0);
-        const f32 w   = std::max(clock_box.width(), 240.0f) - 2.0f * pad;
-        const f32 cw  = w / 6.0f;
-        const f32 x0  = clock_box.min.x + pad;
-        const f32 top = clock_box.max.y + 4.0f + pad;       // the caption "hour"
-        const f32 row0 = top + lh + 2.0f;                    // the first row of hours (the pickers space their rows by 2 px)
-        // hour 8 is the third column of the second row
-        h.click({x0 + cw * 2.5f, row0 + (ch + 2.0f) * 1.5f}, build);
-        CHECK(time_changed && clock.hour == 8 && clock.minute == 45);
-        time_changed = false;
-        // minutes: the grid comes after the four rows of hours, a gap and the caption
-        const f32 min0 = row0 + 4.0f * ch + 3.0f * 2.0f + 2.0f + 4.0f + 2.0f + lh + 2.0f;
-        h.click({x0 + cw * 3.5f, min0 + ch * 0.5f}, build); // 15
-        CHECK(time_changed && clock.minute == 15);
-        // the + button, at the right end of the row under the two rows of minutes
-        h.click({x0 + w - 17.0f, min0 + 2.0f * (ch + 2.0f) + ch * 0.5f}, build);
-        CHECK(clock.minute == 16);
-        h.click({x0 + 17.0f, min0 + 2.0f * (ch + 2.0f) + ch * 0.5f}, build);
-        h.click({x0 + 17.0f, min0 + 2.0f * (ch + 2.0f) + ch * 0.5f}, build);
-        CHECK(clock.minute == 14);
+        const f32 pad   = 12.0f;
+        const f32 w     = std::max(clock_box.width(), 204.0f) - 2.0f * pad;
+        const f32 x0    = clock_box.min.x + pad;
+        const f32 top   = clock_box.max.y + 4.0f + pad; // HR / MIN captions (16 px) + 4 px gap
+        const f32 drum0 = top + 16.0f + 4.0f;           // 7 rows x 28 px (row 3 = selected center)
+        const f32 gap_x = 8.0f;
+        const f32 col_w = (w - gap_x) * 0.5f;
+        const f32 hr_x  = x0 + col_w * 0.5f;
+        const f32 min_x = x0 + col_w + gap_x + col_w * 0.5f;
+
+        // clock starts at 13:45; clicking row 4 (+1 below center) on hour snaps to 14
+        h.click({hr_x, drum0 + 4.5f * 28.0f}, build);
+        CHECK(time_changed && clock.hour == 14 && clock.minute == 45);
+
+        // clicking row 1 (-2 above center) on hour snaps to 12
+        h.click({hr_x, drum0 + 1.5f * 28.0f}, build);
+        CHECK(clock.hour == 12);
+
+        // mouse wheel over the minute drum spins +1 on scroll-down and -1 on scroll-up
+        h.move({min_x, drum0 + 3.5f * 28.0f});
+        h.frame(build);
+        h.in.wheel = -1.0f;
+        h.frame(build);
+        CHECK(clock.minute == 46);
+        h.in.wheel = 1.0f;
+        h.frame(build);
+        h.in.wheel = 1.0f;
+        h.frame(build);
+        CHECK(clock.minute == 44);
     }
     h.key(key::escape);
     h.frames(build, 3);
     CHECK(!h.ui.any_popup_open());
-    CHECK(clock.hour == 8 && day == date{2026, 11, 1});
+
+    // direct keyboard typing of raw digits auto-formats with ':' and '-'
+    h.click(clock_box.center(), build);
+    h.frames(build, 2);
+    h.type("0814");
+    h.key(key::enter);
+    h.frames(build, 3);
+    CHECK((clock == time_of_day{8, 14, 0}));
+    CHECK(!h.ui.any_popup_open());
+
+    h.click(day_box.center(), build);
+    h.frames(build, 2);
+    h.type("20261205");
+    h.key(key::enter);
+    h.frames(build, 3);
+    CHECK((day == date{2026, 12, 5}));
+    CHECK(!h.ui.any_popup_open());
 
     // an invalid value is brought back to a valid one
     date bad{2026, 2, 40};

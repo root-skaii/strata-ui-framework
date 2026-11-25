@@ -195,7 +195,8 @@ bool internal::input_core(context& ui, std::string_view label, std::string_view 
     const bool press_here = m.input_.mouse_pressed_ && in.held;
     if (press_here) {
         m.press_claimed_ = true;
-        if (m.focus_id_ != key) {
+        const bool just_focused = (m.focus_id_ != key);
+        if (just_focused) {
             m.focus_id_    = key;
             focused      = true;
             wipe_edit_buffer(ui); // nothing of the previous field's text may stay behind
@@ -214,7 +215,7 @@ bool internal::input_core(context& ui, std::string_view label, std::string_view 
             m.edit_.edit_cursor_ = m.edit_.edit_buf_.size();
         } else if (clicks == 2) {
             word_bounds(m.edit_.edit_buf_, idx, m.edit_.edit_anchor_, m.edit_.edit_cursor_);
-        } else if (!has_flag(flags, input_flags::select_all_on_focus) || m.edit_.edit_cursor_ != 0) {
+        } else if (!(just_focused && has_flag(flags, input_flags::select_all_on_focus))) {
             m.edit_.edit_cursor_ = idx;
             m.edit_.edit_anchor_ = idx;
         }

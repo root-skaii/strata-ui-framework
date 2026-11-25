@@ -581,7 +581,8 @@ bool internal::input_multiline_core(context& ui, std::string_view label, std::st
     const bool press_here = cs.input_.mouse_pressed_ && in.held;
     if (press_here) {
         cs.press_claimed_ = true;
-        if (cs.focus_id_ != key) {
+        const bool just_focused = (cs.focus_id_ != key);
+        if (just_focused) {
             cs.focus_id_    = key;
             focused      = true;
             wipe_edit_buffer(ui); // nothing of the previous field's text may stay behind
@@ -602,7 +603,7 @@ bool internal::input_multiline_core(context& ui, std::string_view label, std::st
             cs.edit_.edit_cursor_ = nl_after == std::string::npos ? cs.edit_.edit_buf_.size() : nl_after + 1;
         } else if (clicks == 2) {
             word_bounds(cs.edit_.edit_buf_, idx, cs.edit_.edit_anchor_, cs.edit_.edit_cursor_);
-        } else if (!has_flag(flags, input_flags::select_all_on_focus) || cs.edit_.edit_cursor_ != 0) {
+        } else if (!(just_focused && has_flag(flags, input_flags::select_all_on_focus))) {
             cs.edit_.edit_cursor_ = idx;
             cs.edit_.edit_anchor_ = idx;
         }
