@@ -25,6 +25,7 @@ struct layout_state {
     bool same_line{};
     bool first{true};
     bool flex_wrap{};
+    bool flex_first{}; // first item of a flex block starts a new line without resetting origin.y
     f32  flex_gap_x{};
     f32  flex_gap_y{};
     f32  flex_right{};

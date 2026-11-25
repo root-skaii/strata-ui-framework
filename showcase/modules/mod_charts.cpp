@@ -58,10 +58,15 @@ struct charts_module final : demo_module {
 
     void draw(context& ui, demo_env& /*env*/) override
     {
-        ui.badge("60 Hz Budget", toast_kind::success);
+        {
+            const auto dot = ui.custom_item("##budget_dot", {12.0f, 18.0f});
+            ui.draw().circle_filled(dot.bounds.center(), 4.0f, ui.theme().success);
+        }
         ui.same_line();
-        ui.textf("GPU {:.1f} ms  |  CPU {:.1f} ms  |  Zero Heap Allocs", gpu_ms.back(), cpu_ms.back());
-        ui.same_line_right(115.0f);
+        ui.text("60 Hz Budget");
+        ui.same_line();
+        ui.text_dim(std::format("·  GPU {:.1f} ms  ·  CPU {:.1f} ms  ·  0 heap allocs", gpu_ms.back(), cpu_ms.back()));
+        ui.same_line_right(110.0f);
         ui.checkbox("Heatmap", show_heatmap);
 
         const plot_series series[2] = {
@@ -69,31 +74,31 @@ struct charts_module final : demo_module {
             {.name = "CPU Main", .values = cpu_ms},
         };
         const plot_ref_line refs[1] = {
-            {.value = 16.6f, .vertical = false, .col = {255, 104, 104, 215}, .label = "16.6 ms"},
+            {.value = 16.6f, .vertical = false, .col = {240, 93, 108, 200}, .label = "16.6 ms"},
         };
 
         plot_options po;
-        po.size               = {0.0f, show_heatmap ? 195.0f : 260.0f};
+        po.size               = {0.0f, show_heatmap ? 205.0f : 280.0f};
         po.x                  = {"frame", ""};
         po.y                  = {"time", "ms", 0.0f, 20.0f};
         po.fill               = true;
         po.zoom_pan           = true;
         po.interactive_legend = true;
         po.ref_lines          = refs;
-        ui.plot("Frame Timing (click legend to toggle, wheel to zoom, drag to pan)", series, po);
+        ui.plot("Frame Timing", series, po);
 
         if (show_heatmap) {
-            if (auto r = ui.row({col_weight(1.1f), col_weight(1.0f)}, 12.0f)) {
+            if (auto r = ui.row({col_weight(1.1f), col_weight(1.0f)}, 14.0f)) {
                 plot_options bo;
                 bo.kind = plot_kind::histogram;
-                bo.size = {0.0f, 145.0f};
+                bo.size = {0.0f, 155.0f};
                 bo.x    = {"pass", ""};
                 bo.y    = {"ms", "ms", 0.0f, 16.0f};
                 const plot_series bar_s[1] = {{.name = "Pass", .values = pass_bars}};
                 ui.plot("Render Pass Histogram", bar_s, bo);
 
                 ui.row_next();
-                ui.plot_heatmap("GPU Tile Occupancy (6x8)", heat_tiles, 6, 8, {0.0f, 145.0f}, 0.0f, 1.0f);
+                ui.plot_heatmap("GPU Tile Occupancy (6x8)", heat_tiles, 6, 8, {0.0f, 155.0f}, 0.0f, 1.0f);
             }
         }
     }

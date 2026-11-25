@@ -225,6 +225,8 @@ public:
     // x must not decrease.
     void area_fill(std::span<const vec2> top, f32 base_y, color top_col, color base_col);
     void text(vec2 pos, color c, std::string_view s, font_id font = 0, text_flags style = text_flags::none);
+    // optically centers single-line text inside `r` using the font's capital ink bounds
+    void text_centered(const rect& r, color c, std::string_view s, font_id font = 0, text_flags style = text_flags::none);
 
     // antialiased polyline, mitred joins, butt ends. `thickness` is logical.
     void polyline(std::span<const vec2> points, color c, f32 thickness = 1.0f, bool closed = false);

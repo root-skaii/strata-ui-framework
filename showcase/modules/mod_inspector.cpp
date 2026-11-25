@@ -8,20 +8,10 @@ namespace strata::showcase {
 namespace {
 
 struct inspector_module final : demo_module {
-    int   quality_mode{1};
-    int   shader_preset{0};
-    f32   exposure{1.35f};
-    f32   roughness{0.32f};
-    f32   metallic{0.85f};
-    f32   fov_deg{55.0f};
     f32   clamp_lo{18.0f};
     f32   clamp_hi{84.0f};
-    f32   gain{0.68f};
     f32   pan{0.50f};
-    f32   bloom_thresh{1.15f};
     f32   pos[3]{0.0f, 1.85f, -4.20f};
-    color tint{91, 141, 255, 255};
-    bool  cast_shadows{true};
     std::array<bool, 6> features{true, true, true, false, true, false};
 
     module_info info() const override
@@ -37,70 +27,81 @@ struct inspector_module final : demo_module {
 
     void draw(context& ui, demo_env& env) override
     {
-        // Header reflecting the live selection from Scene Explorer
-        if (env.has_heading()) {
-            auto h = ui.with_font(env.font_heading);
-            ui.text(env.selected_entity);
-        } else {
-            ui.text(env.selected_entity);
-        }
-        ui.same_line_right(76.0f);
-        ui.badge(env.selected_kind, toast_kind::info);
+        auto& p = env.preview;
 
-        // Quick transport / action toolbar with built-in SVG vector icons
-        const auto bar = ui.custom_item("insp_svg_bar", {0.0f, 28.0f});
+        // Clean header reflecting the active entity without loud badge clutter
+        ui.text(env.selected_entity);
+        ui.same_line_right(76.0f);
+        ui.text_dim(env.selected_kind);
+
+        // Interactive vector icon toolbar
         static constexpr std::array<std::string_view, 6> k_icons = {
             svg_icons::play, svg_icons::pause, svg_icons::refresh,
             svg_icons::eye,  svg_icons::lock,  svg_icons::settings,
         };
         for (std::size_t i = 0; i < k_icons.size(); ++i) {
-            const f32 x = bar.bounds.min.x + static_cast<f32>(i) * 32.0f;
-            const rect cell{{x, bar.bounds.min.y + 2.0f}, {x + 24.0f, bar.bounds.min.y + 26.0f}};
-            const bool active_icon = (i == 0 && env.animate) || (i == 1 && !env.animate);
-            const color col = active_icon ? ui.theme().accent : ui.theme().text_dim;
-            draw_svg_path(ui.draw(), cell, k_icons[i], svg_icons::viewbox, col, 1.75f);
+            if (i > 0) { ui.same_line(); }
+            ui.push_id(static_cast<int>(i));
+            const auto it = ui.custom_item("##tb_ic", {28.0f, 26.0f});
+            const bool active_icon = (i == 0 && env.animate) || (i == 1 && !env.animate) || (i == 3 && p.shadows);
+            if (active_icon) {
+                ui.draw().rect_filled(it.bounds, color{ui.theme().accent.r, ui.theme().accent.g, ui.theme().accent.b, 32}, 5.0f);
+            } else if (it.hovered) {
+                ui.draw().rect_filled(it.bounds, ui.theme().widget_hover, 5.0f);
+            }
+            const rect cell{{it.bounds.min.x + 5.0f, it.bounds.min.y + 4.0f},
+                            {it.bounds.max.x - 5.0f, it.bounds.max.y - 4.0f}};
+            const color col = active_icon ? ui.theme().accent : (it.hovered ? ui.theme().text : ui.theme().text_dim);
+            draw_svg_path(ui.draw(), cell, k_icons[i], svg_icons::viewbox, col, 1.65f);
+            if (it.pressed) {
+                if (i == 0) { env.animate = true; }
+                else if (i == 1) { env.animate = false; }
+                else if (i == 2) { p = demo_env::preview_params{}; }
+                else if (i == 3) { p.shadows = !p.shadows; }
+            }
+            ui.pop_id();
         }
 
         ui.toggle("Live Simulation", env.animate);
         ui.same_line();
-        ui.checkbox("Shadows", cast_shadows);
+        ui.checkbox("Shadows", p.shadows);
 
         static constexpr std::string_view k_quality[] = {"Draft", "Balanced", "Studio"};
-        ui.segmented("##quality", k_quality, quality_mode);
+        ui.segmented("##quality", k_quality, p.quality);
         ui.spacing();
 
         ui.separator("Transform & Material");
-        if (ui.begin_property_grid("insp_props", 0.40f)) {
+        if (ui.begin_property_grid("insp_props", 0.38f)) {
             if (ui.property_row("Position", {.modified = std::abs(pos[1] - 1.85f) > 0.01f}, [&] {
                     ui.drag_float3("##pos", pos, 0.05f, -50.0f, 50.0f);
                 })) { pos[0] = 0.0f; pos[1] = 1.85f; pos[2] = -4.20f; }
 
-            if (ui.property_row("Exposure", {.modified = std::abs(exposure - 1.0f) > 0.01f}, [&] {
-                    ui.drag_float("##exp", exposure, 0.02f, 0.1f, 8.0f);
-                })) { exposure = 1.0f; }
+            if (ui.property_row("Exposure", {.modified = std::abs(p.exposure - 1.35f) > 0.01f}, [&] {
+                    ui.drag_float("##exp", p.exposure, 0.02f, 0.2f, 4.0f);
+                })) { p.exposure = 1.35f; }
 
-            if (ui.property_row("Roughness", {.modified = std::abs(roughness - 0.5f) > 0.01f}, [&] {
-                    ui.slider("##rough", roughness, 0.0f, 1.0f);
-                })) { roughness = 0.5f; }
+            if (ui.property_row("Roughness", {.modified = std::abs(p.roughness - 0.32f) > 0.01f}, [&] {
+                    ui.slider("##rough", p.roughness, 0.04f, 1.0f);
+                })) { p.roughness = 0.32f; }
 
-            if (ui.property_row("Metallic", {.modified = std::abs(metallic - 0.5f) > 0.01f, .mixed = false}, [&] {
-                    ui.slider("##metal", metallic, 0.0f, 1.0f);
-                })) { metallic = 0.5f; }
+            if (ui.property_row("Metallic", {.modified = std::abs(p.metallic - 0.85f) > 0.01f, .mixed = false}, [&] {
+                    ui.slider("##metal", p.metallic, 0.0f, 1.0f);
+                })) { p.metallic = 0.85f; }
 
-            if (ui.property_row("FOV (deg)", {.modified = std::abs(fov_deg - 55.0f) > 0.1f}, [&] {
-                    ui.slider("##fov", fov_deg, 24.0f, 110.0f);
-                })) { fov_deg = 55.0f; }
+            if (ui.property_row("FOV (deg)", {.modified = std::abs(p.fov_deg - 55.0f) > 0.1f}, [&] {
+                    ui.slider("##fov", p.fov_deg, 28.0f, 100.0f);
+                })) { p.fov_deg = 55.0f; }
 
             if (ui.property_row("Tint", {}, [&] {
-                    ui.color_edit("##tint", tint);
-                })) { tint = color{91, 141, 255, 255}; }
+                    ui.color_edit("##tint", p.tint);
+                })) { p.tint = color{94, 139, 255, 255}; }
 
             static constexpr std::string_view k_shaders[] = {
                 "PBR Standard", "Clearcoat Glass", "Subsurface Skin", "Anisotropic Metal"
             };
             if (ui.property_row("Shader", {}, [&] {
-                    ui.combo("##shader", shader_preset, k_shaders);
-                })) { shader_preset = 0; }
+                    ui.combo("##shader", p.shader_preset, k_shaders);
+                })) { p.shader_preset = 0; }
 
             ui.end_property_grid();
         }
@@ -109,11 +110,11 @@ struct inspector_module final : demo_module {
         ui.slider("Sim Speed", env.speed, 0.1f, 3.0f);
         ui.range_slider("LOD Range", clamp_lo, clamp_hi, 0.0f, 100.0f);
 
-        ui.knob("Gain", gain, 0.0f, 1.0f, 0.68f);
+        ui.knob("Gain", p.gain, 0.0f, 1.0f, 0.68f);
         ui.same_line();
         ui.knob("Pan", pan, 0.0f, 1.0f, 0.50f);
         ui.same_line();
-        ui.knob("Bloom", bloom_thresh, 0.2f, 3.0f, 1.15f);
+        ui.knob("Bloom", p.bloom, 0.2f, 2.5f, 1.15f);
 
         ui.separator("Pipeline Passes");
         static constexpr std::string_view k_tags[] = {"SDF", "TAA", "Bloom", "SSR", "CSM", "HDR"};

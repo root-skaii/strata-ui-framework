@@ -108,7 +108,7 @@ struct explorer_module final : demo_module {
                     if (!matches_filter(item.name, filter_) && !matches_filter(item.kind, filter_)) { continue; }
                     ui.push_id(item.name);
                     const bool selected = (env.selected_entity == item.name);
-                    ui.set_next_item_gutter(58.0f);
+                    ui.set_next_item_gutter(50.0f);
                     if (ui.tree_leaf(item.name, selected)) {
                         env.selected_entity = item.name;
                         env.selected_kind   = item.kind;
@@ -116,8 +116,8 @@ struct explorer_module final : demo_module {
                             env.log->addf(log_level::debug, "Selected {} ({})", item.name, item.kind);
                         }
                     }
-                    ui.same_line_right(52.0f);
-                    ui.badge(item.badge, item.badge_kind);
+                    ui.same_line_right(46.0f);
+                    ui.text_dim(item.badge);
                     ui.pop_id();
                 }
             }

@@ -226,6 +226,16 @@ public:
     // top of line to baseline; aligns runs of different fonts
     [[nodiscard]] f32 ascent_px(font_id f = 0) const noexcept { return fonts_[f].ascent; }
     [[nodiscard]] f32 ascent(font_id f = 0) const noexcept { return fonts_[f].ascent * inv_scale_; }
+    // optical [top, bottom] of capital glyph ink inside [0, line_height] (logical).
+    // centering against (cap.x + cap.y) * 0.5 avoids the downward bias caused by top internal leading.
+    [[nodiscard]] vec2 cap_bounds(font_id f = 0) const noexcept
+    {
+        const glyph& g = find(f, U'H');
+        if (g.visible && g.y1 > g.y0) {
+            return {g.y0 * inv_scale_, g.y1 * inv_scale_};
+        }
+        return {0.0f, line_height(f)};
+    }
     [[nodiscard]] u32 width() const noexcept { return width_; }
     [[nodiscard]] u32 height() const noexcept { return height_; }
     [[nodiscard]] std::size_t glyph_count(font_id f) const noexcept { return fonts_[f].glyphs.size(); }

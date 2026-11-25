@@ -1396,6 +1396,88 @@ void test_timeline_slow_drag_and_resize()
     CHECK(std::abs(clips[0].start - c0_before) < 0.01f);
 }
 
+void test_child_flex_and_drop()
+{
+    std::fprintf(stderr, "[child flex scroll, child drop_target bounds, font cap_bounds]\n");
+
+    harness h;
+    // 1. font_atlas::cap_bounds lies strictly inside [0, line_height]
+    const vec2 cap = h.ui.font().cap_bounds(0);
+    const f32  lh  = h.ui.font().line_height(0);
+    CHECK(cap.x >= 0.0f && cap.y > cap.x && cap.y <= lh + 1.0f);
+
+    // 2. begin_flex() inside a scrollable child must preserve total content height so scrolling works
+    bool chip_sel[4] = {true, false, true, false};
+    f32  top_y_before = 0.0f;
+    f32  top_y_after  = 0.0f;
+    rect child_rect{};
+    rect first_item_rect{};
+    const auto build_flex = [&] {
+        if (auto w = h.ui.window("flex_scroll_win", {40, 40}, {320, 320}, plain_window)) {
+            if (auto c = h.ui.child("flex_child", {280, 140}, child_flags::frame)) {
+                first_item_rect = h.ui.custom_item("top_marker", {100, 24}).bounds;
+                for (int i = 0; i < 8; ++i) {
+                    (void)h.ui.custom_item("row" + std::to_string(i), {100, 24});
+                }
+                h.ui.begin_flex({.gap_x = 6.0f, .gap_y = 6.0f});
+                for (int i = 0; i < 4; ++i) {
+                    (void)h.ui.chip("Tag" + std::to_string(i), {.selected = &chip_sel[i]});
+                }
+                h.ui.end_flex();
+            }
+            child_rect = h.ui.item_rect();
+        }
+    };
+    h.frames(build_flex, 3);
+    top_y_before = first_item_rect.min.y;
+    // end_child() exposes the full child box (280x140), never the narrow 11px scrollbar track
+    CHECK(child_rect.width() > 250.0f && child_rect.height() > 130.0f);
+
+    h.move(child_rect.center());
+    h.frames(build_flex, 2);
+    for (int i = 0; i < 5; ++i) {
+        h.in.wheel = -1.0f;
+        h.frame(build_flex);
+    }
+    h.frames(build_flex, 2);
+    top_y_after = first_item_rect.min.y;
+    CHECK(top_y_after < top_y_before - 20.0f);
+
+    // 3. drop_target() after an overflowing child accepts drops over the child's center (not just its scrollbar)
+    bool dropped_on_child = false;
+    rect src_rect{};
+    rect dst_child_rect{};
+    const auto build_dnd = [&] {
+        if (auto w = h.ui.window("dnd_child_win", {40, 40}, {460, 260}, plain_window)) {
+            if (auto r = h.ui.row(2, 16.0f)) {
+                src_rect = h.ui.custom_item("drag_item", {160, 30}).bounds;
+                if (auto d = h.ui.drag_source("card", 42)) { h.ui.text("42"); }
+                h.ui.row_next();
+                if (auto c = h.ui.child("drop_col", {180, 120}, child_flags::frame)) {
+                    for (int i = 0; i < 8; ++i) {
+                        (void)h.ui.selectable("Row " + std::to_string(i), false);
+                    }
+                }
+                dst_child_rect = h.ui.item_rect();
+                if (auto drop = h.ui.drop_target("card")) {
+                    if (drop.as<int>() == 42) { dropped_on_child = true; }
+                }
+            }
+        }
+    };
+    h.frames(build_dnd, 3);
+    CHECK(dst_child_rect.width() > 160.0f);
+    h.move(src_rect.center());
+    h.frame(build_dnd);
+    h.down();
+    h.frame(build_dnd);
+    h.move(dst_child_rect.center());
+    h.frames(build_dnd, 2);
+    h.up();
+    h.frames(build_dnd, 2);
+    CHECK(dropped_on_child);
+}
+
 } // namespace
 
 void run_widgets_tests()
@@ -1414,4 +1496,5 @@ void run_widgets_tests()
     test_ui_strings();
     test_tool_widgets_and_rich_tooltip();
     test_timeline_slow_drag_and_resize();
+    test_child_flex_and_drop();
 }

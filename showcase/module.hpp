@@ -71,8 +71,23 @@ struct demo_env {
     f32         speed{1.0f};
     std::string selected_entity{"Main Camera"};
     std::string selected_kind{"Camera"};
-    color       accent_override{91, 141, 255, 255};
+    color       accent_override{94, 139, 255, 255};
     bool        draw_backdrop{false};
+
+    // Live material/camera preview state shared between Inspector and preview viewports
+    struct preview_params {
+        f32   exposure{1.35f};
+        f32   roughness{0.32f};
+        f32   metallic{0.85f};
+        f32   fov_deg{55.0f};
+        f32   bloom{1.15f};
+        f32   gain{0.68f};
+        color tint{94, 139, 255, 255};
+        bool  shadows{true};
+        int   quality{1};
+        int   shader_preset{0};
+    };
+    preview_params preview{};
 
     // Shared services owned by showcase_app
     log_buffer* log{nullptr};

@@ -33,11 +33,11 @@ struct options {
     strata::i32    width      = 1360;
     strata::i32    height     = 820;
     strata::i32    max_frames = 0;
-    int            theme      = 0;
+    int            theme      = -1;
     std::string    theme_file;
     float          scale      = 0.0f;
     float          rescale    = 0.0f;
-    std::string    scene{"studio"};
+    std::string    scene{"tour"};
     std::string    diff_a, diff_b, diff_out;
     std::string    record;
     std::string    replay;
@@ -77,11 +77,11 @@ constexpr const wchar_t* usage_text =
     L"  --fps N                         frame cap; 0 = unlimited\n"
     L"  --width N --height N            logical client size (default 1360x820)\n"
     L"  --frames N                      exit after N frames\n"
-    L"  --scene NAME                    workspace (studio, telemetry, authoring, visuals, productivity,\n"
-    L"                                  gallery, palette) or module id (explorer, inspector, charts,\n"
-    L"                                  editor, nodes, sequencer, data, visuals, pickers, typography,\n"
-    L"                                  overlays, console)\n"
-    L"  --theme N|NAME                  built-in theme by index or name (midnight, light, dracula, nord, glass, ...)\n"
+    L"  --scene NAME                    tour (default) / tour_controls / tour_visuals / tour_data /\n"
+    L"                                  tour_authoring / tour_workflow, workspace (studio, telemetry,\n"
+    L"                                  authoring, visuals, productivity, gallery, palette), or\n"
+    L"                                  module id (explorer, inspector, charts, editor, nodes, ...)\n"
+    L"  --theme N|NAME                  built-in theme (obsidian, midnight, light, dracula, nord, glass, ...)\n"
     L"  --theme-file FILE               apply a theme file on top\n"
     L"  --scale F                       UI scale (default: monitor DPI scale)\n"
     L"  --shot FILE                     render --shot-frames fixed steps, save PNG and exit\n"

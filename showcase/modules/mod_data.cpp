@@ -25,9 +25,14 @@ struct data_module final : demo_module {
 
     void draw(context& ui, demo_env& /*env*/) override
     {
-        ui.badge("100k Rows", toast_kind::success);
+        {
+            const auto dot = ui.custom_item("##rows_dot", {12.0f, 18.0f});
+            ui.draw().circle_filled(dot.bounds.center(), 4.0f, ui.theme().success);
+        }
         ui.same_line();
-        ui.textf("Virtualized table — {} rows built this frame  |  Selected #{}", drawn_rows, selected_row);
+        ui.text("100,000 Rows");
+        ui.same_line();
+        ui.text_dim(std::format("·  {} visible rows built this frame  ·  Selected #{:06d}", drawn_rows, selected_row));
 
         static constexpr std::array<std::string_view, 5> k_passes = {
             "G-Buffer", "Shadow CSM", "Lighting", "Volumetrics", "UI SDF"
@@ -37,12 +42,12 @@ struct data_module final : demo_module {
         };
 
         drawn_rows = 0;
-        if (auto t = ui.table("draw_profiler_grid", 5, table_default | table_flags::resizable, 195.0f)) {
-            ui.table_setup_column("Call ID",   90.0f);
-            ui.table_setup_column("Pass",      120.0f);
+        if (auto t = ui.table("draw_profiler_grid", 5, table_default | table_flags::resizable, 280.0f)) {
+            ui.table_setup_column("Call ID",   96.0f);
+            ui.table_setup_column("Pass",      130.0f);
             ui.table_setup_column("Shader",    0.0f, 1.4f);
-            ui.table_setup_column("GPU (ms)",  90.0f);
-            ui.table_setup_column("Status",    96.0f);
+            ui.table_setup_column("GPU (ms)",  96.0f);
+            ui.table_setup_column("Status",    106.0f);
             (void)ui.table_headers_row(0, true);
 
             list_clipper clip(ui, static_cast<std::size_t>(k_total_rows));
@@ -64,7 +69,8 @@ struct data_module final : demo_module {
                     ui.textf("{:.2f} ms", ms);
                     ui.table_next_column();
                     const std::size_t si = static_cast<std::size_t>(row) % k_states.size();
-                    ui.badge(k_states[si], si == 3 ? toast_kind::warning : toast_kind::info);
+                    const color scol = (si == 3) ? ui.theme().warning : (si == 0 ? ui.theme().success : ui.theme().text_dim);
+                    ui.text_colored(scol, k_states[si]);
                 }
             }
         }

@@ -51,10 +51,15 @@ struct pickers_module final : demo_module {
         int move_idx      = -1;
         int move_to_col   = -1;
 
-        if (auto r = ui.row({col_weight(1.0f), col_weight(1.0f)}, 12.0f)) {
-            if (auto c = ui.child("col_progress", {0.0f, 175.0f}, child_flags::frame)) {
-                ui.badge("In Progress", toast_kind::info);
+        if (auto r = ui.row({col_weight(1.0f), col_weight(1.0f)}, 14.0f)) {
+            if (auto c = ui.child("col_progress", {0.0f, 210.0f}, child_flags::frame)) {
+                {
+                    const auto dot = ui.custom_item("##ip_dot", {10.0f, 18.0f});
+                    ui.draw().circle_filled(dot.bounds.center(), 4.0f, ui.theme().accent);
+                }
                 ui.same_line();
+                ui.text("In Progress");
+                ui.same_line_right(28.0f);
                 ui.text_dim(std::format("{}", in_progress.size()));
                 ui.separator();
                 for (int i = 0; i < static_cast<int>(in_progress.size()); ++i) {
@@ -74,9 +79,14 @@ struct pickers_module final : demo_module {
 
             ui.row_next();
 
-            if (auto c = ui.child("col_qa", {0.0f, 175.0f}, child_flags::frame)) {
-                ui.badge("Ready for QA", toast_kind::success);
+            if (auto c = ui.child("col_qa", {0.0f, 210.0f}, child_flags::frame)) {
+                {
+                    const auto dot = ui.custom_item("##qa_dot", {10.0f, 18.0f});
+                    ui.draw().circle_filled(dot.bounds.center(), 4.0f, ui.theme().success);
+                }
                 ui.same_line();
+                ui.text("Ready for QA");
+                ui.same_line_right(28.0f);
                 ui.text_dim(std::format("{}", ready_qa.size()));
                 ui.separator();
                 for (int i = 0; i < static_cast<int>(ready_qa.size()); ++i) {

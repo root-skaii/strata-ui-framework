@@ -53,15 +53,15 @@ struct sequencer_module final : demo_module {
 
     void draw(context& ui, demo_env& /*env*/) override
     {
-        if (auto r = ui.row({col_weight(1.55f), col_weight(1.0f)}, 12.0f)) {
-            if (ui.begin_timeline("Cinematic Sequence", tl, {0.0f, 155.0f})) {
+        if (auto r = ui.row({col_weight(1.55f), col_weight(1.0f)}, 14.0f)) {
+            if (ui.begin_timeline("Sequence", tl, {0.0f, 162.0f})) {
                 (void)ui.timeline_track("Camera Rail", cam_clips);
                 (void)ui.timeline_track("Lighting Rig", light_clips);
                 (void)ui.timeline_track("Focus Keys", {}, dof_keys);
                 ui.end_timeline();
             }
             ui.row_next();
-            (void)ui.curve_editor("Camera Ease Curve (dbl-click to add)", ease_curve, {0.0f, 155.0f});
+            (void)ui.curve_editor("Ease Curve", ease_curve, {0.0f, 162.0f});
         }
     }
 };

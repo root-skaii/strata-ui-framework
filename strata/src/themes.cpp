@@ -23,9 +23,9 @@ namespace {
 
 std::span<const std::string_view> names() noexcept
 {
-    static constexpr std::array<std::string_view, 12> registry_names = {
+    static constexpr std::array<std::string_view, 13> registry_names = {
         "midnight", "light", "ocean", "rose", "dracula", "nord", "solarized_dark", "solarized_light",
-        "high_contrast", "forest", "amber", "glass"};
+        "high_contrast", "forest", "amber", "glass", "obsidian"};
     return registry_names;
 }
 
@@ -35,7 +35,7 @@ bool by_name(std::string_view name, style& out) noexcept
         std::string_view name;
         style (*make)() noexcept;
     };
-    static constexpr std::array<named_theme, 12> registry = {{
+    static constexpr std::array<named_theme, 13> registry = {{
         {"midnight", &midnight},
         {"light", &light},
         {"ocean", &ocean},
@@ -48,6 +48,7 @@ bool by_name(std::string_view name, style& out) noexcept
         {"forest", &forest},
         {"amber", &amber},
         {"glass", &glass},
+        {"obsidian", &obsidian},
     }};
     for (const named_theme& t : registry) {
         if (iequals(t.name, name)) {

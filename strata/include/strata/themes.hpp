@@ -241,8 +241,40 @@ namespace strata::themes {
     return s;
 }
 
+// neutral charcoal surfaces with hairline borders and generous spacing
+[[nodiscard]] constexpr style obsidian() noexcept
+{
+    style s;
+    s.padding       = 15.0f;
+    s.item_spacing  = 9.0f;
+    s.rounding      = 7.0f;
+    s.border_width  = 1.0f;
+    s.shadow_blur   = 20.0f;
+    s.gradient      = 0.025f;
+    s.frame_padding = {11.0f, 6.0f};
+    s.window_bg     = color::from_hex(0x111216f8);
+    s.title_bg      = color::from_hex(0x16181eff);
+    s.border        = color::from_hex(0x23262fff);
+    s.widget_bg     = color::from_hex(0x1a1c23ff);
+    s.widget_hover  = color::from_hex(0x232630ff);
+    s.widget_active = color::from_hex(0x2c303dff);
+    s.widget_border = color::from_hex(0x2a2e39ff);
+    s.accent        = color::from_hex(0x5e8bffff);
+    s.accent_hover  = color::from_hex(0x7ca1ffff);
+    s.text          = color::from_hex(0xf0f2f6ff);
+    s.text_dim      = color::from_hex(0x8d94a5ff);
+    s.shadow        = color::from_hex(0x000000c8);
+    s.modal_dim     = color::from_hex(0x050608b8);
+    s.success       = color::from_hex(0x3ecf8eff);
+    s.warning       = color::from_hex(0xf0a848ff);
+    s.error         = color::from_hex(0xf05d6cff);
+    s.series        = {color{0, 0, 0, 0}, color::from_hex(0x3ecf8eff), color::from_hex(0xf0a848ff),
+                       color::from_hex(0xe86ca8ff), color::from_hex(0xa78bfaff), color::from_hex(0x38bdf8ff)};
+    return s;
+}
+
 // built-in themes by name: midnight, light, ocean, rose, dracula, nord, solarized_dark, solarized_light,
-// high_contrast, forest, amber, glass
+// high_contrast, forest, amber, glass, obsidian
 [[nodiscard]] std::span<const std::string_view> names() noexcept;
 // case-insensitive; false (`out` untouched) if unknown
 [[nodiscard]] bool by_name(std::string_view name, style& out) noexcept;

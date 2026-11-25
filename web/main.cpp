@@ -359,8 +359,8 @@ void start_loop(bool webgpu_ok)
         .backend_name  = webgpu_ok ? "WebGPU" : "CPU Software",
         .is_web        = true,
         .deterministic = false,
-        .initial_scene = "studio",
-        .initial_theme = 0,
+        .initial_scene = "tour",
+        .initial_theme = -1,
     });
 
     emscripten_set_mousemove_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, EM_TRUE, on_mouse_move);

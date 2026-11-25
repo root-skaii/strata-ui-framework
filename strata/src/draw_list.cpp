@@ -1042,4 +1042,16 @@ void draw_list::text(vec2 pos, color c, std::string_view s, font_id font, text_f
     }
 }
 
+void draw_list::text_centered(const rect& r, color c, std::string_view s, font_id font, text_flags style)
+{
+    if (c.a == 0 || s.empty() || atlas_ == nullptr) {
+        return;
+    }
+    const vec2 sz  = atlas_->measure(font, s);
+    const vec2 cap = atlas_->cap_bounds(font);
+    const f32  x   = r.center().x - sz.x * 0.5f;
+    const f32  y   = r.center().y - (cap.x + cap.y) * 0.5f;
+    text({x, y}, c, s, font, style);
+}
+
 } // namespace strata

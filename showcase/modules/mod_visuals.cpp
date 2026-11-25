@@ -26,21 +26,21 @@ struct visuals_module final : demo_module {
         draw_list& bg = ui.draw();
         const vec2 ds = ui.display_size();
 
-        // Deep midnight gradient canvas
+        // Deep obsidian studio backdrop with restrained atmospheric washes
         bg.rect_gradient_angle({{0.0f, 0.0f}, ds},
-                               color::from_hex(0x0b0f1eff), color::from_hex(0x16122cff), 35.0f);
+                               color::from_hex(0x090b10ff), color::from_hex(0x0e1018ff), 35.0f);
 
         // Soft glowing radial light orbs behind the acrylic windows
         const f32 drift = env.deterministic ? 0.0f : std::sin(env.time * 0.35f) * 28.0f;
-        bg.rect_gradient_radial({{ds.x * 0.04f + drift, ds.y * 0.10f}, {ds.x * 0.50f + drift, ds.y * 0.72f}},
-                                color::from_hex(0x3a6ff866), color::from_hex(0x3a6ff800), 0.0f);
-        bg.rect_gradient_radial({{ds.x * 0.48f - drift, ds.y * 0.02f}, {ds.x * 0.98f - drift, ds.y * 0.66f}},
-                                color::from_hex(0xe8438862), color::from_hex(0xe8438800), 0.0f);
-        bg.rect_gradient_radial({{ds.x * 0.25f, ds.y * 0.42f}, {ds.x * 0.78f, ds.y * 1.05f}},
-                                color::from_hex(0x1cc8b452), color::from_hex(0x1cc8b400), 0.0f);
+        bg.rect_gradient_radial({{ds.x * 0.06f + drift, ds.y * 0.08f}, {ds.x * 0.56f + drift, ds.y * 0.72f}},
+                                color::from_hex(0x4b7bf554), color::from_hex(0x4b7bf500), 0.0f);
+        bg.rect_gradient_radial({{ds.x * 0.46f - drift, ds.y * 0.04f}, {ds.x * 0.98f - drift, ds.y * 0.68f}},
+                                color::from_hex(0xd9569446), color::from_hex(0xd9569400), 0.0f);
+        bg.rect_gradient_radial({{ds.x * 0.25f, ds.y * 0.42f}, {ds.x * 0.80f, ds.y * 1.05f}},
+                                color::from_hex(0x2ec49c42), color::from_hex(0x2ec49c00), 0.0f);
 
         // Subtle architectural grid
-        const color grid_col{255, 255, 255, 13};
+        const color grid_col{255, 255, 255, 10};
         for (f32 x = 0.0f; x < ds.x; x += 48.0f) {
             bg.line({x, 0.0f}, {x, ds.y}, grid_col, 1.0f);
         }
@@ -53,7 +53,7 @@ struct visuals_module final : demo_module {
             const f32 y0 = ds.y * (0.22f + static_cast<f32>(i) * 0.18f);
             const f32 dy = (i % 2 == 0 ? 1.0f : -1.0f) * 70.0f;
             bg.bezier_cubic({-20.0f, y0}, {ds.x * 0.33f, y0 + dy}, {ds.x * 0.66f, y0 - dy},
-                            {ds.x + 20.0f, y0 + dy * 0.35f}, color{255, 255, 255, 28}, 1.5f);
+                            {ds.x + 20.0f, y0 + dy * 0.35f}, color{255, 255, 255, 20}, 1.5f);
         }
     }
 
@@ -128,10 +128,31 @@ struct visuals_module final : demo_module {
             ui.slider("Glass Opacity", ui.theme().acrylic_alpha, 0.15f, 1.0f);
         }
 
-        if (auto c = ui.child("acrylic_surface_demo", {0.0f, 66.0f},
-                              child_flags::frame | child_flags::acrylic | child_flags::no_scrollbar)) {
-            ui.text("Frosted Acrylic Child Region");
-            ui.text_dim("Evaluates live Gaussian backdrop blur, subtle film grain, and SDF rounded border in one pass.");
+        // Frosted acrylic card with optically centered 2-line content
+        {
+            const auto box = ui.custom_item("acrylic_surface_demo", {0.0f, 64.0f});
+            const rect& br = box.bounds;
+            const style& st = ui.theme();
+            draw_list& dl = ui.draw();
+            dl.backdrop(br, st.blur_radius,
+                        color{static_cast<u8>(st.window_bg.r * 3 / 4), static_cast<u8>(st.window_bg.g * 3 / 4),
+                              static_cast<u8>(st.window_bg.b * 3 / 4), static_cast<u8>(st.window_bg.a * st.acrylic_alpha * 0.8f)},
+                        radii(st.rounding * 0.8f), st.acrylic_noise, st.acrylic_saturation, st.acrylic_brightness);
+            shape_style bg;
+            bg.radius       = radii(st.rounding * 0.8f);
+            bg.fill_top     = color{st.widget_bg.r, st.widget_bg.g, st.widget_bg.b, 95};
+            bg.fill_bottom  = bg.fill_top;
+            bg.border       = st.border;
+            bg.border_width = st.border_width;
+            dl.shape(br, bg);
+
+            const vec2 cap = ui.font().cap_bounds(0);
+            const f32  ch  = cap.y - cap.x;
+            const f32  gap = 10.0f;
+            const f32  top = br.center().y - (ch * 2.0f + gap) * 0.5f;
+            dl.text({br.min.x + 14.0f, top - cap.x}, st.text, "Frosted Acrylic Child Region");
+            ui.label_clipped({br.min.x + 14.0f, top + ch + gap - cap.x}, br.width() - 28.0f, st.text_dim,
+                             "Live Gaussian backdrop blur, subtle film grain, and SDF rounded border in one pass.");
         }
 
         ui.separator("Zero-Dependency SVG Vector Icons (24x24)");
@@ -149,8 +170,7 @@ struct visuals_module final : demo_module {
                 const rect tile{{x, icon_box.bounds.min.y + 4.0f}, {x + 28.0f, icon_box.bounds.min.y + 32.0f}};
                 ui.draw().rect_filled(tile, ui.theme().widget_bg, 6.0f);
                 const rect inner{{tile.min.x + 5.0f, tile.min.y + 5.0f}, {tile.max.x - 5.0f, tile.max.y - 5.0f}};
-                draw_svg_path(ui.draw(), inner, k_all[i], svg_icons::viewbox,
-                              i % 3 == 0 ? ui.theme().accent : ui.theme().text, 1.7f);
+                draw_svg_path(ui.draw(), inner, k_all[i], svg_icons::viewbox, ui.theme().text, 1.65f);
             }
         }
     }

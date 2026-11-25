@@ -173,6 +173,10 @@ void context::end_child()
     m_->dl_.pop_clip();
     m_->layout_ = f.outer;
     pop_id();
+    // expose the child's outer frame as the last item so drop_target(), item_rect(), and tooltip()
+    // after end_child() target the region itself rather than its scrollbar or last inner widget
+    m_->last_item_key_  = st.key;
+    m_->last_item_rect_ = f.bounds;
 }
 
 bool context::begin_card(std::string_view title, std::string_view icon, font_id icon_font)

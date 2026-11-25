@@ -64,19 +64,18 @@ struct overlays_module final : demo_module {
         };
         (void)ui.combo_filtered("Target Backend", backend_filter_idx, k_targets);
 
+        ui.begin_flex({.gap_x = 8.0f, .gap_y = 8.0f});
         if (ui.button("Open Release Modal")) { modal_open = true; }
-        ui.same_line();
         if (ui.button("Success Toast")) {
             ui.toast("Published", "Artifact uploaded cleanly.", toast_kind::success);
         }
-        ui.same_line();
         if (ui.button("Warning Toast")) {
             ui.toast("Shader Warning", "Unreferenced uniform 'u_fog_bias'.", toast_kind::warning);
         }
-        ui.same_line();
         if (ui.button("Command Palette")) {
             env.open_palette = true;
         }
+        ui.end_flex();
 
         if (modal_open) {
             if (auto m = ui.modal("Publish Build", {420.0f, 0.0f})) {

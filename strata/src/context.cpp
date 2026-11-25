@@ -1178,7 +1178,7 @@ rect internal::layout_place(context& ui, vec2 size) noexcept
     f32  target_h; // the height to center this item against: siblings already placed on this line, or (for a
                     // line's first item) a caller-supplied expectation such as a table row's known height. Purely
                     // cosmetic: it nudges where the item is *drawn*, never how much room the line is deemed to take.
-    if (l.flex_wrap && !l.first) {
+    if (l.flex_wrap && !l.first && !l.flex_first) {
         const f32 next_x = l.cursor_x + l.flex_gap_x;
         if (next_x + size.x <= l.flex_right + 0.5f) {
             pos      = {next_x, l.line_top};
@@ -1205,8 +1205,9 @@ rect internal::layout_place(context& ui, vec2 size) noexcept
         // it takes no centering itself, and leaves the seed for whatever real content follows it on this line
         if (size.y > 0.0f) { l.line_h_seed = 0.0f; }
     }
-    l.first     = false;
-    l.same_line = false;
+    l.first      = false;
+    l.flex_first = false;
+    l.same_line  = false;
     l.cursor_x  = pos.x + size.x;
     // the first item starts the extent: a layout scrolled above the screen has only negative positions, and a
     // `bottom` starting at 0 would inflate the content height. Uses the un-centered position: a short item next
@@ -2298,14 +2299,8 @@ void context::begin_flex(const flex_options& opt) noexcept
     if (m_->cur_ == nullptr) { return; }
     const f32 w = opt.max_width > 0.0f ? opt.max_width : content_width();
     layout_state& l = m_->layout_;
-    if (!l.first && !l.same_line) {
-        l.line_top += l.line_h + m_->style_.item_spacing;
-        l.line_h    = 0.0f;
-        l.cursor_x  = l.origin.x;
-        l.first     = true;
-        l.origin.y  = l.line_top;
-    }
     l.flex_wrap  = true;
+    l.flex_first = !l.first && !l.same_line;
     l.flex_gap_x = std::max(opt.gap_x, 0.0f);
     l.flex_gap_y = std::max(opt.gap_y, 0.0f);
     l.flex_right = l.origin.x + w;
@@ -2313,8 +2308,9 @@ void context::begin_flex(const flex_options& opt) noexcept
 
 void context::end_flex() noexcept
 {
-    m_->layout_.flex_wrap = false;
-    m_->layout_.same_line = false;
+    m_->layout_.flex_wrap  = false;
+    m_->layout_.flex_first = false;
+    m_->layout_.same_line  = false;
 }
 
 void context::set_keyboard_nav(bool on) noexcept
