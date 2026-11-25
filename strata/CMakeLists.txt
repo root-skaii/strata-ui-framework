@@ -11,7 +11,6 @@ endif()
 add_library(strata STATIC
     src/backend_software.cpp
     src/bidi.cpp
-    src/c_api.cpp
     src/config.cpp
     src/context.cpp
     src/context_access.cpp
@@ -99,7 +98,6 @@ target_sources(strata PUBLIC
         include/strata/platform/sdl3.hpp
         include/strata/platform/win32.hpp
         include/strata/strata.hpp
-        include/strata/strata_c.h
         include/strata/svg.hpp
         include/strata/texture.hpp
         include/strata/themes.hpp

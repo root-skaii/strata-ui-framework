@@ -1,4 +1,4 @@
-// libFuzzer over every strata parser of foreign text, text editing, recorded input, the node editor and the C interface.
+// libFuzzer over every strata parser of foreign text, text editing, recorded input, and the node editor.
 // the first byte picks the target.
 // built by the x64-asan preset (STRATA_BUILD_FUZZERS, AddressSanitizer):
 //   strata_fuzz corpus_dir -max_len=4096            (fuzz until stopped; crashes leave crash-<hash>)
@@ -6,7 +6,6 @@
 // failures: a crash, an asan report, or a violated property (checks abort).
 
 #include <strata/strata.hpp>
-#include <strata/strata_c.h>
 
 #include "font_ttf.hpp"
 #include "text_util.hpp"
@@ -307,56 +306,6 @@ void fuzz_node_editor(std::string_view bytes)
     }
 }
 
-// the C interface under scripted input
-void fuzz_c_api(std::string_view bytes)
-{
-    static strata_context* ui = strata_context_create(nullptr);
-    FUZZ_CHECK(ui != nullptr);
-    static char  buffer[32] = "x";
-    static int   flag = 0, pick = 0;
-    static float level = 0.5f;
-    strata_input in{};
-    in.display_w  = 800.0f;
-    in.display_h  = 600.0f;
-    in.delta_time = 1.0f / 60.0f;
-    in.mouse_pos  = {-100.0f, -100.0f};
-    for (std::size_t step = 0; step < std::min<std::size_t>(bytes.size(), 20) + 1; ++step) {
-        const std::uint8_t op = step < bytes.size() ? static_cast<std::uint8_t>(bytes[step]) : 0;
-        char typed[2] = {static_cast<char>(0x20 + op % 90), 0};
-        in.typed_utf8 = op % 5 == 0 ? typed : nullptr;
-        in.typed_len  = in.typed_utf8 != nullptr ? 1 : 0;
-        in.key_count  = op % 7 == 0 ? 1 : 0;
-        in.keys[0]    = op % 2 == 0 ? 0x08u : 0x25u;
-        switch (op % 4) {
-        case 0: in.mouse_pos = {static_cast<float>(op) * 3.0f, static_cast<float>(op) * 2.0f}; break;
-        case 1: in.mouse_down[0] = in.mouse_down[0] != 0 ? 0 : 1; break;
-        case 2: in.wheel = static_cast<float>(op % 5) - 2.0f; break;
-        default: break;
-        }
-        strata_begin_frame(ui, &in);
-        if (strata_begin_window(ui, "w", 10, 10, 320, 260, 0)) {
-            strata_text(ui, "text");
-            (void)strata_button(ui, "button");
-            (void)strata_checkbox(ui, "flag", &flag);
-            (void)strata_slider_float(ui, "level", &level, 0.0f, 1.0f);
-            (void)strata_input_text(ui, "field", buffer, sizeof buffer);
-            static const char* const items[] = {"a", "b"};
-            (void)strata_combo(ui, "pick", &pick, items, 2);
-            if (strata_begin_table(ui, "t", 2, 3, 0.0f)) {
-                strata_table_setup_column(ui, "a", 80.0f);
-                strata_table_setup_column(ui, "b", 0.0f);
-                strata_table_headers_row(ui);
-                (void)strata_table_next_row(ui);
-                (void)strata_table_next_column(ui);
-                strata_text(ui, "cell");
-                strata_end_table(ui);
-            }
-        }
-        strata_end_window(ui);
-        strata_end_frame(ui);
-        in.wheel = 0.0f;
-    }
-}
 // untrusted TrueType / TTC binary parsing and analytical rasterisation
 void fuzz_ttf(std::string_view bytes)
 {
@@ -397,7 +346,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view rest{reinterpret_cast<const char*>(data + 1), size - 1};
-    switch (data[0] % 12) {
+    switch (data[0] % 11) {
     case 0: fuzz_config(rest); break;
     case 1: fuzz_theme(rest); break;
     case 2: fuzz_dock_layout(rest); break;
@@ -408,7 +357,6 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     case 7: fuzz_replay(rest); break;
     case 8: fuzz_word_selection(rest); break;
     case 9: fuzz_node_editor(rest); break;
-    case 10: fuzz_c_api(rest); break;
     default: fuzz_ttf(rest); break;
     }
     return 0;

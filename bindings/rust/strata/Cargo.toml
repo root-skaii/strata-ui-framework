@@ -1,9 +1,0 @@
-[package]
-name = "strata"
-version = "0.1.0"
-edition = "2021"
-description = "Safe Rust bindings for the strata immediate-mode UI framework"
-license = "MIT"
-
-[dependencies]
-strata-sys = { path = "../strata-sys" }

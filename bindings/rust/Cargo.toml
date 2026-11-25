@@ -1,3 +1,0 @@
-[workspace]
-members = ["strata-sys", "strata"]
-resolver = "2"

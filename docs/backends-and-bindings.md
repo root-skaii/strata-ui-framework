@@ -1,4 +1,4 @@
-# Backends, Platforms, Bindings & Sandbox
+# Backends, Platforms & Sandbox
 
 Back to [README](../README.md).
 
@@ -7,7 +7,6 @@ Back to [README](../README.md).
 - [Platform adapters & file drop](#platform-adapters--file-drop)
 - [Ready-made host (`strata::app`)](#ready-made-host-strataapp)
 - [Headless rendering & replay](#headless-rendering--replay)
-- [C interface & Rust bindings](#c-interface--rust-bindings)
 - [Packaging (`FetchContent` & vcpkg)](#packaging-fetchcontent--vcpkg)
 - [Sandbox CLI reference](#sandbox-cli-reference)
 
@@ -67,28 +66,6 @@ return app->run([&](strata::app&, strata::context& ui) {
   sr.render(ui.render_data(), damage_rect);
   ```
 - **Deterministic input replay:** `input_recorder` / `input_replayer` (`strata/input_record.hpp`) record per-frame `input_state` to a file for reproducible bug reports and automated tests (`strata_sandbox --record FILE` / `--replay FILE`).
-
-## C interface & Rust bindings
-
-`strata/strata_c.h` exposes an exception-free C99 API with opaque handles and layout-matched `strata_draw_data` covering contexts, widgets (`range_slider`, `knob`, tables, tabs, menus, popups, docking, plots, node editor, debug windows), `strata_software_*`, and `strata_gl_*`.
-
-```c
-strata_context* ui = strata_context_create(NULL);
-strata_begin_frame(ui, &input);
-if (strata_begin_window(ui, "hello", 20, 20, 300, 160, 0)) {
-    if (strata_button(ui, "ok")) { /* ... */ }
-}
-strata_end_window(ui);
-strata_end_frame(ui);
-```
-
-Official Rust bindings live in [`bindings/rust/`](../bindings/rust/README.md) (`strata-sys` static CMake build + safe `strata` wrapper crate):
-
-```powershell
-$env:STRATA_LIB_DIR = (Resolve-Path "build\x64-dev\lib").Path
-$env:RUSTFLAGS = "-C target-feature=+crt-static"
-cargo test --manifest-path bindings\rust\Cargo.toml
-```
 
 ## Packaging (`FetchContent` & vcpkg)
 

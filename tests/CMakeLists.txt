@@ -46,18 +46,6 @@ if(STRATA_BUILD_VULKAN)
     set_tests_properties(strata_render_test_vk PROPERTIES LABELS gpu TIMEOUT 60)
 endif()
 
-# the C interface, built as C so the header is checked as C (skipped when no C compiler is installed)
-include(CheckLanguage)
-check_language(C)
-if(CMAKE_C_COMPILER)
-    enable_language(C)
-    add_executable(strata_c_api_test c_api_test.c)
-    target_link_libraries(strata_c_api_test PRIVATE strata::strata)
-    set_target_properties(strata_c_api_test PROPERTIES LINKER_LANGUAGE CXX)
-    add_test(NAME strata_c_api_test COMMAND strata_c_api_test)
-    set_tests_properties(strata_c_api_test PROPERTIES TIMEOUT 60)
-endif()
-
 # headless benchmark: measures steady-state frame build time and verifies zero heap traffic + idle detection
 add_executable(strata_bench bench.cpp)
 target_link_libraries(strata_bench PRIVATE strata::strata $<BUILD_INTERFACE:strata_options>)

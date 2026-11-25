@@ -45,15 +45,7 @@ jobs:
 
       - name: Run headless tests
         shell: pwsh
-        run: ctest --test-dir build/${{ matrix.preset }} -R "strata_selftest|strata_c_api_test|strata_overlay_modules|strata_bench_smoke" --output-on-failure
-
-      - name: Test Rust bindings (x64-dev)
-        if: matrix.preset == 'x64-dev'
-        shell: pwsh
-        run: |
-          $env:STRATA_LIB_DIR = (Resolve-Path "build/x64-dev/lib").Path
-          $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          cargo test --manifest-path bindings/rust/Cargo.toml
+        run: ctest --test-dir build/${{ matrix.preset }} -R "strata_selftest|strata_overlay_modules|strata_bench_smoke" --output-on-failure
 
   linux-headless:
     runs-on: ubuntu-latest
@@ -63,7 +55,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build cmake fonts-dejavu-core
 
-      - name: Configure and build headless library & C API test (PCH off)
+      - name: Configure and build headless library & benchmark (PCH off)
         run: |
           cmake -S . -B build/linux -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -99,10 +91,6 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/build/install"
           cmake --build build/consumer/out
           ./build/consumer/out/consumer
-
-      - name: Test Rust bindings
-        run: |
-          STRATA_LIB_DIR="$PWD/build/linux/lib" cargo test --manifest-path bindings/rust/Cargo.toml
 
   macos-metal:
     runs-on: macos-latest
