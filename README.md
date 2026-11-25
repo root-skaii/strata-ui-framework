@@ -4,7 +4,9 @@ A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C+
 
 > **Work in progress:** core widgets and backends are settling, while experimental integrations (OpenXR / OpenVR) may change.
 
-[**Live WebGPU Demo**](https://root-skaii.github.io/strata-ui-framework/) · [**Features**](#why-strata) · [**Screenshots**](#screenshots) · [**Backends**](#backends--platforms) · [**Benchmarks**](#benchmarks) · [**Quickstart**](#quickstart) · [**Build**](#build--test) · [**Docs**](#documentation)
+## **Live WebGPU Demo** >> https://root-skaii.github.io/strata-ui-framework/
+
+[**Features**](#why-strata) · [**Screenshots**](#screenshots) · [**Backends**](#backends--platforms) · [**Benchmarks**](#benchmarks) · [**Quickstart**](#quickstart) · [**Build**](#build--test) · [**Docs**](#documentation)
 
 ![Strata Studio docked workspace with scene explorer, live telemetry charts, heatmap, sequencer, curve editor, and property inspector](docs/screenshots/studio.png)
 
@@ -130,6 +132,10 @@ docs/       detailed documentation and screenshots
 cmake/      options, compiler flags, HLSL / SPIR-V embedding, package config
 tests/      self-tests, benchmarks, offscreen GPU tests, fuzz targets
 ```
+
+## Built with strata
+
+- **[PrismFS](https://github.com/root-skaii/prism-file-suite)** - Fast, dual-pane Windows file explorer with tabs, instant search, virtualized 200k-file folders, Quick Look, disk usage treemap, and Git status badges.
 
 ## License
 
