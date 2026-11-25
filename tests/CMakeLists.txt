@@ -57,3 +57,9 @@ if(CMAKE_C_COMPILER)
     add_test(NAME strata_c_api_test COMMAND strata_c_api_test)
     set_tests_properties(strata_c_api_test PROPERTIES TIMEOUT 60)
 endif()
+
+# headless benchmark: measures steady-state frame build time and verifies zero heap traffic + idle detection
+add_executable(strata_bench bench.cpp)
+target_link_libraries(strata_bench PRIVATE strata::strata $<BUILD_INTERFACE:strata_options>)
+add_test(NAME strata_bench_smoke COMMAND strata_bench --quick)
+set_tests_properties(strata_bench_smoke PROPERTIES TIMEOUT 60)

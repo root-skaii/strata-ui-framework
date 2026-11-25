@@ -277,8 +277,17 @@ void context::set_scroll_smoothing(bool on) noexcept
 
 void context::request_text_focus(std::string_view label) noexcept
 {
+    request_text_focus(label, 0, ~std::size_t{0});
+}
+
+void context::request_text_focus(std::string_view label, std::size_t sel_start, std::size_t sel_end) noexcept
+{
     const id key = hash_id(label, current_seed(*this));
-    if (m_->focus_id_ != key) { m_->focus_request_ = key; }
+    if (m_->focus_id_ != key) {
+        m_->focus_request_   = key;
+        m_->focus_sel_start_ = sel_start;
+        m_->focus_sel_end_   = sel_end;
+    }
 }
 
 id context::focused_field() const noexcept

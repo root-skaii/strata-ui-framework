@@ -183,8 +183,11 @@ bool internal::input_core(context& ui, std::string_view label, std::string_view 
             wipe_edit_buffer(ui);
             m.edit_.edit_buf_.assign(current);
             m.edit_.edit_scroll_ = 0.0f;
-            m.edit_.edit_cursor_ = m.edit_.edit_buf_.size();
-            m.edit_.edit_anchor_ = 0;
+            const std::size_t len = m.edit_.edit_buf_.size();
+            m.edit_.edit_anchor_ = std::min(m.focus_sel_start_, len);
+            m.edit_.edit_cursor_ = std::min(m.focus_sel_end_, len);
+            m.focus_sel_start_   = 0;
+            m.focus_sel_end_     = ~std::size_t{0};
             m.edit_.caret_time_  = m.time_;
             rebuild_mask();
         }

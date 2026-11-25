@@ -45,7 +45,15 @@ jobs:
 
       - name: Run headless tests
         shell: pwsh
-        run: ctest --test-dir build/${{ matrix.preset }} -R "strata_selftest|strata_c_api_test|strata_overlay_modules" --output-on-failure
+        run: ctest --test-dir build/${{ matrix.preset }} -R "strata_selftest|strata_c_api_test|strata_overlay_modules|strata_bench_smoke" --output-on-failure
+
+      - name: Test Rust bindings (x64-dev)
+        if: matrix.preset == 'x64-dev'
+        shell: pwsh
+        run: |
+          $env:STRATA_LIB_DIR = (Resolve-Path "build/x64-dev/lib").Path
+          $env:RUSTFLAGS = "-C target-feature=+crt-static"
+          cargo test --manifest-path bindings/rust/Cargo.toml
 
   linux-headless:
     runs-on: ubuntu-latest
@@ -55,16 +63,63 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build cmake fonts-dejavu-core
 
-      - name: Configure and build headless library & C API test
+      - name: Configure and build headless library & C API test (PCH off)
         run: |
           cmake -S . -B build/linux -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DSTRATA_BUILD_OPENGL=ON \
             -DSTRATA_BUILD_VULKAN=OFF \
             -DSTRATA_BUILD_TESTS=ON \
+            -DSTRATA_PCH=OFF \
             -DSTRATA_WERROR=ON
           cmake --build build/linux
           ctest --test-dir build/linux --output-on-failure
+
+      - name: Verify install & find_package consumer
+        run: |
+          cmake --install build/linux --prefix "$PWD/build/install"
+          mkdir -p build/consumer
+          cat > build/consumer/CMakeLists.txt << 'EOF'
+          cmake_minimum_required(VERSION 3.28)
+          project(strata_consumer LANGUAGES CXX)
+          find_package(strata CONFIG REQUIRED)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE strata::strata)
+          EOF
+          cat > build/consumer/main.cpp << 'EOF'
+          #include <strata/strata.hpp>
+          int main() {
+              auto ui = strata::context::create();
+              return ui ? 0 : 1;
+          }
+          EOF
+          cmake -S build/consumer -B build/consumer/out -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$PWD/build/install"
+          cmake --build build/consumer/out
+          ./build/consumer/out/consumer
+
+      - name: Test Rust bindings
+        run: |
+          STRATA_LIB_DIR="$PWD/build/linux/lib" cargo test --manifest-path bindings/rust/Cargo.toml
+
+  macos-metal:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: brew install ninja
+
+      - name: Configure and build Metal backend
+        run: |
+          cmake -S . -B build/macos -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_MINIMAL=ON \
+            -DSTRATA_BUILD_METAL=ON \
+            -DSTRATA_PCH=OFF \
+            -DSTRATA_WERROR=ON
+          cmake --build build/macos
 
   wasm-webgpu:
     runs-on: ubuntu-latest

@@ -30,7 +30,7 @@ strata::overlay::install(opt); // call from a worker thread, never from DllMain;
 - **Safe teardown (`overlay::uninstall()`):** returns `done` (all hooks restored and resources freed; safe to unload DLL), `busy` (hooked call still in flight; retry later), or `pinned` (another hook or `WndProc` chained over ours; keep DLL loaded as pass-through).
 - **Input & HUD:** the host window is subclassed to feed `win32_platform`. `options::block_game_input` controls whether input is swallowed while open; `options::hud` (or `overlay::host` / `overlay::module` in `module.hpp`) renders every frame regardless of toggle state without capturing input.
 - **HDR detection:** swap chain color spaces (FP16 scRGB, 10-bit HDR10, sRGB) are detected automatically and can be overridden via `options::output`.
-- **Overlay targets:** `strata_overlay` (static lib), `strata_overlay_demo` (sample DLL), `strata_overlay_inject <pid|exe> <dll>` (LoadLibrary injector), and `strata_overlay_host` (stand-in host used by `ctest`).
+- **Overlay targets:** `strata_overlay` (`strata::overlay`, static lib), `strata_overlay_demo` (sample DLL), `strata_overlay_inject <pid|exe> <dll>` (LoadLibrary injector), and `strata_overlay_host` (stand-in host used by `ctest`). For a minimal standalone starter project, see [`examples/minimal_overlay/`](../examples/minimal_overlay/).
 
 ## Vulkan explicit overlay layer
 
@@ -54,7 +54,9 @@ opt.scale_hotkeys = true;  // Ctrl + Plus / Minus step 10 %, Ctrl + 0 resets
 strata::overlay::set_ui_scale_percent(125); // thread-safe; rebuilds atlas on render thread next frame
 ```
 
-## VR & XR overlays (OpenXR / OpenVR)
+## VR & XR overlays (OpenXR / OpenVR — Experimental)
+
+> **Experimental:** `STRATA_BUILD_OPENXR` and `STRATA_BUILD_OPENVR` are off by default and have not yet been verified on physical VR hardware. Expect rough edges until hardware/simulator testing is completed.
 
 `STRATA_BUILD_OPENXR=ON` / `STRATA_BUILD_OPENVR=ON` (requires `STRATA_BUILD_DX11=ON`) render the same 2D UI onto a quad in the VR tracking volume with controller raycast input.
 

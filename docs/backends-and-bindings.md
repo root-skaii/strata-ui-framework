@@ -96,7 +96,7 @@ cargo test --manifest-path bindings\rust\Cargo.toml
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(strata GIT_REPOSITORY https://github.com/<org>/strata.git GIT_TAG main)
+FetchContent_Declare(strata GIT_REPOSITORY https://github.com/root-skaii/strata-ui-framework.git GIT_TAG main)
 set(STRATA_MINIMAL ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(strata)
 target_link_libraries(my_app PRIVATE strata::strata)

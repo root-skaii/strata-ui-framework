@@ -1,10 +1,10 @@
 # strata
 
-A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C++ with **Direct3D 11**, **Direct3D 12**, **OpenGL 3.3+**, **Vulkan**, **WebGPU**, **Metal**, and **CPU software** backends - plus a C99 API, Rust bindings, multi-viewport support, and in-game / VR overlays.
+A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C++ with **Direct3D 11**, **Direct3D 12**, **OpenGL 3.3+**, **Vulkan**, **WebGPU**, **Metal**, and **CPU software** backends - plus a C99 API, Rust bindings, multi-viewport support, and in-game overlays.
 
-> **Work in progress:** the API and core layout are actively evolving and may change between commits.
+> **Work in progress:** preparing for `v0.1.0`; core widgets and backends are settling, while experimental integrations (OpenXR / OpenVR) may change.
 
-[**Features**](#why-strata) · [**Screenshots**](#screenshots) · [**Backends**](#backends--platforms) · [**Quickstart**](#quickstart) · [**Build**](#build--test) · [**Docs**](#documentation)
+[**Live WebGPU Demo**](https://root-skaii.github.io/strata-ui-framework/) · [**Features**](#why-strata) · [**Screenshots**](#screenshots) · [**Backends**](#backends--platforms) · [**Benchmarks**](#benchmarks) · [**Quickstart**](#quickstart) · [**Build**](#build--test) · [**Docs**](#documentation)
 
 ![Strata Studio docked workspace with scene explorer, live telemetry charts, heatmap, sequencer, curve editor, and property inspector](docs/screenshots/studio.png)
 
@@ -29,15 +29,30 @@ Captured from the shared modular showcase (`strata_sandbox --scene NAME --shot F
 
 ## Backends & platforms
 
-| Category | Supported |
-|---|---|
-| **GPU Renderers** | Direct3D 11 (`d3d11_renderer`), Direct3D 12 (`d3d12_renderer`), OpenGL 3.3+ Core (`gl_renderer`), Vulkan 1.0+ (`vulkan_renderer`), WebGPU (`wgpu_renderer` - Dawn / wgpu / WASM), Metal (`metal_renderer` - macOS / iOS) |
-| **Headless Renderers** | CPU Software (`software_renderer` with partial damage-rect redraw), Null (`null_renderer` validator) |
-| **Platform Adapters** | Win32 (`win32_platform` + IME + file drop), GLFW (`glfw_platform`), SDL3 (`sdl3_platform`), ready-made `strata::app` (D3D11 / OpenGL / Vulkan) |
-| **Language Bindings** | C++23/latest native, C99 (`strata/strata_c.h`), Rust (`bindings/rust/` - `strata-sys` + `strata`) |
-| **Overlays** | Direct3D 11/12 (DXGI vtable), OpenGL (`SwapBuffers` IAT), Vulkan (`VK_LAYER_strata_overlay`), OpenXR & OpenVR |
+| Category | Supported | Status |
+|---|---|---|
+| **GPU Renderers** | Direct3D 11 (`d3d11_renderer`), Direct3D 12 (`d3d12_renderer`), OpenGL 3.3+ (`gl_renderer`), Vulkan 1.0+ (`vulkan_renderer`), WebGPU (`wgpu_renderer` - Dawn / WASM) | Tested (Windows / Linux / Browser) |
+| **Apple GPU** | Metal (`metal_renderer` - macOS / iOS) | Compile-tested (macOS CI) |
+| **Headless Renderers** | CPU Software (`software_renderer` with partial damage-rect redraw), Null (`null_renderer` validator) | Tested (CI + golden suite) |
+| **Platform Adapters** | Win32 (`win32_platform` + IME + file drop), GLFW (`glfw_platform`), SDL3 (`sdl3_platform`), ready-made `strata::app` (D3D11 / OpenGL / Vulkan) | Tested (Win32) / Header-only (GLFW, SDL3) |
+| **Language Bindings** | C++23/latest native, C99 (`strata/strata_c.h`), Rust (`bindings/rust/` - `strata-sys` + `strata`) | Tested (CI) |
+| **In-Game Overlays** | Direct3D 11/12 (DXGI vtable), OpenGL (`SwapBuffers` IAT), Vulkan (`VK_LAYER_strata_overlay`) | Tested (Windows) |
+| **VR / XR Overlays** | OpenXR (`xr_session`), OpenVR (`vr_overlay`) | Experimental (not hardware-tested, off by default) |
 
 All shaders are compiled at build time (DXBC / SPIR-V) or embedded as WGSL / MSL / GLSL - zero runtime shader compiler dependencies.
+
+## Benchmarks
+
+Measured with `strata_bench` (`x64-dev`, MSVC Release without LTO, 400 steady-state frames after 10 warmup frames, headless `null_renderer`):
+
+| Scenario | Median (µs/frame) | Vertices | Draw Cmds | Steady Heap Allocs | `can_idle()` |
+|---|---:|---:|---:|---:|---|
+| `inspector_25_widgets` (typical tool panel) | 9.7 | 588 | 2 | **0** | yes |
+| `workspace_4_panels` (4-panel studio layout) | 18.5 | 1310 | 6 | **0** | yes |
+| `table_100k_rows` (virtualized 4-column table) | 29.0 | 1830 | 1 | **0** | yes |
+| `dense_1k_widgets` (1,000 interactive controls) | 175.8 | 846 | 2 | **0** | yes |
+
+Reproduce locally: build `strata_bench` (`STRATA_BUILD_TESTS=ON`) and run `build/x64-dev/bin/strata_bench.exe`. `ctest` also runs `strata_bench_smoke` to verify the zero-allocation and idle invariants.
 
 ## Quickstart
 
@@ -66,15 +81,17 @@ Or pull `strata` into any CMake project with `FetchContent` (also packaged as a 
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(strata GIT_REPOSITORY https://github.com/<org>/strata.git GIT_TAG main)
+FetchContent_Declare(strata GIT_REPOSITORY https://github.com/root-skaii/strata-ui-framework.git GIT_TAG main)
 set(STRATA_MINIMAL ON CACHE BOOL "" FORCE) # core + software/null only; enable STRATA_BUILD_OPENGL / VULKAN / DX11 as needed
 FetchContent_MakeAvailable(strata)
 target_link_libraries(my_app PRIVATE strata::strata)
 ```
 
+For complete copy-pasteable projects, see [`examples/minimal_app/`](examples/minimal_app/) (desktop `strata::app`) and [`examples/minimal_overlay/`](examples/minimal_overlay/) (in-game DLL via `strata::overlay`).
+
 ## Build & test
 
-Requires CMake 4.3+ and a C++23/latest compiler (MSVC, `clang-cl`, GCC, Clang, or Emscripten).
+Requires CMake 3.28+ and a C++23/latest compiler (MSVC, `clang-cl`, GCC, Clang, or Emscripten).
 
 | Platform / Tool | Command |
 |---|---|
@@ -97,12 +114,14 @@ Key CMake options (`-D<OPT>=ON|OFF`):
 | **[Widgets & Layout](docs/widgets.md)** | Controls, inputs, tables, trees, docking, multi-viewport, timeline/sequencer, Bezier curves, property grid, charts/heatmaps, code editor, rich text, node editor |
 | **[Architecture & Styling](docs/architecture.md)** | Zero-heap design, SDF shapes & acrylic blur, DPI & SDF fonts, SVG path icons, themes & hot-reload, keybinds/config, idling, diagnostics, footprint |
 | **[Backends, Platforms & Bindings](docs/backends-and-bindings.md)** | D3D11/12, OpenGL, Vulkan, WebGPU, Metal, software partial redraw, Win32/GLFW/SDL3, `strata::app`, C99 API, Rust bindings, sandbox CLI |
-| **[In-Game & VR/XR Overlays](docs/overlays.md)** | D3D11/12 DXGI hook, OpenGL IAT hook, Vulkan explicit layer (`VK_LAYER_strata_overlay`), runtime scaling, OpenXR / OpenVR |
+| **[In-Game Overlays](docs/overlays.md)** | D3D11/12 DXGI hook, OpenGL IAT hook, Vulkan explicit layer (`VK_LAYER_strata_overlay`), runtime scaling, and experimental OpenXR / OpenVR |
+| **[Changelog](CHANGELOG.md)** | Release notes and version history |
 
 ## Repository layout
 
 ```text
 strata/     static library (strata::strata) + optional app host (strata::app)
+examples/   standalone FetchContent starter projects (minimal_app, minimal_overlay)
 showcase/   shared modular showcase library (strata_showcase: 12 feature panels, desktop + web)
 sandbox/    desktop showcase host & test harness (D3D11, D3D12, OpenGL, Vulkan, software, VR)
 web/        browser WebGPU + WASM live showcase (shares strata_showcase, with CPU software fallback)

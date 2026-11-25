@@ -2049,6 +2049,8 @@ public:
     // focuses the field with this label (current id scope) next time it is drawn, text selected. safe to call every
     // frame: an already focused field is left alone.
     void request_text_focus(std::string_view label) noexcept;
+    // same, selecting only byte range [sel_start, sel_end) instead of the entire string (clamped to text length)
+    void request_text_focus(std::string_view label, std::size_t sel_start, std::size_t sel_end) noexcept;
     // focused text field id (0 = none), and the same by label
     [[nodiscard]] id   focused_field() const noexcept;
     [[nodiscard]] bool field_focused(std::string_view label) const noexcept;

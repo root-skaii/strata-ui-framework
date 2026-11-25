@@ -286,6 +286,8 @@ struct context::impl {
     // input masks and code fields: extra behaviour for the field being built
     std::string_view edit_mask_;         // input_masked: the mask (only while the call runs)
     id               focus_request_{};   // field to focus when next drawn
+    std::size_t      focus_sel_start_{0};
+    std::size_t      focus_sel_end_{~std::size_t{0}};
     internal::code_mode code_;
     std::vector<internal::code_state>      code_states_;
     std::vector<std::pair<u32, u32>>       code_marks_;

@@ -18,8 +18,12 @@ add_library(strata_overlay STATIC
     src/window.cpp
 )
 add_library(strata::overlay ALIAS strata_overlay)
-target_include_directories(strata_overlay PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+target_sources(strata_overlay PUBLIC
+    FILE_SET HEADERS
+    BASE_DIRS include
+    FILES
+        include/strata/overlay/module.hpp
+        include/strata/overlay/overlay.hpp
 )
 target_link_libraries(strata_overlay
     PUBLIC  strata::strata
@@ -93,4 +97,18 @@ if(STRATA_BUILD_TESTS)
         TIMEOUT 60
         LABELS gpu
         ENVIRONMENT "STRATA_OVERLAY_CAPTURE=${PROJECT_BINARY_DIR}/test_artifacts/overlay_smoke_dx12.png")
+endif()
+
+if(STRATA_INSTALL)
+    include(GNUInstallDirs)
+    set_target_properties(strata_overlay PROPERTIES EXPORT_NAME overlay)
+    install(TARGETS strata_overlay
+        EXPORT strata_overlay_targets
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        FILE_SET HEADERS DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    )
+    install(EXPORT strata_overlay_targets
+        NAMESPACE strata::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/strata"
+    )
 endif()
