@@ -70,6 +70,7 @@ jobs:
             -DSTRATA_BUILD_OPENGL=ON \
             -DSTRATA_BUILD_VULKAN=OFF \
             -DSTRATA_BUILD_TESTS=ON \
+            -DSTRATA_LTO=OFF \
             -DSTRATA_PCH=OFF \
             -DSTRATA_WERROR=ON
           cmake --build build/linux

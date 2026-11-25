@@ -45,6 +45,7 @@ fn main() {
             .arg("-DSTRATA_BUILD_DX12=OFF")
             .arg("-DSTRATA_BUILD_VULKAN=OFF")
             .arg(format!("-DSTRATA_BUILD_OPENGL={build_gl}"))
+            .arg("-DSTRATA_LTO=OFF")
             .arg("-DSTRATA_INSTALL=OFF");
 
         if let Ok(gen) = env::var("STRATA_CMAKE_GENERATOR") {

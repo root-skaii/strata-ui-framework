@@ -193,7 +193,7 @@ int main(int argc, char** argv)
     float gamma    = 2.2f;
     float bloom    = 0.35f;
     int   quality  = 2;
-    constexpr std::string_view k_qualities[] = {"Low", "Medium", "High", "Ultra"};
+    static constexpr std::string_view k_qualities[] = {"Low", "Medium", "High", "Ultra"};
 
     const auto r_inspector = run_bench("inspector_25_widgets", warmup, iters, [&](strata::context& ui) {
         if (auto w = ui.window("Inspector", {24, 24}, {340, 480})) {
