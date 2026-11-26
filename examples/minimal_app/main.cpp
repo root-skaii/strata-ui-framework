@@ -6,7 +6,7 @@
 int main()
 {
     auto app = strata::app::create({
-        .title               = "strata — minimal app",
+        .title               = "strata - minimal app",
         .width               = 960,
         .height              = 600,
         .follow_system_theme = true,

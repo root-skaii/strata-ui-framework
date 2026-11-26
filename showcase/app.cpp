@@ -739,7 +739,7 @@ void showcase_app::draw_tour_overview(context& ui, const rect& r)
                 ui.spacing();
                 ui.text_wrapped_colored(
                     st.text_dim,
-                    "Analytic SDF shapes, live frosted backdrop blur, docking, and pro authoring widgets — "
+                    "Analytic SDF shapes, live frosted backdrop blur, docking, and pro authoring widgets - "
                     "running identically across Direct3D 11/12, Vulkan, OpenGL, Metal, WebGPU, and CPU.");
 
                 ui.spacing();
@@ -1222,7 +1222,7 @@ void showcase_app::draw_tour_authoring(context& ui, const rect& r)
                 ui.text("Authoring Tools");
             }
             ui.text_wrapped_colored(st.text_dim,
-                                    "Full-size editors with room to work — no cramped panels or clipped labels.");
+                                    "Full-size editors with room to work - no cramped panels or clipped labels.");
             ui.row_next();
             static constexpr std::string_view k_tabs[] = {"Node Graph", "Code Editor", "Sequencer & Curves"};
             ui.segmented("##auth_subtab", k_tabs, authoring_tab_);

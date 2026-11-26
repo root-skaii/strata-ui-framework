@@ -21,7 +21,7 @@ A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C+
 
 ## Screenshots
 
-Captured from the shared modular showcase (`strata_sandbox --scene NAME --shot FILE` — identical UI runs live in the browser via WebGPU in [`web/`](web/)).
+Captured from the shared modular showcase (`strata_sandbox --scene NAME --shot FILE` - identical UI runs live in the browser via WebGPU in [`web/`](web/)).
 
 ![Docking Studio](docs/screenshots/studio.png)
 **Docking Studio** - 3-panel dockable workspace with scene explorer, live PBR material viewport, tabbed node graph, and property inspector

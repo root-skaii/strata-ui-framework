@@ -119,7 +119,7 @@ void highlight_cpp(std::string_view src, font_id mono, std::vector<text_span>& o
 
 struct editor_module final : demo_module {
     std::string code =
-        "// Strata Studio — Live UI & Shader Script (Ctrl+/ comment, Ctrl+F find)\n"
+        "// Strata Studio - Live UI & Shader Script (Ctrl+/ comment, Ctrl+F find)\n"
         "#include <strata/strata.hpp>\n"
         "\n"
         "void render_inspector(strata::context& ui, float& exposure, float& roughness) {\n"

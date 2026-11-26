@@ -54,7 +54,7 @@ opt.scale_hotkeys = true;  // Ctrl + Plus / Minus step 10 %, Ctrl + 0 resets
 strata::overlay::set_ui_scale_percent(125); // thread-safe; rebuilds atlas on render thread next frame
 ```
 
-## VR & XR overlays (OpenXR / OpenVR — Experimental)
+## VR & XR overlays (OpenXR / OpenVR - Experimental)
 
 > **Experimental:** `STRATA_BUILD_OPENXR` and `STRATA_BUILD_OPENVR` are off by default and have not yet been verified on physical VR hardware. Expect rough edges until hardware/simulator testing is completed.
 
