@@ -8,7 +8,7 @@ A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C+
 
 [**Features**](#why-strata) · [**Screenshots**](#screenshots) · [**Backends**](#backends--platforms) · [**Benchmarks**](#benchmarks) · [**Quickstart**](#quickstart) · [**Build**](#build--test) · [**Docs**](#documentation)
 
-![Strata Studio docked workspace with scene explorer, live telemetry charts, heatmap, sequencer, curve editor, and property inspector](docs/screenshots/studio.png)
+![Strata Guided Tour overview with live SDF surface preview, corner radius and acrylic blur controls, metrics, and chapter navigation](docs/screenshots/tour.png)
 
 ## Why strata?
 
@@ -23,10 +23,13 @@ A fast, zero-allocation-in-steady-state immediate-mode UI framework in modern C+
 
 Captured from the shared modular showcase (`strata_sandbox --scene NAME --shot FILE` — identical UI runs live in the browser via WebGPU in [`web/`](web/)).
 
+![Docking Studio](docs/screenshots/studio.png)
+**Docking Studio** - 3-panel dockable workspace with scene explorer, live PBR material viewport, tabbed node graph, and property inspector
+
 | | |
 |---|---|
-| ![Telemetry & Data](docs/screenshots/telemetry.png)<br>**Telemetry & Data** - interactive multi-series charts, budget reference lines, histograms, 2D heatmaps, and 100k-row virtualized tables | ![Authoring & Shaders](docs/screenshots/authoring.png)<br>**Authoring & Shaders** - syntax-highlighted code editor (`Ctrl+/`, find/replace), PBR node graph, timeline sequencer, and Bezier curve editor |
-| ![Visuals & Frosted Glass](docs/screenshots/visuals.png)<br>**Visuals & Frosted Glass** - analytic SDF gradients, antialiased vector paths, live acrylic backdrop blur (`glass` theme), SVG icons, and rich UTF-8/RTL text | ![Workflow & Pickers](docs/screenshots/productivity.png)<br>**Workflow & Pickers** - Kanban drag & drop, color token drop targets, date/time pickers, closable/reorderable tabs, and rebindable shortcuts |
+| ![Telemetry & Data](docs/screenshots/telemetry.png)<br>**Telemetry & Data** - interactive multi-series charts, budget reference lines, histograms, 2D heatmaps, and 100k-row virtualized tables | ![Authoring & Shaders](docs/screenshots/authoring.png)<br>**Authoring & Shaders** - syntax-highlighted C++23 code editor (`Ctrl+/`, find/replace), PBR node graph, timeline sequencer, and Bezier curve editor |
+| ![Visuals & Frosted Glass](docs/screenshots/visuals.png)<br>**Visuals & Frosted Glass** - analytic SDF gradients, antialiased vector paths, live acrylic backdrop blur (`glass` theme), SVG icons, and rich UTF-8/RTL text | ![Workflow & Pickers](docs/screenshots/productivity.png)<br>**Workflow & Pickers** - Kanban drag & drop, color token drop targets, editable date/time pickers, closable/reorderable tabs, and rebindable shortcuts |
 | ![Command Palette](docs/screenshots/palette.png)<br>**Command Palette** - `Ctrl+Shift+P` fuzzy action search with multi-key chords over the docked studio workspace | ![Component Gallery](docs/screenshots/gallery.png)<br>**Component Gallery** - searchable, categorized module browser; new feature modules drop into `showcase/modules/` and appear on desktop and WebGPU automatically |
 
 ## Backends & platforms
